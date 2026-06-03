@@ -1,7 +1,5 @@
-# Phase: G1 (Release polish 1/2)
-# AC: AC-04-1 ~ AC-04-7
-# 비협상: 5종 명령 게이트 + 회귀 가드 grep 6종 — PM §9.1 #17/#18 인용
-# CLAUDE.md 룰: "빌드 명령" + "Build 설정 lessons §1/§2/§3" 인용
+# ApiLens CI — backend(Gradle/JDK 21·25) + frontend(Node 20) + 단일 jar 임베드 검증
+# + agent shadow jar relocate clean / 회귀 가드 grep.
 
 name: ApiLens CI
 

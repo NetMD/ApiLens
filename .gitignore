@@ -40,9 +40,10 @@ apilens.db-journal
 application-local.yml
 application-local.properties
 
-# 저장소에서 제외 (로컬 보관) — 내부 설정/문서/예제/프롬프트
+# 저장소에서 제외 (로컬 보관) — 내부 설정/문서/예제/프롬프트/AI 컨텍스트
 .claude/
 .mcp.json
+CLAUDE.md
 docs/
 examples/
 prompt/
