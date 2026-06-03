@@ -1,0 +1,68 @@
+name: Release
+
+# v* 태그를 push 하면 UI + jar 를 빌드하고 GitHub Release 를 생성해 jar 두 개를 첨부합니다.
+#   git tag -a v0.1.0 -m "ApiLens v0.1.0"
+#   git push origin v0.1.0
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # Release 생성 + asset 업로드 권한
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 1. UI 빌드 (server jar 에 임베드되려면 dist 가 먼저 있어야 함)
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: apilens-ui/package-lock.json
+
+      - name: Build UI
+        working-directory: apilens-ui
+        run: |
+          npm ci
+          npm run build
+
+      # 2. agent shadow jar + server bootJar (UI 임베드) 빌드
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Build jars
+        run: ./gradlew clean build
+
+      # 3. server jar 에 UI 가 임베드됐는지 검증 (실패 시 release 중단)
+      - name: Verify UI embedded in server jar
+        run: |
+          SERVER_JAR=$(ls apilens-server/build/libs/apilens-server-*.jar | head -1)
+          echo "Checking $SERVER_JAR"
+          if unzip -l "$SERVER_JAR" | grep -q "BOOT-INF/classes/static/index.html"; then
+            echo "OK: UI embedded"
+          else
+            echo "ERROR: UI not embedded in server jar"
+            exit 1
+          fi
+
+      # 4. Release 생성 + jar 첨부
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ApiLens ${{ github.ref_name }}
+          body_path: release-notes/${{ github.ref_name }}.md
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') }}
+          files: |
+            apilens-server/build/libs/apilens-server-*.jar
+            apilens-agent/build/libs/apilens-agent-*.jar
+          fail_on_unmatched_files: true
