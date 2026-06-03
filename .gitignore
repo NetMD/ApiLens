@@ -48,3 +48,6 @@ docs/
 examples/
 prompt/
 scripts/stop-words.txt
+
+# 로컬 빌드 편의 래퍼 (머신 종속 JDK 21 경로 하드코딩 — 커밋 안 함)
+/gw
