@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "workspace-mcp": {
-      "type": "http",
-      "url": "http://localhost:8081/mcp"
-    }
-  }
-}

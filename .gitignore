@@ -40,5 +40,9 @@ apilens.db-journal
 application-local.yml
 application-local.properties
 
-# Claude Code — 개인 로컬 설정만 제외 (공유 settings.json 은 포함)
-.claude/settings.local.json
+# 저장소에서 제외 (로컬 보관) — 내부 설정/문서/예제/프롬프트
+.claude/
+.mcp.json
+docs/
+examples/
+prompt/
