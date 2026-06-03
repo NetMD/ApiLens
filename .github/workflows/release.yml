@@ -42,19 +42,28 @@ jobs:
       - name: Build jars
         run: ./gradlew clean build
 
-      # 3. server jar 에 UI 가 임베드됐는지 검증 (실패 시 release 중단)
-      - name: Verify UI embedded in server jar
+      # 3. 배포 산출물 2종 선별(bootJar + agent jar; plain/sources 제외) + UI 임베드 검증
+      #    libs 에는 boot/plain/sources jar 가 공존하므로 plain·sources 를 명시 제외해야
+      #    bootJar 를 정확히 고른다 (단순 head -1 은 plain jar 를 집어 검증 실패).
+      - name: Stage & verify release artifacts
         run: |
-          SERVER_JAR=$(ls apilens-server/build/libs/apilens-server-*.jar | head -1)
-          echo "Checking $SERVER_JAR"
-          if unzip -l "$SERVER_JAR" | grep -q "BOOT-INF/classes/static/index.html"; then
-            echo "OK: UI embedded"
-          else
+          mkdir -p release-dist
+          SERVER_JAR=$(ls apilens-server/build/libs/apilens-server-*.jar | grep -vE 'plain|sources' | head -1)
+          AGENT_JAR=$(ls apilens-agent/build/libs/apilens-agent-*.jar | grep -vE 'sources' | head -1)
+          echo "server=$SERVER_JAR"
+          echo "agent=$AGENT_JAR"
+          if [ -z "$SERVER_JAR" ] || [ -z "$AGENT_JAR" ]; then
+            echo "ERROR: 산출물 jar 누락 (server=$SERVER_JAR agent=$AGENT_JAR)"
+            exit 1
+          fi
+          if ! unzip -l "$SERVER_JAR" | grep -q "BOOT-INF/classes/static/index.html"; then
             echo "ERROR: UI not embedded in server jar"
             exit 1
           fi
+          echo "OK: UI embedded"
+          cp "$SERVER_JAR" "$AGENT_JAR" release-dist/
 
-      # 4. Release 생성 + jar 첨부
+      # 4. Release 생성 + jar 2종 첨부
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
@@ -63,6 +72,5 @@ jobs:
           draft: false
           prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') }}
           files: |
-            apilens-server/build/libs/apilens-server-*.jar
-            apilens-agent/build/libs/apilens-agent-*.jar
+            release-dist/*.jar
           fail_on_unmatched_files: true
