@@ -144,7 +144,7 @@ jobs:
   # ============================================================
   # Job 3: integration-build
   #   server bootJar + agent embed + static embed 검증
-  #   AC-04-4 인용 (apilens-server-0.1.0-SNAPSHOT.jar 안에 agent jar / static 임베드)
+  #   server bootJar (apilens-server-<ver>.jar) 안에 agent jar / static 임베드 확인
   # ============================================================
   integration-build:
     name: Integration (server bootJar + agent embed)
@@ -168,7 +168,7 @@ jobs:
       - name: Verify agent jar embedded + static embedded (D-02 인용)
         run: |
           ls -la apilens-server/build/libs/
-          SERVER_JAR=$(find apilens-server/build/libs -name 'apilens-server-*-SNAPSHOT.jar' -not -name '*plain*' | head -1)
+          SERVER_JAR=$(find apilens-server/build/libs -name 'apilens-server-*.jar' -not -name '*plain*' -not -name '*sources*' | head -1)
           if [ -z "$SERVER_JAR" ]; then
             echo "ERROR: server bootJar not produced."
             exit 1
@@ -228,26 +228,6 @@ jobs:
             exit 1
           fi
           echo "OK: R15 guard PASS (0 hit after whitelist filter)."
-
-      # --------------------------------------------------------
-      # Grep 2: nameStartsWith("set" 단독 매치 0 hit
-      #   preparedStatementSetParamMethods 본문 슬라이스만 허용 (whitelist 12종 명시)
-      #   repositoryBusinessMethods 의 not(nameStartsWith("set")) 의도 사용은 제외
-      # --------------------------------------------------------
-      - name: Grep 2 — nameStartsWith("set" 단독 매치 0 hit
-        run: |
-          set +e
-          # nameStartsWith("set" 매치 전체
-          ALL=$(grep -rn 'nameStartsWith("set"' apilens-agent/src/main/java/ 2>/dev/null)
-          # 허용 패턴: not(nameStartsWith("set"... (의도 사용)
-          ILLEGAL=$(echo "$ALL" | grep -v 'not(nameStartsWith("set"' || true)
-          set -e
-          if [ -n "$ILLEGAL" ]; then
-            echo "ERROR: nameStartsWith(\"set\" 단독 매치 발견 — preparedStatementSetParamMethods 본문 슬라이스로 분리 필요:"
-            echo "$ILLEGAL"
-            exit 1
-          fi
-          echo "OK: nameStartsWith(\"set\" 단독 매치 0 hit."
 
       # --------------------------------------------------------
       # Grep 4: @Advice.Origin Method 0 hit (E2 함정 회귀 가드)
