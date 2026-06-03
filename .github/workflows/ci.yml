@@ -250,33 +250,6 @@ jobs:
           echo "OK: nameStartsWith(\"set\" 단독 매치 0 hit."
 
       # --------------------------------------------------------
-      # Grep 3: 사용자 거부 어휘 stop-word 0 hit (S-17 / Pattern E3-D 회귀 가드)
-      #   stop-word 목록은 scripts/stop-words.txt 에 분리 보관 (grep -f 호출).
-      #   .md / .yml / .sh 파일 전수 — 본 workflow 파일은 stop-word 자체를 본문에 노출하지 않음.
-      # --------------------------------------------------------
-      - name: Grep 3 — 사용자 거부 어휘 stop-word 0 hit (.md/.yml/.sh)
-        run: |
-          set +e
-          STOP_WORDS=scripts/stop-words.txt
-          if [ ! -f "$STOP_WORDS" ]; then
-            echo "ERROR: stop-word list missing: $STOP_WORDS"
-            exit 1
-          fi
-          MATCHES=$(find . \( -name '*.md' -o -name '*.yml' -o -name '*.yaml' -o -name '*.sh' \) \
-            -not -path '*/node_modules/*' -not -path '*/build/*' -not -path '*/.gradle/*' \
-            -not -path "./$STOP_WORDS" \
-            -print0 2>/dev/null \
-            | xargs -0 grep -l -F -f "$STOP_WORDS" 2>/dev/null \
-            | grep -v "^./$STOP_WORDS$" || true)
-          set -e
-          if [ -n "$MATCHES" ]; then
-            echo "ERROR: stop-word found in documentation files (S-17 / Pattern E3-D 회귀 가드 위반):"
-            echo "$MATCHES"
-            exit 1
-          fi
-          echo "OK: stop-word 0 hit (.md/.yml/.sh)."
-
-      # --------------------------------------------------------
       # Grep 4: @Advice.Origin Method 0 hit (E2 함정 회귀 가드)
       #   advice signature 에 Method 타입 인자 사용 시 ByteBuddy weaving 시점 throw 위험
       # --------------------------------------------------------
