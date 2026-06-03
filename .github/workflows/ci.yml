@@ -1,0 +1,347 @@
+# Phase: G1 (Release polish 1/2)
+# AC: AC-04-1 ~ AC-04-7
+# 비협상: 5종 명령 게이트 + 회귀 가드 grep 6종 — PM §9.1 #17/#18 인용
+# CLAUDE.md 룰: "빌드 명령" + "Build 설정 lessons §1/§2/§3" 인용
+
+name: ApiLens CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  # ============================================================
+  # Job 1: backend-test
+  #   Gradle clean test (matrix JDK 21 primary + JDK 25 smoke)
+  #   PM §9.1 #17 "5종 명령 게이트 + relocate clean" 라인 매핑
+  # ============================================================
+  backend-test:
+    name: Backend (Gradle / JDK ${{ matrix.jdk }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - jdk: '21'
+            smoke: false  # primary build target (G-01)
+          - jdk: '25'
+            smoke: true   # runtime smoke (Phase E3 R7 인용)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup JDK ${{ matrix.jdk }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ matrix.jdk }}
+          distribution: temurin
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          cache-read-only: ${{ github.event_name == 'pull_request' && github.actor != 'dependabot[bot]' }}
+
+      - name: Verify Gradle wrapper present
+        run: |
+          if [ ! -f ./gradlew ]; then
+            echo "ERROR: gradle wrapper not generated. Run: gradle wrapper --gradle-version 8.11.1"
+            exit 1
+          fi
+        continue-on-error: ${{ matrix.smoke }}
+
+      - name: License header check (idempotent)
+        run: bash scripts/apply-license-header.sh --check
+        continue-on-error: ${{ matrix.smoke }}
+
+      - name: Clean build + test
+        run: ./gradlew clean test
+        continue-on-error: ${{ matrix.smoke }}
+
+      - name: Build shadow jar (agent)
+        run: ./gradlew :apilens-agent:shadowJar
+        continue-on-error: ${{ matrix.smoke }}
+
+      - name: Verify shadow jar relocate clean (D-01 인용)
+        run: |
+          # apilens-agent 의 shadow jar 안에 raw bytebuddy / jackson 클래스 0 hit 검증
+          AGENT_JAR=$(find apilens-agent/build/libs -name 'apilens-agent*.jar' | head -1)
+          if [ -z "$AGENT_JAR" ]; then
+            echo "ERROR: agent shadow jar not produced."
+            exit 1
+          fi
+          jar tf "$AGENT_JAR" | tee /tmp/agent-jar-entries.txt > /dev/null
+          # raw 패키지 (relocate 안 된 클래스) 0 hit
+          if grep -E '^net/bytebuddy/' /tmp/agent-jar-entries.txt; then
+            echo "ERROR: raw net.bytebuddy.* classes leaked into shadow jar (D-01 violation)."
+            exit 1
+          fi
+          if grep -E '^com/fasterxml/jackson/' /tmp/agent-jar-entries.txt; then
+            echo "ERROR: raw com.fasterxml.jackson.* classes leaked into shadow jar (D-01 violation)."
+            exit 1
+          fi
+          # relocated 패키지 (io/apilens/agent/shaded/bytebuddy/) 존재 확인 (G-20 인용)
+          if ! grep -q '^io/apilens/agent/shaded/bytebuddy/' /tmp/agent-jar-entries.txt; then
+            echo "WARN: relocated bytebuddy entries not found — shadow jar build may be incomplete."
+          fi
+          echo "OK: shadow jar relocate clean."
+        continue-on-error: ${{ matrix.smoke }}
+
+      - name: Dependencies diff (regression guard)
+        run: ./gradlew :apilens-agent:dependencies --configuration runtimeClasspath
+        continue-on-error: ${{ matrix.smoke }}
+
+  # ============================================================
+  # Job 2: frontend-build
+  #   Node 20 + npm ci + lint + test + build
+  #   CLAUDE.md "UI 미빌드 시 server 는 경고만 띄우고 정상 기동" 보존
+  # ============================================================
+  frontend-build:
+    name: Frontend (Node 20)
+    runs-on: ubuntu-latest
+    continue-on-error: true   # release 직전 강화 예정
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check apilens-ui presence
+        id: ui-check
+        run: |
+          if [ -d apilens-ui ]; then
+            echo "ui_present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ui_present=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::apilens-ui directory not yet present. CLAUDE.md D-04 보존: server build proceeds with warning."
+          fi
+
+      - name: Setup Node
+        if: steps.ui-check.outputs.ui_present == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: apilens-ui/package-lock.json
+
+      - name: npm ci
+        if: steps.ui-check.outputs.ui_present == 'true'
+        working-directory: apilens-ui
+        run: npm ci
+
+      - name: npm run lint
+        if: steps.ui-check.outputs.ui_present == 'true'
+        working-directory: apilens-ui
+        run: npm run lint
+        continue-on-error: true
+
+      - name: npm run test
+        if: steps.ui-check.outputs.ui_present == 'true'
+        working-directory: apilens-ui
+        run: npm run test
+        continue-on-error: true
+
+      - name: npm run build
+        if: steps.ui-check.outputs.ui_present == 'true'
+        working-directory: apilens-ui
+        run: npm run build
+
+  # ============================================================
+  # Job 3: integration-build
+  #   server bootJar + agent embed + static embed 검증
+  #   AC-04-4 인용 (apilens-server-0.1.0-SNAPSHOT.jar 안에 agent jar / static 임베드)
+  # ============================================================
+  integration-build:
+    name: Integration (server bootJar + agent embed)
+    runs-on: ubuntu-latest
+    needs: [backend-test, frontend-build]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: temurin
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Build server bootJar
+        run: ./gradlew :apilens-server:bootJar
+
+      - name: Verify agent jar embedded + static embedded (D-02 인용)
+        run: |
+          ls -la apilens-server/build/libs/
+          SERVER_JAR=$(find apilens-server/build/libs -name 'apilens-server-*-SNAPSHOT.jar' -not -name '*plain*' | head -1)
+          if [ -z "$SERVER_JAR" ]; then
+            echo "ERROR: server bootJar not produced."
+            exit 1
+          fi
+          jar tf "$SERVER_JAR" | tee /tmp/server-jar-entries.txt > /dev/null
+          # agent jar embed 검증
+          if ! grep -q 'agent/apilens-agent.*\.jar' /tmp/server-jar-entries.txt; then
+            echo "ERROR: agent jar not embedded in server bootJar."
+            exit 1
+          fi
+          echo "OK: agent jar embedded."
+          # static UI embed 검증 (apilens-ui 미빌드 시 경고만 — D-04 보존)
+          if grep -q 'BOOT-INF/classes/static/' /tmp/server-jar-entries.txt; then
+            echo "OK: static UI resources embedded."
+          else
+            echo "::warning::static/ directory not embedded. apilens-ui not yet built (CLAUDE.md D-04 보존)."
+          fi
+
+  # ============================================================
+  # Job 4: regression-grep-gate (직전 inter-pipeline R15 회귀 가드 자동화)
+  #   PM §9.1 #18 인용 — 6 grep 가드
+  # ============================================================
+  regression-grep-gate:
+    name: Regression grep gate (R15 + 6 grep)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # --------------------------------------------------------
+      # Grep 1: payloads = 0 hit (R15 회귀 가드)
+      #   PM §0.1-(5) 인용: agent 코드 어디에서도 'payloads = ' 직접 SQL 작성 금지
+      #   허용 패턴 (false positive 제외):
+      #     - List<Payload> payloads = ...   (로컬 변수 선언)
+      #     - payloads = new ...             (생성자 호출 할당)
+      #     - payloads = capturedPayloads    (이미 마스킹 엔진 거친 List 할당)
+      #     - payloads = AdviceSupport.payloadsOf(...) (마스킹 엔진 거친 헬퍼 호출)
+      #     - payloads = null                (초기화)
+      #     - payloads.add / payloads.addAll (List 메서드)
+      #     - 주석 (// ...)
+      # --------------------------------------------------------
+      - name: Grep 1 — payloads = 직접 SQL 작성 0 hit
+        run: |
+          set +e
+          MATCHES=$(grep -rn 'payloads = ' apilens-agent/src/main/java/ 2>/dev/null \
+            | grep -v 'List<Payload> payloads = ' \
+            | grep -v 'payloads = new' \
+            | grep -v 'payloads = capturedPayloads' \
+            | grep -v 'payloads = AdviceSupport\.payloadsOf' \
+            | grep -v 'payloads = null' \
+            | grep -v 'payloads\.add' \
+            | grep -v 'payloads\.addAll' \
+            | grep -v '//.*payloads = ')
+          set -e
+          if [ -n "$MATCHES" ]; then
+            echo "ERROR: R15 violation — direct 'payloads = ' SQL/assignment found in agent code:"
+            echo "$MATCHES"
+            exit 1
+          fi
+          echo "OK: R15 guard PASS (0 hit after whitelist filter)."
+
+      # --------------------------------------------------------
+      # Grep 2: nameStartsWith("set" 단독 매치 0 hit
+      #   preparedStatementSetParamMethods 본문 슬라이스만 허용 (whitelist 12종 명시)
+      #   repositoryBusinessMethods 의 not(nameStartsWith("set")) 의도 사용은 제외
+      # --------------------------------------------------------
+      - name: Grep 2 — nameStartsWith("set" 단독 매치 0 hit
+        run: |
+          set +e
+          # nameStartsWith("set" 매치 전체
+          ALL=$(grep -rn 'nameStartsWith("set"' apilens-agent/src/main/java/ 2>/dev/null)
+          # 허용 패턴: not(nameStartsWith("set"... (의도 사용)
+          ILLEGAL=$(echo "$ALL" | grep -v 'not(nameStartsWith("set"' || true)
+          set -e
+          if [ -n "$ILLEGAL" ]; then
+            echo "ERROR: nameStartsWith(\"set\" 단독 매치 발견 — preparedStatementSetParamMethods 본문 슬라이스로 분리 필요:"
+            echo "$ILLEGAL"
+            exit 1
+          fi
+          echo "OK: nameStartsWith(\"set\" 단독 매치 0 hit."
+
+      # --------------------------------------------------------
+      # Grep 3: 사용자 거부 어휘 stop-word 0 hit (S-17 / Pattern E3-D 회귀 가드)
+      #   stop-word 목록은 scripts/stop-words.txt 에 분리 보관 (grep -f 호출).
+      #   .md / .yml / .sh 파일 전수 — 본 workflow 파일은 stop-word 자체를 본문에 노출하지 않음.
+      # --------------------------------------------------------
+      - name: Grep 3 — 사용자 거부 어휘 stop-word 0 hit (.md/.yml/.sh)
+        run: |
+          set +e
+          STOP_WORDS=scripts/stop-words.txt
+          if [ ! -f "$STOP_WORDS" ]; then
+            echo "ERROR: stop-word list missing: $STOP_WORDS"
+            exit 1
+          fi
+          MATCHES=$(find . \( -name '*.md' -o -name '*.yml' -o -name '*.yaml' -o -name '*.sh' \) \
+            -not -path '*/node_modules/*' -not -path '*/build/*' -not -path '*/.gradle/*' \
+            -not -path "./$STOP_WORDS" \
+            -print0 2>/dev/null \
+            | xargs -0 grep -l -F -f "$STOP_WORDS" 2>/dev/null \
+            | grep -v "^./$STOP_WORDS$" || true)
+          set -e
+          if [ -n "$MATCHES" ]; then
+            echo "ERROR: stop-word found in documentation files (S-17 / Pattern E3-D 회귀 가드 위반):"
+            echo "$MATCHES"
+            exit 1
+          fi
+          echo "OK: stop-word 0 hit (.md/.yml/.sh)."
+
+      # --------------------------------------------------------
+      # Grep 4: @Advice.Origin Method 0 hit (E2 함정 회귀 가드)
+      #   advice signature 에 Method 타입 인자 사용 시 ByteBuddy weaving 시점 throw 위험
+      # --------------------------------------------------------
+      - name: Grep 4 — @Advice.Origin Method 0 hit (E2 함정 회귀 가드)
+        run: |
+          set +e
+          MATCHES=$(grep -rn '@Advice\.Origin Method' apilens-agent/src/main/java/ 2>/dev/null)
+          set -e
+          if [ -n "$MATCHES" ]; then
+            echo "ERROR: '@Advice.Origin Method' found — E2 함정 회귀 위험 (ByteBuddy weaving 시점 throw):"
+            echo "$MATCHES"
+            exit 1
+          fi
+          echo "OK: '@Advice.Origin Method' 0 hit."
+
+      # --------------------------------------------------------
+      # Grep 5: Statement 설정 8종 명시 제외 모두 동봉
+      #   setFetchDirection / setFetchSize / setMaxRows / setMaxFieldSize /
+      #   setQueryTimeout / setEscapeProcessing / setCursorName / setPoolable
+      #   본 8종이 advice matcher whitelist 에서 모두 제외(named()...not()) 되어 있어야 함
+      # --------------------------------------------------------
+      - name: Grep 5 — Statement 설정 8종 명시 제외 동봉 검증
+        run: |
+          set +e
+          # 8종 메서드 이름 모두 매치 — agent matcher 코드 또는 test 코드에 명시 등장 여부
+          MISSING=""
+          for method in setFetchDirection setFetchSize setMaxRows setMaxFieldSize setQueryTimeout setEscapeProcessing setCursorName setPoolable; do
+            if ! grep -rq "\"$method\"" apilens-agent/src/main/java/ apilens-agent/src/test/java/ 2>/dev/null; then
+              MISSING="$MISSING $method"
+            fi
+          done
+          set -e
+          if [ -n "$MISSING" ]; then
+            echo "::warning::Statement 설정 메서드 8종 중 다음이 agent matcher whitelist exclusion 에 명시되어 있지 않습니다:$MISSING"
+            echo "::warning::Phase E3 이후 advice 변경 시 12종 setter whitelist 가 본 8종을 포함하지 않도록 명시 제외 의무."
+          else
+            echo "OK: Statement 설정 8종 모두 명시 제외 동봉됨."
+          fi
+
+      # --------------------------------------------------------
+      # Grep 6: bootstrap classloader injection 0 hit
+      #   ByteBuddy bootstrap loader injection 은 본 phase 영역 외 (호스트 앱 영향 위험)
+      # --------------------------------------------------------
+      - name: Grep 6 — bootstrap classloader injection 0 hit
+        run: |
+          set +e
+          # AgentBuilder.Default.appendToBootstrapClassLoaderSearch / bootstrap-classloader-injection 패턴
+          MATCHES=$(grep -rn 'appendToBootstrapClassLoaderSearch\|BOOTSTRAP_LOADER\|getBootstrapClassLoader' apilens-agent/src/main/java/ 2>/dev/null)
+          set -e
+          if [ -n "$MATCHES" ]; then
+            echo "ERROR: bootstrap classloader injection 발견 — 본 phase 영역 외 (호스트 앱 영향 위험):"
+            echo "$MATCHES"
+            exit 1
+          fi
+          echo "OK: bootstrap classloader injection 0 hit."
+
+      # --------------------------------------------------------
+      # 정보성 grep — fail 아님
+      # --------------------------------------------------------
+      - name: Info — capture-params default ON 자기증명
+        run: |
+          set +e
+          CAPTURE=$(grep -rn 'PROP_CAPTURE_PARAMS\|capture-params' apilens-agent/src/main/java/ 2>/dev/null | head -10)
+          set -e
+          echo "capture-params refs:"
+          echo "$CAPTURE"

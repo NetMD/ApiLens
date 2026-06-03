@@ -1,0 +1,190 @@
+<div style="padding: 1rem 0;">
+  <h2 class="sr-only">ApiLens 양방향 흐름 애니메이션 목업: 호출과 응답이 시각적으로 흘러가는 모습</h2>
+
+  <div style="display: flex; align-items: center; gap: 12px; padding: 0 1rem 12px; border-bottom: 0.5px solid var(--color-border-tertiary); font-size: 12px;">
+    <span style="color: var(--color-text-secondary);">← back</span>
+    <span style="font-family: var(--font-mono); font-weight: 500;">POST /api/orders</span>
+    <span style="margin-left: auto; color: var(--color-text-secondary); font-family: var(--font-mono);" id="apl-status">450ms · OK</span>
+  </div>
+
+  <div style="display: flex; align-items: center; gap: 8px; padding: 12px 1rem 8px;">
+    <button id="apl-play" style="font-size: 12px; height: 30px; padding: 0 14px;">▶ replay</button>
+    <button id="apl-error" style="font-size: 12px; height: 30px; padding: 0 14px;">▶ error case</button>
+    <span style="margin-left: auto; font-size: 11px; color: var(--color-text-secondary);" id="apl-phase">idle</span>
+  </div>
+
+  <div style="padding: 4px 1rem 16px;">
+    <svg viewBox="0 0 640 280" style="width: 100%; height: 280px;">
+      <rect x="0" y="0" width="135" height="280" fill="var(--color-background-secondary)" opacity="0.5"/>
+      <text x="68" y="20" text-anchor="middle" class="ts" style="font-size: 10px; letter-spacing: 0.5px;">BROWSER</text>
+      <text x="380" y="20" text-anchor="middle" class="ts" style="font-size: 10px; letter-spacing: 0.5px;">order-service</text>
+
+      <g id="apl-edges" fill="none" stroke="var(--color-border-secondary)" stroke-width="1.5" opacity="0.35">
+        <path id="e1" d="M 68 80 L 68 130"/>
+        <path id="e2" d="M 78 138 Q 130 138 195 148"/>
+        <path id="e3" d="M 220 148 L 295 148"/>
+        <path id="e4" d="M 318 148 Q 380 95 425 95"/>
+        <path id="e5" d="M 318 148 L 425 148"/>
+        <path id="e6" d="M 318 148 Q 380 200 425 200"/>
+        <path id="e7" d="M 442 148 L 530 148"/>
+        <path id="e8" d="M 442 200 L 530 200"/>
+      </g>
+
+      <g id="apl-flows"></g>
+
+      <g class="apl-node" data-id="n1"><circle cx="68" cy="70" r="6" fill="#7F77DD" opacity="0.3"/><text x="68" y="50" text-anchor="middle" class="t" style="font-size: 11px; opacity: 0.4;">click</text></g>
+      <g class="apl-node" data-id="n2"><circle cx="68" cy="138" r="6" fill="#7F77DD" opacity="0.3"/><text x="68" y="162" text-anchor="middle" class="t" style="font-size: 11px; opacity: 0.4;">fetch</text></g>
+      <g class="apl-node" data-id="n3"><circle cx="207" cy="148" r="7" fill="#1D9E75" opacity="0.3"/><text x="207" y="125" text-anchor="middle" class="t" style="font-size: 11px; opacity: 0.4;">controller</text></g>
+      <g class="apl-node" data-id="n4"><circle cx="307" cy="148" r="8" fill="#1D9E75" opacity="0.3"/><text x="307" y="125" text-anchor="middle" class="t" style="font-size: 11px; opacity: 0.4;">OrderService.create</text></g>
+      <g class="apl-node" data-id="n5"><circle cx="437" cy="95" r="5" fill="#1D9E75" opacity="0.3"/><text x="450" y="98" class="t" style="font-size: 10px; opacity: 0.4;">validate</text></g>
+      <g class="apl-node" data-id="n6"><circle cx="437" cy="148" r="6" fill="#1D9E75" opacity="0.3"/><text x="450" y="151" class="t" style="font-size: 10px; opacity: 0.4;">OrderRepo.save</text></g>
+      <g class="apl-node" data-id="n7"><circle cx="437" cy="200" r="6" fill="#1D9E75" opacity="0.3"/><text x="453" y="203" class="t" style="font-size: 10px; opacity: 0.4;">PaymentSvc.charge</text></g>
+      <g class="apl-node" data-id="n8"><circle cx="540" cy="148" r="5" fill="#378ADD" opacity="0.3"/><text x="552" y="151" class="t" style="font-size: 10px; opacity: 0.4;">SQL INSERT</text></g>
+      <g class="apl-node" data-id="n9"><circle cx="540" cy="200" r="6" fill="#EF9F27" opacity="0.3"/><text x="555" y="203" class="t" style="font-size: 10px; opacity: 0.4;">payment-api</text></g>
+    </svg>
+  </div>
+
+  <div id="apl-error-panel" style="display: none; margin: 0 1rem; padding: 12px 14px; background: var(--color-background-danger); border-radius: var(--border-radius-md); font-family: var(--font-mono); font-size: 12px; color: var(--color-text-danger);">
+    <div style="font-weight: 500; margin-bottom: 4px;">PaymentSvc.charge failed</div>
+    <div style="font-size: 11px; opacity: 0.85;">java.net.SocketTimeoutException: Read timed out at PaymentClient.charge(PaymentClient.java:42)</div>
+  </div>
+
+  <script>
+    (function() {
+      const ns = 'http://www.w3.org/2000/svg';
+      const flowsLayer = document.getElementById('apl-flows');
+      const phaseEl = document.getElementById('apl-phase');
+      const statusEl = document.getElementById('apl-status');
+      const errorPanel = document.getElementById('apl-error-panel');
+      const playBtn = document.getElementById('apl-play');
+      const errorBtn = document.getElementById('apl-error');
+
+      const successEdges = [
+        {id: 'e1', forward: true},  {id: 'e2', forward: true},  {id: 'e3', forward: true},
+        {id: 'e4', forward: true},  {id: 'e5', forward: true},  {id: 'e7', forward: true},
+        {id: 'e7', forward: false}, {id: 'e5', forward: false},
+        {id: 'e6', forward: true},  {id: 'e8', forward: true},
+        {id: 'e8', forward: false}, {id: 'e6', forward: false},
+        {id: 'e4', forward: false}, {id: 'e3', forward: false},
+        {id: 'e2', forward: false}, {id: 'e1', forward: false}
+      ];
+      const successOrder = ['n1','n2','n3','n4','n5','n6','n8','n7','n9','n7','n6','n5','n4','n3','n2','n1'];
+
+      const errorEdges = [
+        {id: 'e1', forward: true}, {id: 'e2', forward: true}, {id: 'e3', forward: true},
+        {id: 'e4', forward: true}, {id: 'e5', forward: true}, {id: 'e7', forward: true},
+        {id: 'e7', forward: false}, {id: 'e5', forward: false},
+        {id: 'e6', forward: true, error: true}
+      ];
+      const errorOrder = ['n1','n2','n3','n4','n5','n6','n8','n7'];
+
+      function reset() {
+        flowsLayer.innerHTML = '';
+        document.querySelectorAll('.apl-node circle').forEach(c => c.setAttribute('opacity', '0.3'));
+        document.querySelectorAll('.apl-node text').forEach(t => t.style.opacity = '0.4');
+        document.querySelectorAll('#apl-edges path').forEach(p => {
+          p.setAttribute('stroke', 'var(--color-border-secondary)');
+          p.setAttribute('stroke-width', '1.5');
+          p.setAttribute('opacity', '0.35');
+        });
+        errorPanel.style.display = 'none';
+      }
+
+      function activateNode(id) {
+        const node = document.querySelector('.apl-node[data-id="' + id + '"]');
+        if (!node) return;
+        const c = node.querySelector('circle');
+        const t = node.querySelector('text');
+        c.setAttribute('opacity', '1');
+        t.style.opacity = '1';
+      }
+
+      function errorNode(id) {
+        const node = document.querySelector('.apl-node[data-id="' + id + '"]');
+        if (!node) return;
+        const c = node.querySelector('circle');
+        const t = node.querySelector('text');
+        c.setAttribute('fill', '#E24B4A');
+        c.setAttribute('opacity', '1');
+        t.style.opacity = '1';
+        const ring = document.createElementNS(ns, 'circle');
+        ring.setAttribute('cx', c.getAttribute('cx'));
+        ring.setAttribute('cy', c.getAttribute('cy'));
+        ring.setAttribute('r', parseFloat(c.getAttribute('r')) + 5);
+        ring.setAttribute('fill', 'none');
+        ring.setAttribute('stroke', '#E24B4A');
+        ring.setAttribute('stroke-width', '1');
+        ring.setAttribute('opacity', '0.5');
+        flowsLayer.appendChild(ring);
+      }
+
+      function animateEdge(edgeId, forward, isError) {
+        return new Promise(resolve => {
+          const path = document.getElementById(edgeId);
+          if (!path) return resolve();
+          const len = path.getTotalLength();
+          const color = isError ? '#E24B4A' : (forward ? '#185FA5' : '#1D9E75');
+          path.setAttribute('stroke', color);
+          path.setAttribute('opacity', '1');
+          path.setAttribute('stroke-width', '2');
+          const dot = document.createElementNS(ns, 'circle');
+          dot.setAttribute('r', '4');
+          dot.setAttribute('fill', color);
+          flowsLayer.appendChild(dot);
+          const start = performance.now();
+          const dur = 380;
+          function step(now) {
+            const t = Math.min(1, (now - start) / dur);
+            const at = forward ? t * len : (1 - t) * len;
+            const pt = path.getPointAtLength(at);
+            dot.setAttribute('cx', pt.x);
+            dot.setAttribute('cy', pt.y);
+            if (t < 1) requestAnimationFrame(step);
+            else { dot.remove(); resolve(); }
+          }
+          requestAnimationFrame(step);
+        });
+      }
+
+      async function play(scenario) {
+        reset();
+        playBtn.disabled = true;
+        errorBtn.disabled = true;
+        const edges = scenario === 'error' ? errorEdges : successEdges;
+        const order = scenario === 'error' ? errorOrder : successOrder;
+        if (scenario === 'error') {
+          phaseEl.textContent = 'replaying error trace';
+          statusEl.textContent = '480ms · ERR';
+          statusEl.style.color = 'var(--color-text-danger)';
+        } else {
+          phaseEl.textContent = 'replaying request flow';
+          statusEl.textContent = '450ms · OK';
+          statusEl.style.color = 'var(--color-text-secondary)';
+        }
+
+        let i = 0;
+        for (const e of edges) {
+          activateNode(order[i]);
+          await animateEdge(e.id, e.forward, e.error);
+          i++;
+          if (e.error) {
+            errorNode(order[i]);
+            phaseEl.textContent = 'stopped at error';
+            errorPanel.style.display = 'block';
+            break;
+          }
+          if (i === order.length - 1 || i === order.length) activateNode(order[Math.min(i, order.length - 1)]);
+        }
+        if (scenario !== 'error') {
+          phaseEl.textContent = 'done';
+        }
+        playBtn.disabled = false;
+        errorBtn.disabled = false;
+      }
+
+      playBtn.addEventListener('click', () => play('success'));
+      errorBtn.addEventListener('click', () => play('error'));
+      setTimeout(() => play('success'), 400);
+    })();
+  </script>
+</div>

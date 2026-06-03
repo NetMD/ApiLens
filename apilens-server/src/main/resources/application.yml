@@ -1,0 +1,59 @@
+# ApiLens server 기본 설정
+# 운영자가 customize 필요한 항목은 환경변수 또는 application-local.yml로 override
+
+server:
+  port: 8765  # 8080 충돌 회피 (사용자 앱이 보통 8080)
+  # 사내 프록시 환경에서 trace 상세(spans + attributes) 응답 압축 — 100~200 span도 가볍게
+  compression:
+    enabled: true
+    mime-types: application/json
+    min-response-size: 1024
+
+spring:
+  application:
+    name: apilens-server
+
+  # SQLite 데이터소스
+  # 데이터 파일은 실행 위치 기준 ./apilens.db 에 생성됨
+  datasource:
+    url: jdbc:sqlite:apilens.db
+    driver-class-name: org.sqlite.JDBC
+
+  jpa:
+    database-platform: org.hibernate.community.dialect.SQLiteDialect
+    hibernate:
+      # 스키마는 Flyway가 관리. JPA는 검증만
+      ddl-auto: validate
+    properties:
+      hibernate:
+        format_sql: false
+    open-in-view: false
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+
+# Actuator: 헬스체크용
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, info
+  endpoint:
+    health:
+      show-details: when_authorized
+
+# ApiLens 자체 설정
+apilens:
+  ingest:
+    # span 배치 수신 시 max payload size (byte). 초과 시 reject
+    max-batch-size-bytes: 1048576  # 1 MB
+  retention:
+    # trace 보관 기간(일). 초과 trace는 nightly cron으로 삭제
+    days: 30
+
+logging:
+  level:
+    root: INFO
+    io.apilens: DEBUG

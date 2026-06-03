@@ -1,0 +1,44 @@
+# Gradle
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+!gradle/libs.versions.toml
+
+# IntelliJ
+.idea/
+*.iml
+*.iws
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# Eclipse
+.classpath
+.project
+.settings/
+bin/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node / Vite
+node_modules/
+dist/
+*.log
+.npm/
+.vite/
+
+# 로컬 ApiLens 데이터
+apilens.db
+apilens.db-journal
+*.sqlite
+*.sqlite3
+
+# 환경별 로컬 설정
+application-local.yml
+application-local.properties
+
+# Claude Code — 개인 로컬 설정만 제외 (공유 settings.json 은 포함)
+.claude/settings.local.json
