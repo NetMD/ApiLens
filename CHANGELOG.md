@@ -33,7 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Span collector** (HTTP POST → `/v1/spans`, daemon thread batch 송신).
 - **W3C Trace Context (`traceparent`) 표준 전파** — OpenTelemetry 호환 span 모델.
 - **Trace / Span / Payload 분리 저장** (SQLite + Flyway). 큰 payload 는 마스킹 적용 후 별도 테이블에 저장.
-- **Server-side PII 마스킹** — 주민등록번호 / 카드번호 / `password`·`token`·`secret` 기본 룰 + Custom 룰 + 룰 토글 시 샘플 페이로드 라이브 프리뷰.
+- **Server-side PII 마스킹** — 주민등록번호 / 카드번호 / `password`·`token`·`secret` 기본 룰을 ingest 시 서버에서 자동 적용.
 - **노드 그래프 UI** (mind-map, 수평 시간 흐름) + 응답시간 대시보드 + payload inspector + 에러 시 stack trace 즉시 표시. React + Vite + TypeScript.
 - **Setup wizard** — 4단계로 `-javaagent:` 옵션 한 줄 생성 (java / Maven / Gradle / Docker 환경별 안내, agent jar 자동 추출·다운로드).
 - **단일 jar 배포** — server jar 안에 agent jar + UI 정적 파일 임베드.
@@ -62,8 +62,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **단일 서비스 trace 만 지원** — 멀티 서비스 cross-service propagation 은 향후 버전.
 - **동기 호출 기준** — `CompletableFuture` 등 비동기는 best-effort.
-- **메서드 첫 인자(arg0)만 캡처** — 다중 인자의 나머지는 미포함.
+- **메서드 파라미터 이름이 `arg0`·`arg1`… 인덱스로 표시** — agent 는 모든 인자를 캡처하지만, 사용자 앱이 `-parameters` 컴파일 옵션 없이 빌드된 경우 바이트코드에 파라미터 이름이 없어 인덱스로 표시됩니다. 사용자 앱을 `-parameters` 로 빌드하면 실제 이름이 나타납니다. v0.2 에서 개선 예정.
 - **JDBC PreparedStatement PAYLOAD IN 키 = parameterIndex** (`"1"`, `"2"`) — 이름 기반 마스킹 룰이 매칭되지 않을 수 있습니다. 민감 컬럼이 우려되면 `apilens.jdbc.capture-params=false`.
+- **마스킹 룰 관리 UI 미제공** — v0.1 은 기본 룰을 서버에서 자동 적용만 합니다. 룰 추가/삭제·토글 UI 와 라이브 프리뷰는 향후 버전.
 - **WebFlux 미지원** — agent 의 위험 타입 차단 목록에 WebFlux 전용 타입(`FilePart` 등)이 미포함이며, v0.1 은 WebFlux 자체를 instrument 하지 않습니다 (servlet stack — Spring MVC + Tomcat — 은 영향 없음).
 - **인증 없음** — 운영자 단독 사용 전제. server (포트 8765) 를 신뢰할 수 없는 네트워크에 직접 노출하지 마세요.
 - **Gantt chart / 수직 레이아웃 UI 미제공** — 노드 그래프 · 수평 흐름이 설계 방향입니다 (의도적 제외).
