@@ -117,6 +117,78 @@ export async function postJson<TReq, TRes>(
 }
 
 /**
+ * [Phase R12] 공통 PUT 요청. JSON body 전송 + JSON 응답 parse (DG-04 — postJson 동형).
+ *
+ * 사용처: PUT /v1/settings (FR-B1).
+ *
+ * @throws {ApiError} status >= 400
+ * @throws {Error} 네트워크 오류 (fetch reject)
+ */
+export async function putJson<TReq, TRes>(
+  path: string,
+  body: TReq,
+  options: RequestOptions = {},
+): Promise<TRes> {
+  const url = buildUrl(path, options.query);
+  const fetchInit: RequestInit = {
+    method: 'PUT',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  };
+  if (options.signal) {
+    fetchInit.signal = options.signal;
+  }
+  const res = await fetch(url, fetchInit);
+
+  if (!res.ok) {
+    const errBody = await parseErrorBody(res);
+    const message = errBody?.error ?? `HTTP ${res.status}`;
+    throw new ApiError(res.status, message, errBody);
+  }
+
+  return (await res.json()) as TRes;
+}
+
+/**
+ * [Phase R12] 공통 PATCH 요청. JSON body 전송 + JSON 응답 parse (DG-04 — postJson 동형).
+ *
+ * 사용처: PATCH /v1/masking-rules/{id} (FR-B2 토글 — body 필드 단일명 enabled).
+ *
+ * @throws {ApiError} status >= 400
+ * @throws {Error} 네트워크 오류 (fetch reject)
+ */
+export async function patchJson<TReq, TRes>(
+  path: string,
+  body: TReq,
+  options: RequestOptions = {},
+): Promise<TRes> {
+  const url = buildUrl(path, options.query);
+  const fetchInit: RequestInit = {
+    method: 'PATCH',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  };
+  if (options.signal) {
+    fetchInit.signal = options.signal;
+  }
+  const res = await fetch(url, fetchInit);
+
+  if (!res.ok) {
+    const errBody = await parseErrorBody(res);
+    const message = errBody?.error ?? `HTTP ${res.status}`;
+    throw new ApiError(res.status, message, errBody);
+  }
+
+  return (await res.json()) as TRes;
+}
+
+/**
  * [Phase H] 공통 DELETE 요청. 204 No Content 기대 — 본문 parse 안 함.
  *
  * @throws {ApiError} status >= 400

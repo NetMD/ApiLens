@@ -30,9 +30,11 @@ dist/
 .npm/
 .vite/
 
-# 로컬 ApiLens 데이터
+# 로컬 ApiLens 데이터 (-wal/-shm 은 v0.2.0 WAL 전환으로 생성)
 apilens.db
 apilens.db-journal
+apilens.db-wal
+apilens.db-shm
 *.sqlite
 *.sqlite3
 
@@ -42,6 +44,7 @@ application-local.properties
 
 # 저장소에서 제외 (로컬 보관) — 내부 설정/문서/예제/프롬프트/AI 컨텍스트
 .claude/
+.serena/
 .mcp.json
 CLAUDE.md
 docs/

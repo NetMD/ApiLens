@@ -19,6 +19,7 @@ import { deleteService, listServicesDetailed } from '../api/services';
 import type { HealthStatus, ServiceInfo } from '../types/api';
 import { STATUS_HEX_HEALTH, STATUS_LABEL_KO } from '../lib/colors';
 import { useSearchPreservingNavigate } from '../hooks/useSearchPreservingNavigate';
+import { NavHeader } from '../components/NavHeader';
 import { ErrorState } from '../components/ErrorState';
 import { LoadingSkeleton } from '../components/LoadingSkeleton';
 import { Modal } from '../components/Modal';
@@ -102,7 +103,8 @@ export function ActiveServices(): ReactNode {
               <th className="px-4 py-2">상태</th>
               <th className="px-4 py-2">Service</th>
               <th className="px-4 py-2">마지막 trace</th>
-              <th className="px-4 py-2 text-right">Trace 수</th>
+              {/* Phase R12 (FR-A3, AC-A3-3): traceCount 의미 변경 "누적 전수" → "최근 24h" 동기 라벨 (설계 §1.2 footprint ①) */}
+              <th className="px-4 py-2 text-right">Trace 수 (24h)</th>
               <th className="px-4 py-2 text-right">작업</th>
             </tr>
           </thead>
@@ -125,8 +127,8 @@ export function ActiveServices(): ReactNode {
 
   return (
     <div className="flex h-full flex-col bg-stone-50">
-      {/* 헤더 — Dashboard 컨트롤 없이 좌측 메뉴만 노출 (Services 페이지 단독). */}
-      <SimpleNavHeader currentPath="/services" />
+      {/* Phase R12 (FR-B4, AC-B4-1): SimpleNavHeader 중복 제거 → NavHeader 공통 (UX-G-01 / 설계 §3.2.1). */}
+      <NavHeader />
 
       <main className="flex-1 overflow-auto px-6 py-6">
         <div className="mx-auto max-w-5xl space-y-4">
@@ -182,42 +184,6 @@ export function ActiveServices(): ReactNode {
         </div>
       </Modal>
     </div>
-  );
-}
-
-// ── Header (좌측 메뉴만 노출) ───────────────────────────────────────
-function SimpleNavHeader({ currentPath }: { currentPath: string }): ReactNode {
-  const [searchParams] = useSearchParams();
-  const search = searchAcrossRoutes(searchParams);
-  const dashboardActive = currentPath === '/' || currentPath.startsWith('/traces/');
-  const servicesActive = currentPath === '/services';
-  const activeMenuClass =
-    'px-3 py-1.5 text-sm rounded-md text-stone-900 font-medium bg-stone-100';
-  const inactiveMenuClass =
-    'px-3 py-1.5 text-sm rounded-md text-stone-500 hover:text-stone-900 hover:bg-stone-50';
-  return (
-    <header className="flex h-14 items-center justify-between border-b border-stone-200 bg-white px-6">
-      <div className="flex items-center gap-3">
-        <span className="text-base font-semibold text-stone-900">ApiLens</span>
-        <span className="text-xs text-stone-500">v0.1</span>
-        <nav className="ml-4 flex items-center gap-1" aria-label="Main navigation">
-          <Link
-            to={{ pathname: '/', search }}
-            className={dashboardActive ? activeMenuClass : inactiveMenuClass}
-            aria-current={dashboardActive ? 'page' : undefined}
-          >
-            Dashboard
-          </Link>
-          <Link
-            to={{ pathname: '/services', search }}
-            className={servicesActive ? activeMenuClass : inactiveMenuClass}
-            aria-current={servicesActive ? 'page' : undefined}
-          >
-            Services
-          </Link>
-        </nav>
-      </div>
-    </header>
   );
 }
 

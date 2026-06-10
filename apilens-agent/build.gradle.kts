@@ -25,7 +25,9 @@ dependencies {
     // [R11] R11 P0 회수: AdviceSupportSerializeReturnSafetyTest 가 org.springframework.http.ResponseEntity
     // 를 직접 import (Layer 2 unwrapResponseEntity 검증). apilens-server 의 implementation(spring-web)
     // 은 testCompileClasspath 에 transitive 노출되지 않음 (CLAUDE.md Build lessons §3).
-    // spring-boot-starter-web 을 testImplementation 으로 직접 추가 — 회수 라운드 한정 testRuntime 의존성.
+    // [Phase R12] #20 — 영구 의존성으로 확정 (사전 체크리스트 #11, 사용자 명시 결정. Design §2-#20):
+    // "회수 라운드 한정" → 영구화. AdviceSupportSerializeReturnSafetyTest 는 영구 회귀 가드
+    // 테스트이며, Build lessons §3 (implementation 은 transitive 비노출)상 직접 추가가 유일 해법.
     testImplementation(libs.spring.boot.starter.web)
     testImplementation(libs.sqlite.jdbc)
     // server는 Flyway + JdbcTemplate을 implementation()으로 쓰므로 transitive 노출 안 됨.

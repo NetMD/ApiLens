@@ -29,6 +29,8 @@ import {
 } from '../lib/agent-option-builder';
 import { useSearchPreservingNavigate } from '../hooks/useSearchPreservingNavigate';
 import { useAgentJarPath } from '../hooks/useAgentJarPath';
+// Phase R12 (FR-D3, AC-D3-2): 버전 라벨 단일 거주지 (DG-01 — 직전 세션 착수분의 import 누락 보완)
+import { APP_VERSION } from '../lib/version';
 import { Stepper } from '../components/Stepper';
 import { Toggle } from '../components/Toggle';
 import { Modal } from '../components/Modal';
@@ -238,7 +240,8 @@ export function Setup(): ReactNode {
       <header className="flex h-14 items-center justify-between border-b border-stone-200 bg-white px-6">
         <div className="flex items-center gap-3">
           <span className="text-base font-semibold text-stone-900">ApiLens</span>
-          <span className="text-xs text-stone-500">v0.1</span>
+          {/* Phase R12 (FR-D3, AC-D3-2): 버전 리터럴 → APP_VERSION (DG-01 — wizard 헤더 구조는 유지, 상수만 공유) */}
+          <span className="text-xs text-stone-500">{APP_VERSION}</span>
         </div>
         {/* 우상단 — 취소(즉시 나가기, confirm 없음) / 건너뛰기(confirm 후 setup 완료 마킹). */}
         <div className="flex items-center gap-4">

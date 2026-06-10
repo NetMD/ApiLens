@@ -49,16 +49,19 @@ public class TraceQueryController {
         this.service = service;
     }
 
+    // [Phase R12] AC-C2-1 — FR-C2: `q` param 신설 (root_operation 풀 FQCN 부분 일치).
+    // D-03 비협상: 필터는 status + operation 검색만 — duration 필터 param 추가 금지.
     @GetMapping("/v1/traces")
     public TraceListResponse listTraces(
             @RequestParam(required = false) String service,
             @RequestParam(required = false) Long since,
             @RequestParam(required = false) Long until,
             @RequestParam(required = false) SpanStatus status,
+            @RequestParam(required = false) String q,
             @RequestParam(required = false) Integer limit,
             @RequestParam(required = false) String cursor
     ) {
-        return this.service.listTraces(service, since, until, status, limit, cursor);
+        return this.service.listTraces(service, since, until, status, q, limit, cursor);
     }
 
     @GetMapping("/v1/traces/{traceId}")

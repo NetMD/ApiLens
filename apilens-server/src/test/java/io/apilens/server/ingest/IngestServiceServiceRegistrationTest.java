@@ -17,13 +17,11 @@ package io.apilens.server.ingest;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.apilens.common.IngestRequest;
-import io.apilens.common.MaskingEngine;
-import io.apilens.common.MaskingRule;
-import io.apilens.common.MaskingRuleType;
-import io.apilens.common.MaskingStrategy;
 import io.apilens.common.Span;
 import io.apilens.common.SpanKind;
 import io.apilens.common.SpanStatus;
+import io.apilens.server.masking.MaskingEngineHolder;
+import io.apilens.server.masking.MaskingRuleRepository;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -82,8 +80,9 @@ class IngestServiceServiceRegistrationTest {
                 .migrate();
 
         this.jdbc = new JdbcTemplate(dataSource);
-        MaskingEngine engine = buildEngineFromSeededRules();
-        this.service = new IngestService(jdbc, engine, mapper);
+        MaskingEngineHolder maskingHolder = new MaskingEngineHolder(new MaskingRuleRepository(jdbc), mapper);
+        maskingHolder.reload(); // V1 시드 룰 로드 — v0.1 buildEngineFromSeededRules 와 동등 (R12 holder 전환)
+        this.service = new IngestService(jdbc, maskingHolder, mapper);
     }
 
     @AfterEach
@@ -93,19 +92,6 @@ class IngestServiceServiceRegistrationTest {
         }
     }
 
-    private MaskingEngine buildEngineFromSeededRules() {
-        List<MaskingRule> rules = jdbc.query(
-                "SELECT name, rule_type, pattern, mask_strategy, enabled FROM masking_rules WHERE enabled = 1",
-                (rs, rowNum) -> new MaskingRule(
-                        rs.getString("name"),
-                        MaskingRuleType.valueOf(rs.getString("rule_type").toUpperCase()),
-                        rs.getString("pattern"),
-                        MaskingStrategy.valueOf(rs.getString("mask_strategy").toUpperCase()),
-                        rs.getInt("enabled") == 1
-                )
-        );
-        return new MaskingEngine(rules, mapper);
-    }
 
     // ─── BT-2 — 첫 trace 자동 등록 (source='auto') ─────────────────────────
 

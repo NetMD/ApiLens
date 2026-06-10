@@ -11,9 +11,12 @@
 //   - hidesToastOnCopyClick / rejectsAgentJarPath 같은 반대 방향 동사 0건
 //   - agent-option-builder.ts 가 AGENT_JAR_PATH 잔존 상수 사용 0건
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import {
   buildAgentOption,
   buildAgentOptionPreview,
+  buildAgentOptionTokens,
   buildEnvSnippet,
   buildEnvSnippetPreview,
 } from '../lib/agent-option-builder';
@@ -230,13 +233,60 @@ describe('buildEnvSnippet — 실행 환경별 부착 (java -jar / Maven / Gradl
       expect(s).toContain('-Dapilens.server=');
       expect(s).toContain('-Dapilens.jdbc.capture-params=');
       expect(s).toContain('-Dapilens.jdbc.capture-result-set=');
-      // 옛 틀린 키 잔존 0 (NAS dogfooding 회귀 가드)
-      expect(s).not.toContain('apilens.server.url');
-      expect(s).not.toContain('apilens.capture.');
+      // 옛 틀린 키 잔존 0 (NAS dogfooding 회귀 가드).
+      // [R12 AC-D1-2] 정규식 단언으로 전환 — 설계 §9.1 회귀 grep(옛 오기 키 리터럴 0 hit)이
+      // 본 가드 단언 자체에 걸리지 않도록 (가드 의미는 동일 유지).
+      expect(s).not.toMatch(/apilens\.server\.url/);
+      expect(s).not.toMatch(/apilens\.capture\./);
     }
   });
 
   it('buildEnvSnippetPreview — 입력 부족 시 빈 문자열 (throw X)', () => {
     expect(buildEnvSnippetPreview('docker', { ...base, serviceName: '' })).toBe('');
+  });
+});
+
+// ── Phase R12 (FR-D1, AC-D1-1) — FT-D1: 골든테스트 SSOT 실참조 (설계 §9.1) ──────────
+//
+// AC-D1-1 verbatim: "가드 주석 → SSOT(docs/agent-options.md 또는 AgentConfig PROP_*) 실제 읽어
+// 대조 — 참조를 끊으면 테스트가 깨지는 구조 (V-04). FE==BE parity 자기참조 금지 (R5 교훈 —
+// 검증의 한쪽 끝은 SSOT)."
+//
+// SSOT 확정 = AgentConfig.java 소스 텍스트 (설계 DG-02 — docs/ 는 untrack 이라 공개 CI checkout 에
+// 부재 → tracked 코드 진실을 1차 SSOT 로). readFileSync 가 파일 부재 시 즉시 throw — 참조를 끊으면
+// 테스트가 깨지는 구조 충족. agent 모듈은 읽기만 — diff 0 (agent 무변경 비협상 정합).
+describe('FT-D1 — AgentConfig.java SSOT 실참조 (AC-D1-1)', () => {
+  it('matchesAgentConfigPropKeysFromSsotSource — 출력 -D 키 4종이 PROP_* 리터럴 집합에 전부 존재', () => {
+    // 경로 기준 = vitest cwd (apilens-ui 루트) — 설계 §9.1 FE 명세의 '../apilens-agent/…' 상대 경로
+    // 그대로. (import.meta.url 은 jsdom 환경에서 file 스킴이 아니라 사용 불가 — 3차 호출 보정.)
+    const ssotPath = resolve(
+      process.cwd(),
+      '../apilens-agent/src/main/java/io/apilens/agent/config/AgentConfig.java',
+    );
+    // 파일 부재 = 즉시 실패 (ENOENT throw) — SSOT 참조 끊김 검출기.
+    const source = readFileSync(ssotPath, 'utf-8');
+    const propKeys = new Set(
+      [...source.matchAll(/PROP_\w+\s*=\s*"([^"]+)"/g)]
+        .map((m) => m[1])
+        .filter((k): k is string => k !== undefined),
+    );
+    // AgentConfig 가 비거나 추출 정규식이 깨지면 여기서 실패 (빈 집합 대조 무력화 방지).
+    expect(propKeys.size).toBeGreaterThanOrEqual(4);
+
+    const tokens = buildAgentOptionTokens({
+      serviceName: 'my-api',
+      serverUrl: 'http://localhost:8765',
+      captureParams: true,
+      captureResultSet: false,
+      agentJarPath: null,
+    });
+    const dKeys = tokens
+      .filter((t) => t.startsWith('-D'))
+      .map((t) => t.slice(2, t.indexOf('=')));
+    expect(dKeys).toHaveLength(4);
+    for (const key of dKeys) {
+      // 키가 agent 가 실제로 읽는 PROP_* 리터럴과 불일치 → agent 가 옵션을 조용히 무시 (회귀 본체)
+      expect(propKeys.has(key), `-D 키 '${key}' 가 AgentConfig PROP_* 집합에 없음`).toBe(true);
+    }
   });
 });

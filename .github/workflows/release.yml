@@ -1,8 +1,8 @@
 name: Release
 
 # v* 태그를 push 하면 UI + jar 를 빌드하고 GitHub Release 를 생성해 jar 두 개를 첨부합니다.
-#   git tag -a v0.1.0 -m "ApiLens v0.1.0"
-#   git push origin v0.1.0
+#   git tag -a vX.Y.Z -m "ApiLens vX.Y.Z"
+#   git push origin vX.Y.Z
 on:
   push:
     tags:
@@ -43,19 +43,31 @@ jobs:
         run: ./gradlew clean build
 
       # 3. 배포 산출물 2종 선별(bootJar + agent jar; plain/sources 제외) + UI 임베드 검증
-      #    libs 에는 boot/plain/sources jar 가 공존하므로 plain·sources 를 명시 제외해야
-      #    bootJar 를 정확히 고른다 (단순 head -1 은 plain jar 를 집어 검증 실패).
+      #    libs 에는 boot/plain/sources jar 가 공존하므로 plain·sources 를 명시 제외하고
+      #    [R12 D3 / DG-03] 글롭 매칭 개수 = 1 을 단언한다 — 0개(미산출)도 2개 이상(stale
+      #    혼입·선별 실패)도 즉시 실패가 검출기. 첫 항목 자르기(head)로 임의 선택하지 않는다.
       - name: Stage & verify release artifacts
         run: |
           mkdir -p release-dist
-          SERVER_JAR=$(ls apilens-server/build/libs/apilens-server-*.jar | grep -vE 'plain|sources' | head -1)
-          AGENT_JAR=$(ls apilens-agent/build/libs/apilens-agent-*.jar | grep -vE 'sources' | head -1)
-          echo "server=$SERVER_JAR"
-          echo "agent=$AGENT_JAR"
-          if [ -z "$SERVER_JAR" ] || [ -z "$AGENT_JAR" ]; then
-            echo "ERROR: 산출물 jar 누락 (server=$SERVER_JAR agent=$AGENT_JAR)"
+          shopt -s nullglob
+          SERVER_JARS=()
+          for f in apilens-server/build/libs/apilens-server-*.jar; do
+            case "$f" in *plain*|*sources*) ;; *) SERVER_JARS+=("$f");; esac
+          done
+          AGENT_JARS=()
+          for f in apilens-agent/build/libs/apilens-agent-*.jar; do
+            case "$f" in *sources*) ;; *) AGENT_JARS+=("$f");; esac
+          done
+          if [ ${#SERVER_JARS[@]} -ne 1 ] || [ ${#AGENT_JARS[@]} -ne 1 ]; then
+            echo "ERROR: 산출물 jar 매칭 개수 비정상 (server=${#SERVER_JARS[@]}, agent=${#AGENT_JARS[@]}) — 정확히 1개여야 합니다"
+            echo "server candidates: ${SERVER_JARS[*]:-'(none)'}"
+            echo "agent candidates: ${AGENT_JARS[*]:-'(none)'}"
             exit 1
           fi
+          SERVER_JAR=${SERVER_JARS[0]}
+          AGENT_JAR=${AGENT_JARS[0]}
+          echo "server=$SERVER_JAR"
+          echo "agent=$AGENT_JAR"
           if ! unzip -l "$SERVER_JAR" | grep -q "BOOT-INF/classes/static/index.html"; then
             echo "ERROR: UI not embedded in server jar"
             exit 1

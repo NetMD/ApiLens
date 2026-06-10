@@ -56,12 +56,19 @@ public class TraceQueryRepository {
     /**
      * List traces with optional filters and keyset pagination.
      * Caller passes {@code fetchLimit = limit + 1} to detect whether a next page exists.
+     *
+     * <p>// [Phase R12] AC-C2-1/AC-C2-2 — FR-C2: {@code q} = root_operation 풀 FQCN 부분 일치
+     * // (BL-09 — shortenOperation 은 FE 표시 전용, BE 검색 경로와 무접점).
+     * // W-C2 (Design §8.4): JdbcTemplate 파라미터 바인딩 강제 — 검색어의 SQL 문자열 연결 금지.
+     * // 인덱스 없는 LIKE 수용 근거 (AC-C2-2): A4 인덱스(service_name, start_time) prefix 가
+     * // 윈도우를 먼저 좁힌 뒤 LIKE 는 잔여 행 필터 — FTS 는 작업 외 (이연).
      */
     public List<TraceSummary> findTraces(
             String service,
             Long since,
             Long until,
             SpanStatus status,
+            String q,
             int fetchLimit,
             CursorCodec.Cursor cursor
     ) {
@@ -88,6 +95,11 @@ public class TraceQueryRepository {
             sql.append(" AND status = ?");
             params.add(status.name());
         }
+        if (q != null && !q.isBlank()) {
+            // E-07: 검색어의 %/_/\ 는 리터럴 매칭 — escapeLike 단일 메서드 (백슬래시 최우선)
+            sql.append(" AND root_operation LIKE ? ESCAPE '\\'");
+            params.add("%" + escapeLike(q.trim()) + "%");
+        }
         if (cursor != null) {
             // (start_time, trace_id) DESC pagination: fetch rows strictly "below" the cursor row
             sql.append(" AND (start_time < ? OR (start_time = ? AND trace_id < ?))");
@@ -98,6 +110,16 @@ public class TraceQueryRepository {
         sql.append(" ORDER BY start_time DESC, trace_id DESC LIMIT ?");
         params.add(fetchLimit);
         return jdbc.query(sql.toString(), TRACE_SUMMARY_MAPPER, params.toArray());
+    }
+
+    /**
+     * LIKE 패턴 이스케이프 단일 거주지 (Design §3.1.7) — E-07: 검색어를 리터럴로만 매칭.
+     * 순서 의무: 백슬래시를 가장 먼저 치환 (이후 치환이 만든 {@code \%}/{@code \_} 를 재치환하지 않도록).
+     */
+    static String escapeLike(String raw) {
+        return raw.replace("\\", "\\\\")
+                .replace("%", "\\%")
+                .replace("_", "\\_");
     }
 
     public Optional<TraceSummary> findTraceSummary(String traceId) {
@@ -167,11 +189,23 @@ public class TraceQueryRepository {
     private static final long STALE_THRESHOLD_MS = 1_800_000L;   // 30 minutes
 
     /**
+     * 24h 윈도우 카운트 기준 — {@code start_time} 사용 사유: A4 복합 인덱스
+     * {@code idx_traces_service_start(service_name, start_time DESC, trace_id DESC)} 가
+     * JOIN 동등 조건 + range + COUNT(trace_id) 를 covering (Design §2-A3).
+     */
+    static final long SERVICE_TRACE_COUNT_WINDOW_MS = 86_400_000L; // 24h
+
+    /**
      * [Phase H] AC-06-3 — W-01 / Q-04. List services with 응답 시점 단일 LEFT JOIN
      * GROUP BY 단일 쿼리 — services 컬럼 추가 0 (R12 회귀 가드).
      *
      * <p>now 는 호출자(TraceQueryService)에서 1회 계산 후 전달 — healthStatus 계산은
      * 모든 row 동일 now 기준.
+     *
+     * <p>// [Phase R12] AC-A3-1/AC-A3-3 — FR-A3: traceCount 의미 변경 "누적 전수" →
+     * // "최근 24시간 trace 수" (필드명·응답 구조 무변경). WHERE 없는 전수 COUNT 패턴 자체가
+     * // 소멸 — 매 호출 O(전체 N) → O(24h 윈도우 내 행), A4 인덱스 covering.
+     * // 윈도우 경계: start_time >= now − 24h (경계값 포함 — Design §7.1).
      */
     public List<ServiceInfo> findServicesWithHealth(long now) {
         return jdbc.query(
@@ -184,6 +218,7 @@ public class TraceQueryRepository {
                             COALESCE(COUNT(t.trace_id), 0)      AS trace_count
                         FROM services s
                         LEFT JOIN traces t ON s.service_name = t.service_name
+                                          AND t.start_time >= ?
                         GROUP BY s.service_name, s.registered_at, s.last_seen_at, s.source
                         ORDER BY s.service_name ASC
                         """,
@@ -195,7 +230,8 @@ public class TraceQueryRepository {
                     long traceCount = rs.getLong("trace_count");
                     String health = computeHealthStatus(lastSeenAt, now);
                     return new ServiceInfo(name, registeredAt, lastSeenAt, source, traceCount, health);
-                }
+                },
+                now - SERVICE_TRACE_COUNT_WINDOW_MS
         );
     }
 

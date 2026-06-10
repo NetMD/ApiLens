@@ -17,14 +17,12 @@ package io.apilens.server.query;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.apilens.common.IngestRequest;
-import io.apilens.common.MaskingEngine;
-import io.apilens.common.MaskingRule;
-import io.apilens.common.MaskingRuleType;
-import io.apilens.common.MaskingStrategy;
 import io.apilens.common.Span;
 import io.apilens.common.SpanKind;
 import io.apilens.common.SpanStatus;
 import io.apilens.server.ingest.IngestService;
+import io.apilens.server.masking.MaskingEngineHolder;
+import io.apilens.server.masking.MaskingRuleRepository;
 import io.apilens.server.query.dto.ServiceInfo;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.AfterEach;
@@ -87,8 +85,9 @@ class TraceQueryServicesHealthTest {
                 .migrate();
 
         this.jdbc = new JdbcTemplate(dataSource);
-        MaskingEngine engine = buildEngineFromSeededRules();
-        this.ingestService = new IngestService(jdbc, engine, mapper);
+        MaskingEngineHolder maskingHolder = new MaskingEngineHolder(new MaskingRuleRepository(jdbc), mapper);
+        maskingHolder.reload(); // V1 시드 룰 로드 — v0.1 buildEngineFromSeededRules 와 동등 (R12 holder 전환)
+        this.ingestService = new IngestService(jdbc, maskingHolder, mapper);
         this.queryService = new TraceQueryService(new TraceQueryRepository(jdbc, mapper));
     }
 
@@ -99,19 +98,6 @@ class TraceQueryServicesHealthTest {
         }
     }
 
-    private MaskingEngine buildEngineFromSeededRules() {
-        List<MaskingRule> rules = jdbc.query(
-                "SELECT name, rule_type, pattern, mask_strategy, enabled FROM masking_rules WHERE enabled = 1",
-                (rs, rowNum) -> new MaskingRule(
-                        rs.getString("name"),
-                        MaskingRuleType.valueOf(rs.getString("rule_type").toUpperCase()),
-                        rs.getString("pattern"),
-                        MaskingStrategy.valueOf(rs.getString("mask_strategy").toUpperCase()),
-                        rs.getInt("enabled") == 1
-                )
-        );
-        return new MaskingEngine(rules, mapper);
-    }
 
     // ─── BT-12 — 응답에 6 필드 모두 노출 ─────────────────────────────────
 
@@ -228,10 +214,14 @@ class TraceQueryServicesHealthTest {
     }
 
     private static Span makeSpan(String spanId, String traceId, String serviceName) {
+        // [Phase R12] AC-A3-1: traceCount 가 최근 24h 윈도우(start_time 기준)로 변경 —
+        // 픽스처 start_time 을 현재 시각 기반으로 사용 (기존 100L 은 1970년 = 윈도우 밖 0 카운트).
+        // 윈도우 경계 자체의 검증은 TraceQueryRepositoryTest (T-A3) 가 전담.
+        long now = System.currentTimeMillis();
         return new Span(
                 spanId, traceId, null,
                 serviceName, "GET /probe", SpanKind.SERVER,
-                100L, 200L, SpanStatus.OK,
+                now - 100L, now, SpanStatus.OK,
                 null, List.of()
         );
     }

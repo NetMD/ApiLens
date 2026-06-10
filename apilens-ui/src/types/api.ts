@@ -49,7 +49,10 @@ export interface ServiceInfo {
   lastSeenAt: number | null;
   /** 처음 등록 시점 출처. UPSERT 시에도 보존 (wizard 가 먼저 들어오면 'wizard' 유지). */
   source: ServiceSource;
-  /** 응답 시점 SELECT COUNT(*) FROM traces WHERE service_name = ? 결과. */
+  /**
+   * Phase R12 (FR-A3, AC-A3-3) — 의미 변경: "누적 전수" → "최근 24시간 trace 수"
+   * (start_time >= now − 24h 윈도우 카운트, 설계 §2-A3). 필드명·타입은 무변경 (계약 파손 0).
+   */
   traceCount: number;
   /** server-side 계산 (D-03 비협상 single source `now`). */
   healthStatus: HealthStatus;
@@ -117,6 +120,114 @@ export interface ListTracesParams {
   status?: TraceStatus;
   limit?: number;
   cursor?: string;
+  /**
+   * Phase R12 (FR-C2, AC-C2-3): operation 검색어 — root_operation 풀 FQCN 부분 일치.
+   * LIKE escape 는 BE 단일 책임 (E-07) — FE 에서 이스케이프 금지 (이중 처리 방지).
+   */
+  q?: string;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Phase R12 (FR-B1~B3) — settings + masking-rules 계약 (설계 §5.2~5.4 응답 JSON 예시 1:1).
+// 식별자 단일명: 설계 §5.6 그대로 (settings/lastCleanupAt/ruleId/enabled 등 — drift 금지).
+// S-64 타입 대조: ruleId = V1 masking_rules.rule_id INTEGER PK → number /
+//                 lastCleanupAt = retention_meta.last_cleanup_at INTEGER (epoch ms) → number.
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * GET /v1/settings 응답 (= PUT /v1/settings 갱신 후 응답과 동일 형태 — 설계 §5.2).
+ *
+ * settings 값 = resolve 된 유효값 (DB 없으면 yml fallback 값이 그대로 내려감 — FE prefill 단순화).
+ */
+export interface SettingsResponse {
+  /** v0.2 노출 키 = 'retention.days' 단 1개 (설계 §2-B1 — 과다 노출 금지). */
+  settings: { 'retention.days': number };
+  /** retention_meta.last_cleanup_at (epoch ms). 0 = 이력 없음 → T-11 분기. */
+  lastCleanupAt: number;
+}
+
+/** PUT /v1/settings 요청 body — { "retention.days": 14 } 형태 (설계 §5.2). */
+export interface SettingsUpdateRequest {
+  'retention.days': number;
+}
+
+/** 마스킹 룰 타입 — V1 rule_type 컬럼 값 그대로. */
+export type MaskingRuleType = 'field_name' | 'regex';
+
+/** 마스킹 전략 — V1 mask_strategy 컬럼 값 그대로. */
+export type MaskStrategy = 'full' | 'partial' | 'hash' | 'length_only';
+
+/**
+ * GET /v1/masking-rules 응답 rules[] 요소 (설계 §5.3).
+ *
+ * V1 컬럼 snake_case 의 camelCase 1:1 매핑 (PLAN §9 단일명 — active/status 등 다른 명 금지).
+ */
+export interface MaskingRule {
+  ruleId: number;
+  name: string;
+  ruleType: MaskingRuleType;
+  pattern: string;
+  maskStrategy: MaskStrategy;
+  enabled: boolean;
+  /** true = 빌트인 4종 — 삭제 불가 (비활성만 가능). 삭제 버튼 렌더 자체 제거 (C-05). */
+  isDefault: boolean;
+}
+
+/** GET /v1/masking-rules 응답 body (정렬: is_default DESC, rule_id ASC — 설계 §5.3). */
+export interface MaskingRulesResponse {
+  rules: MaskingRule[];
+}
+
+/**
+ * POST /v1/masking-rules 요청 body (설계 §5.3).
+ *
+ * isDefault 필드 자체가 없음 — 서버가 is_default=0 강제 (PLAN §5-2).
+ */
+export interface CreateMaskingRuleRequest {
+  name: string;
+  ruleType: MaskingRuleType;
+  pattern: string;
+  maskStrategy: MaskStrategy;
+  /** 생략 시 true. */
+  enabled?: boolean;
+}
+
+/** PATCH /v1/masking-rules/{id} 요청 body — enabled 외 필드 포함 시 서버 400 (설계 §2-B2). */
+export interface ToggleMaskingRuleRequest {
+  enabled: boolean;
+}
+
+/** preview 요청의 화면 토글 상태 스냅샷 요소 (설계 §5.4). */
+export interface PreviewRuleState {
+  ruleId: number;
+  enabled: boolean;
+}
+
+/**
+ * POST /v1/masking-rules/preview 요청 body (설계 §5.4).
+ *
+ * R12 (AC-B3-1): "샘플 페이로드 + (저장 전 토글 상태가 반영된) 룰 세트 → 마스킹 결과 반환" (비협상)
+ * — ruleStates 는 화면의 "현재" 토글 상태 전체 스냅샷 (DB persisted 상태 의존 0, race 원천 차단).
+ */
+export interface PreviewRequest {
+  /** null/생략 = 서버 내장 기본 샘플 (AC-B3-2). */
+  sample: string | null;
+  /** 생략 시 application/json. */
+  contentType: string;
+  /** 생략 = DB 저장 상태 그대로 / 미존재 ruleId 는 서버가 무시 (stale 화면 관용). */
+  ruleStates: PreviewRuleState[];
+}
+
+/**
+ * POST /v1/masking-rules/preview 응답 (설계 §5.4).
+ *
+ * sample = 입력 원문 echo — 기본 샘플 모드의 Before/After 동시 표시 성립 (UX §9 요구 ② 채택).
+ * contentType echo 는 FE 미표시 (계약 동봉 필드 — 표시 소비는 sample/masked 2종만, 의도된 비렌더).
+ */
+export interface PreviewResponse {
+  sample: string;
+  masked: string;
+  contentType: string;
 }
 
 /** 공통 4xx/5xx 응답 본문 형태. */

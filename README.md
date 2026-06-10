@@ -50,9 +50,10 @@ what value actually hit the database.* It has been dogfooded against a live prod
 | 🧭 노드 그래프 추적 | controller → service → repository → SQL 흐름을 mind-map 형태로 시각화 (gantt chart 아님) |
 | 📦 payload 캡처 | 각 노드의 요청/응답 본문 + JDBC 파라미터·결과셋을 단계별로 확인 |
 | 🗂️ MyBatis 지원 | `@Mapper` 인터페이스 호출을 한 점(`MapperProxy`)으로 자동 추적 |
-| 🛡️ PII 마스킹 내장 | 주민번호·카드번호·password/token 등 기본 룰을 server-side 에서 자동 마스킹 |
+| 🛡️ PII 마스킹 내장 | 주민번호·카드번호·password/token 등 기본 룰을 server-side 에서 자동 마스킹 + 룰 관리 UI·라이브 프리뷰 |
 | 🔴 에러 즉시 표시 | 끊긴 노드가 빨갛게 멈추고 옆에 stack trace 박스 |
-| 📊 응답시간 대시보드 | 시간축 산점도 + 서비스별 필터 + Live 모드 |
+| 📊 응답시간 대시보드 | 시간축 산점도 + 서비스별 필터 + status·operation 검색 + Live 모드 |
+| ⚙️ 설정 페이지 | 보관 기간(기본 30일 — 초과 trace 는 매일 04:00 자동 정리)과 마스킹 룰을 브라우저에서 관리 |
 | 🧙 Setup 마법사 | 브라우저에서 옵션을 고르면 부착용 JVM 옵션 한 줄을 만들어 줌 |
 | 📕 단일 jar 배포 | agent + collector + storage + UI 가 하나의 jar |
 | 🧩 표준 호환 | W3C Trace Context (`traceparent`) + OpenTelemetry 호환 span 모델 |
@@ -85,7 +86,7 @@ what value actually hit the database.* It has been dogfooded against a live prod
 
 ```bash
 # 1. ApiLens server 실행 (포트 8765 — 앱이 보통 쓰는 8080 회피, ./apilens.db 자동 생성)
-java -jar apilens-server-0.1.0.jar
+java -jar apilens-server-<version>.jar
 
 # 2. 브라우저로 열고 Setup wizard 따라가기
 #    (server URL · service 이름 · 캡처 옵션을 고르면 부착용 JVM 옵션 한 줄을 만들어 줍니다)
@@ -131,8 +132,8 @@ cd apilens-ui && npm ci && npm run build && cd ..
 ```
 
 산출물 | Output:
-- `apilens-server/build/libs/apilens-server-0.1.0.jar` — 단일 배포 jar (server + UI)
-- `apilens-agent/build/libs/apilens-agent-0.1.0.jar` — 사용자 앱에 부착하는 agent jar
+- `apilens-server/build/libs/apilens-server-<version>.jar` — 단일 배포 jar (server + UI)
+- `apilens-agent/build/libs/apilens-agent-<version>.jar` — 사용자 앱에 부착하는 agent jar
 
 ---
 
@@ -146,7 +147,7 @@ server-side 마스킹 엔진이 모든 payload 를 **저장 전에** 기본 룰�
 | 룰 | 패턴 |
 |---|---|
 | 주민등록번호 | `\d{6}-?\d{7}` |
-| 신용카드번호 | `\d{4}-?\d{4}-?\d{4}-?\d{4}` (16자리 / Luhn 검증은 v0.2) |
+| 신용카드번호 | `\d{4}-?\d{4}-?\d{4}-?\d{4}` (16자리 / Luhn 검증은 향후 버전) |
 
 **키 이름 (field name) — 값 전체 마스킹 (`***`)**
 
@@ -157,7 +158,7 @@ JSON payload 의 키 이름이 아래와 정확히 일치하면(대소문자 구
 | password | `password` · `passwd` · `pwd` |
 | token / secret | `token` · `secret` · `authorization` · `apikey` · `api_key` · `api-key` |
 
-> ⚠️ **v0.1 의 마스킹 한계 — 반드시 확인하세요**
+> ⚠️ **JDBC 파라미터 마스킹 한계 — 반드시 확인하세요**
 >
 > JDBC 파라미터는 **위치 번호를 키로** 캡처됩니다 (`{"1": "...", "2": "..."}`). 따라서
 > 키 이름 기반 마스킹(password/token 등)은 **JDBC 단에서는 동작하지 않습니다.** 값 패턴
@@ -169,9 +170,11 @@ JSON payload 의 키 이름이 아래와 정확히 일치하면(대소문자 구
 > -Dapilens.jdbc.capture-params=false   # JDBC 파라미터 캡처 비활성 (advice weaving 자체 skip)
 > ```
 >
-> v0.2 에서 컬럼 이름 추적 기반으로 이 한계를 보강할 예정입니다.
+> 컬럼 이름 추적 기반 보강이 차기 release 후보로 등재되어 있습니다 (v0.2 는 agent 무변경 릴리스라 이월).
 
-룰 추가/삭제·토글 UI 와 라이브 프리뷰는 향후 버전에 예정되어 있습니다.
+룰 추가/삭제·토글과 라이브 프리뷰는 v0.2 부터 설정 페이지(`/settings`)에서 제공됩니다.
+default 룰 4종(주민번호·카드번호·password·token)은 삭제 불가이며 비활성 토글만 가능합니다.
+룰 변경은 변경 이후 수집분부터 적용됩니다 (기존 저장 payload 의 재마스킹 없음).
 
 ---
 
@@ -194,15 +197,26 @@ truncate, NULL 처리 분기가 호스트 기동을 막던 문제)는 **모두 v
 
 ---
 
-## v0.1 한계 | v0.1 Limitations
+## v0.2 한계 | v0.2 Limitations
 
 투명하게 적어둡니다. 운영 도입 결정 시 참고하세요.
+(v0.2 는 server·UI 중심 릴리스로 agent 모듈 변경이 없어, agent 쪽 한계는 v0.1 과 동일합니다.)
 
 - **단일 서비스 추적** — 서비스 간 분산 trace 연결(MSA)은 v0.3 예정
-- **동기 호출만** — `@Async` / WebFlux 비동기 경로는 v0.2 예정
-- **메서드 파라미터 이름이 `arg0`·`arg1`…** — 모든 인자를 캡처하지만, 사용자 앱이 `-parameters` 컴파일 옵션 없이 빌드되면 파라미터 이름 대신 인덱스로 표시됩니다. `-parameters` 로 빌드하면 실제 이름이 나타납니다. v0.2 에서 개선 예정
+- **동기 호출만** — `@Async` / WebFlux 비동기 경로는 차기 agent 업데이트로 이월
+- **메서드 파라미터 이름이 `arg0`·`arg1`…** — 모든 인자를 캡처하지만, 사용자 앱이 `-parameters` 컴파일 옵션 없이 빌드되면 파라미터 이름 대신 인덱스로 표시됩니다. `-parameters` 로 빌드하면 실제 이름이 나타납니다. 차기 agent 업데이트로 이월
 - **JDBC 파라미터 키 이름 마스킹 한계** — 위 [PII 마스킹](#pii-마스킹--pii-masking) 경고 참조
-- **인증·권한 없음** — 운영망 내부에서 신뢰된 네트워크 사용을 가정합니다. 외부 노출 금지. 접근 제어는 v1.0 예정
+- **인증·권한 없음** — 운영망 내부에서 신뢰된 네트워크 사용을 가정합니다. 외부 노출 금지. v0.2 에서 추가된 설정·마스킹 룰 API 도 무인증입니다. 접근 제어는 v0.3 예정
+
+---
+
+## v0.3 예정 | Planned for v0.3
+
+순서와 범위는 바뀔 수 있습니다. Subject to change.
+
+- **멀티 서비스 분산 추적 (MSA)** — `traceparent` 전파 기반 cross-service trace 연결. 단일 서비스 추적 한계 해소
+- **인증·접근 제어** — server API 전체(v0.2 의 설정·마스킹 룰 API 포함)에 인증 적용. 방식(Basic Auth / API Key 등)은 결정 예정
+- **agent 보강 후보** — JDBC 파라미터 이름 기반 마스킹(컬럼 이름 추적), `java.time` 타입 직렬화 확장, `@Async` 비동기 경로 ([CHANGELOG](./CHANGELOG.md) Unreleased 후보 참조)
 
 ---
 

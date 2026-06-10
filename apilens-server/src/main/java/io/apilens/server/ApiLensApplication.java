@@ -17,8 +17,14 @@ package io.apilens.server;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
+// Phase R12 (FR-A1, AC-A1-1): @EnableScheduling 신설 — retention cleanup 은 "동작 안 하는" 게 아니라
+// 존재하지 않았다 (신설). @ConfigurationPropertiesScan 은 RetentionProperties(record) 바인딩용.
 @SpringBootApplication
+@EnableScheduling
+@ConfigurationPropertiesScan
 public class ApiLensApplication {
 
     public static void main(String[] args) {

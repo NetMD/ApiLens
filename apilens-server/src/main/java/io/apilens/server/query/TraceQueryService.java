@@ -43,11 +43,28 @@ public class TraceQueryService {
         this.repo = repo;
     }
 
+    /** {@code q} 미사용 호출 형태 유지용 — q=null 위임 (R12 FR-C2 신설 파라미터). */
     public TraceListResponse listTraces(
             String service,
             Long since,
             Long until,
             SpanStatus status,
+            Integer requestedLimit,
+            String cursorParam
+    ) {
+        return listTraces(service, since, until, status, null, requestedLimit, cursorParam);
+    }
+
+    /**
+     * // [Phase R12] AC-C2-1 — FR-C2: q = root_operation 풀 FQCN 부분 일치 검색
+     * // (LIKE escape 는 repository 단일 책임 — FE 이스케이프 금지, 이중 처리 방지).
+     */
+    public TraceListResponse listTraces(
+            String service,
+            Long since,
+            Long until,
+            SpanStatus status,
+            String q,
             Integer requestedLimit,
             String cursorParam
     ) {
@@ -57,7 +74,7 @@ public class TraceQueryService {
                 : CursorCodec.decode(cursorParam);
 
         // fetch limit+1 so we know whether more pages exist
-        List<TraceSummary> rows = repo.findTraces(service, since, until, status, limit + 1, cursor);
+        List<TraceSummary> rows = repo.findTraces(service, since, until, status, q, limit + 1, cursor);
 
         String nextCursor = null;
         if (rows.size() > limit) {

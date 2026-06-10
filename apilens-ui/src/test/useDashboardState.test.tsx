@@ -8,11 +8,11 @@
 // 회귀 가드 (반대 방향 lock-in 차단):
 //   autoSelectsFirstServiceWhenManyPresent / overridesUrlService 같은 반대 방향 동사 0건
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { renderHook, waitFor } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { MemoryRouter } from 'react-router';
+import { MemoryRouter, useLocation } from 'react-router';
 import type { ReactNode } from 'react';
-import { useDashboardState } from '../hooks/useDashboardState';
+import { parseStatus, useDashboardState } from '../hooks/useDashboardState';
 import type { ServiceInfo } from '../types/api';
 
 function makeWrapper(initialPath = '/'): {
@@ -106,5 +106,88 @@ describe('useDashboardState — [R10] D-H10-02 자동 분기', () => {
     // fetch 해소 후에도 URL 우선 보존 — services[0].name 으로 덮어쓰지 0
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(result.current.service).toBe('existing');
+  });
+});
+
+// ── [R12] FT-C1 — status/q 필터 키 (AC-C1-1/AC-C1-3/AC-C2-3, V-10 가드) ─────────────
+//
+// AC-C1-1 verbatim: "useDashboardState 에 ?status= 키 (값 OK/ERROR, 전체 = 키 부재 — §9).
+// 기존 updateParams(replace:true) 패턴 편승 (G-18) — searchParams 직접 조작 금지, routeSearch
+// 불변식 경유 (🔴 제약 ⑤). ROUTE_LOCAL_PARAMS 추가 금지 (= 전 route 보존, G-19)."
+// AC-C1-3 verbatim: "FE unit — URL 키 보존/기본값 키 제거 가드 (V-10 가드)."
+//
+// 검증 의무 (정방향 동사 명시 — EXT-003 lock-in 회귀 가드):
+//   parsesValidStatusFromUrl / normalizesInvalidStatusToAll / removesStatusKeyWhenSetToAll /
+//   setsStatusKeyOnUrl / removesQKeyWhenBlank / preservesExistingKeysWhenSettingFilters
+// 회귀 가드 (반대 방향 lock-in 차단): dropsServiceKeyOnFilterChange / overridesRangeOnFilter 0건
+describe('useDashboardState — [R12] status/q 필터 (D-03 비협상: status + q 만, duration 필터 금지)', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    mockServicesResponse([]);
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** 훅 + 현재 location 동시 관찰 (URL 키 존재/부재 단언용). */
+  function useProbe(): { dash: ReturnType<typeof useDashboardState>; search: string } {
+    const dash = useDashboardState();
+    const location = useLocation();
+    return { dash, search: location.search };
+  }
+
+  it('parsesValidStatusFromUrl — ?status=ERROR → status="ERROR" (AC-C1-1)', () => {
+    const { wrapper } = makeWrapper('/?status=ERROR');
+    const { result } = renderHook(() => useProbe(), { wrapper });
+    expect(result.current.dash.status).toBe('ERROR');
+  });
+
+  it('normalizesInvalidStatusToAll — 무효값(?status=FOO)은 전체(null)로 정규화 (E-12, parseRange 동형)', () => {
+    const { wrapper } = makeWrapper('/?status=FOO');
+    const { result } = renderHook(() => useProbe(), { wrapper });
+    expect(result.current.dash.status).toBe(null);
+    // parseStatus 단독 경계: 소문자/공백/null 전부 전체
+    expect(parseStatus('ok')).toBe(null);
+    expect(parseStatus('')).toBe(null);
+    expect(parseStatus(null)).toBe(null);
+    expect(parseStatus('OK')).toBe('OK');
+  });
+
+  it('setsStatusKeyOnUrl — setStatus("ERROR") → URL ?status=ERROR 반영', () => {
+    const { wrapper } = makeWrapper('/');
+    const { result } = renderHook(() => useProbe(), { wrapper });
+    act(() => result.current.dash.setStatus('ERROR'));
+    expect(result.current.dash.status).toBe('ERROR');
+    expect(result.current.search).toContain('status=ERROR');
+  });
+
+  it('removesStatusKeyWhenSetToAll — setStatus(null) → 키 제거 (전체 = 키 부재) + 기존 service 보존', () => {
+    const { wrapper } = makeWrapper('/?status=OK&service=my-api');
+    const { result } = renderHook(() => useProbe(), { wrapper });
+    act(() => result.current.dash.setStatus(null));
+    expect(result.current.dash.status).toBe(null);
+    expect(result.current.search).not.toContain('status=');
+    expect(result.current.search).toContain('service=my-api'); // V-10 — 기존 키 보존
+  });
+
+  it('removesQKeyWhenBlank — setQ 공백 문자열 → 키 제거 (빈 문자열 = 키 부재, AC-C2-3)', () => {
+    const { wrapper } = makeWrapper('/?q=OrderApi');
+    const { result } = renderHook(() => useProbe(), { wrapper });
+    expect(result.current.dash.q).toBe('OrderApi');
+    act(() => result.current.dash.setQ('   '));
+    expect(result.current.dash.q).toBe('');
+    expect(result.current.search).not.toContain('q=');
+  });
+
+  it('preservesExistingKeysWhenSettingFilters — status/q 설정이 service/range/live 를 보존 (V-10 가드)', () => {
+    const { wrapper } = makeWrapper('/?service=my-api&range=1h&live=true');
+    const { result } = renderHook(() => useProbe(), { wrapper });
+    act(() => result.current.dash.setStatus('ERROR'));
+    act(() => result.current.dash.setQ('OrderApi'));
+    expect(result.current.search).toContain('service=my-api');
+    expect(result.current.search).toContain('range=1h');
+    expect(result.current.search).toContain('live=true');
+    expect(result.current.search).toContain('status=ERROR');
+    expect(result.current.search).toContain('q=OrderApi');
   });
 });

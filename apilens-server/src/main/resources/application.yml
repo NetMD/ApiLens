@@ -15,8 +15,19 @@ spring:
 
   # SQLite 데이터소스
   # 데이터 파일은 실행 위치 기준 ./apilens.db 에 생성됨
+  # [Phase R12] AC-A2-1 — D-04 비협상 (운영 DB 파일 삭제 금지 — PRAGMA 는 행 내 설정일 뿐).
+  # CLAUDE.md '절대 변경 금지 §2' (SQLite+Flyway) 인용.
+  # PRAGMA 는 URL 쿼리 파라미터로 — 풀의 모든 connection 생성 시점에 적용됨 (Design §2-A2):
+  #   journal_mode=WAL      ingest 쓰기가 UI 읽기를 막지 않게 (persistent — 매 connection 재실행 무해)
+  #   synchronous=NORMAL    WAL 권장 조합
+  #   busy_timeout=5000     writer 경합 시 5초 대기 (connection 수준 — URL 적용이 유일하게 안전)
+  # auto_vacuum 은 URL 로 넣지 않는다 (실측 — DbPragmaTest V-06 봉인): sqlite-jdbc 3.47.1 의
+  #   SQLiteConfig.Pragma 에 AUTO_VACUUM 이 없어 URL 파라미터가 silent drop 된다.
+  #   INCREMENTAL 전환(신규/기존 DB 공통)은 StartupDbInitializer 가 동일 connection 에서
+  #   PRAGMA + VACUUM 1회 수행 (멱등 — Design §2-A2 결정 2 의 ApplicationRunner 축이 전담).
+  # foreign_keys 는 OFF 유지 (확정 — Design §2-A2-FK): REPLACE cascade 의 payload 소실 부수효과 차단.
   datasource:
-    url: jdbc:sqlite:apilens.db
+    url: jdbc:sqlite:apilens.db?journal_mode=WAL&synchronous=NORMAL&busy_timeout=5000
     driver-class-name: org.sqlite.JDBC
 
   jpa:
@@ -50,8 +61,11 @@ apilens:
     # span 배치 수신 시 max payload size (byte). 초과 시 reject
     max-batch-size-bytes: 1048576  # 1 MB
   retention:
-    # trace 보관 기간(일). 초과 trace는 nightly cron으로 삭제
+    # 보관 기간(일). 설정 페이지 저장 값(settings DB)이 이 값보다 우선 — 이 키는 settings 미설정 시 fallback (D-05).
+    # cleanup 은 아래 cleanup-cron 스케줄로 실행 (payloads → spans → traces 행 단위 DELETE — 파일 삭제 0, D-04).
     days: 30
+    # cleanup 실행 시각 (Spring cron 6필드, 기본 매일 04:00). settings(DB) 노출 안 함 — yml 전용 (Design §2-A1).
+    cleanup-cron: "0 0 4 * * *"
 
 logging:
   level:

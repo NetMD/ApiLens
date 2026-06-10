@@ -128,7 +128,7 @@ export function SpanNode({ data, selected }: NodeProps<SpanFlowNode>): ReactNode
       title={span.operationName}
     >
       {/*
-       * React Flow handles — invisible. v0.1.1: 부모-자식 관계의 두 가지 케이스 지원.
+       * React Flow handles — invisible. 0.1.1 버전: 부모-자식 관계의 두 가지 케이스 지원.
        *   - 자식 1개 (단일 경로) : forward(in/out, top 26) + reverse(out-rev/in-rev, top 34) 두 line
        *   - 자식 2개 이상 (분기) : forward(in/out) 한 line + 양쪽 화살촉 (시각 단순화)
        * 케이스 결정은 layout.ts에서. handle 4개 모두 등록.
@@ -154,8 +154,8 @@ export function SpanNode({ data, selected }: NodeProps<SpanFlowNode>): ReactNode
         {/*
          * 라벨: 노드 위쪽 가로 중앙 (AC-02-3, AC-02-4).
          * Phase F2 fix² (US-02, AC-02-1/2/3): fontSize 11 → 10 으로 1px 축소.
-         * mockup 박제 — operationName 라벨이 mockup 의 작은 폰트와 일치하도록
-         * 단일 axis (강조/비강조 axis 도입은 v0.2 이연). dagre nodesep/ranksep
+         * mockup 고정 — operationName 라벨이 mockup 의 작은 폰트와 일치하도록
+         * 단일 axis (강조/비강조 axis 도입은 0.2 이연). dagre nodesep/ranksep
          * 영향은 라벨 폭이 줄어드는 안전 방향이라 무영향.
          */}
         {/* 라벨 첫 줄 — 클래스명 / 단일 이름 */}

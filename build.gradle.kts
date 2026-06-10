@@ -4,7 +4,8 @@ plugins {
 
 allprojects {
     group = "io.apilens"
-    version = "0.1.0"
+    // 버전 연쇄 표면(README/examples/.github/UI 라벨)은 버전 무관 글롭/플레이스홀더로 정비됨 (Design §9.3).
+    version = "0.2.0"
 }
 
 subprojects {

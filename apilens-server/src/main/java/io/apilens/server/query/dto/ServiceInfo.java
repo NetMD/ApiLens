@@ -31,7 +31,8 @@ package io.apilens.server.query.dto;
  * @param registeredAt  epoch millis of first registration (wizard 또는 첫 trace 도착 시점)
  * @param lastSeenAt    epoch millis of most recent trace (wizard 등록 후 trace 미수신 시 null)
  * @param source        등록 경로 — "wizard" 또는 "auto"
- * @param traceCount    total traces seen for this service
+ * @param traceCount    최근 24시간 trace 수 (start_time 기준 윈도우 — [Phase R12] AC-A3-3
+ *                      의미 변경: "누적 전수" → "최근 24h". 필드명·타입 무변경, FR-A3)
  * @param healthStatus  서버 응답 시점 분기 — "active" / "stale" / "inactive" / "never"
  */
 public record ServiceInfo(

@@ -31,5 +31,8 @@ public class WebMvcConfig implements WebMvcConfigurer {
         registry.addViewController("/setup").setViewName("forward:/index.html");
         registry.addViewController("/services").setViewName("forward:/index.html");
         registry.addViewController("/traces/**").setViewName("forward:/index.html");
+        // [Phase R12] AC-B4-1 — BL-11: /settings forward 페어 (명시 enumerate).
+        // 누락 시 설정 페이지 새로고침/직접 진입에서 Whitelabel 404 (E-09).
+        registry.addViewController("/settings").setViewName("forward:/index.html");
     }
 }

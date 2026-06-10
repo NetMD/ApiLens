@@ -12,6 +12,7 @@ import { Dashboard } from './pages/Dashboard';
 import { TraceDetail } from './pages/TraceDetail';
 import { Setup } from './pages/Setup';
 import { ActiveServices } from './pages/ActiveServices';
+import { Settings } from './pages/Settings';
 import { FirstRunGuard } from './components/FirstRunGuard';
 import { ToastProvider } from './components/Toast';
 import { LazyDevtools } from './components/LazyDevtools';
@@ -37,6 +38,10 @@ export function App(): ReactNode {
               <Route path="/traces/:traceId" element={<TraceDetail />} />
               <Route path="/setup" element={<Setup />} />
               <Route path="/services" element={<ActiveServices />} />
+              {/* Phase R12 (FR-B4, AC-B4-1): /settings 5번째 라우트 — FirstRunGuard 자동 포함
+                  (UX 흐름 4 확정: 가드 일관 유지, 별도 예외 없음). /setup 위저드와 별개 화면 — 혼동 금지.
+                  BE 페어: WebMvcConfig enumerate '/settings' 추가 필요 (BL-11 — 누락 시 새로고침 404). */}
+              <Route path="/settings" element={<Settings />} />
             </Routes>
           </FirstRunGuard>
         </BrowserRouter>

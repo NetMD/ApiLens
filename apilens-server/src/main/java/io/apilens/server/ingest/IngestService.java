@@ -18,16 +18,16 @@ package io.apilens.server.ingest;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.apilens.common.IngestRequest;
-import io.apilens.common.MaskingEngine;
 import io.apilens.common.Payload;
 import io.apilens.common.Span;
-import io.apilens.common.SpanStatus;
+import io.apilens.server.masking.MaskingEngineHolder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -49,12 +49,14 @@ public class IngestService {
     private static final Logger log = LoggerFactory.getLogger(IngestService.class);
 
     private final JdbcTemplate jdbc;
-    private final MaskingEngine masking;
+    // [Phase R12] AC-B2-3 — MaskingEngine 직접 주입 → MaskingEngineHolder 전환 (핫 리로드).
+    // 매 mask 호출 시점에 current() 로 최신 엔진을 읽는다 — 룰 변경은 이후 ingest 분부터 반영 (BL-06).
+    private final MaskingEngineHolder maskingHolder;
     private final ObjectMapper mapper;
 
-    public IngestService(JdbcTemplate jdbc, MaskingEngine masking, ObjectMapper mapper) {
+    public IngestService(JdbcTemplate jdbc, MaskingEngineHolder maskingHolder, ObjectMapper mapper) {
         this.jdbc = jdbc;
-        this.masking = masking;
+        this.maskingHolder = maskingHolder;
         this.mapper = mapper;
     }
 
@@ -74,14 +76,11 @@ public class IngestService {
     }
 
     private void persistTrace(String traceId, List<Span> spans, long receivedAt) {
-        for (Span span : spans) {
-            insertSpan(span);
-            if (span.payloads() != null) {
-                for (Payload payload : span.payloads()) {
-                    insertPayload(span.spanId(), payload);
-                }
-            }
-        }
+        // [Phase R12] AC-A5-1 — FR-A5: 단건 INSERT 루프 → batchUpdate 전환 (writer 점유 축소).
+        // A5 비협상 (Design §0-3): SQL 문자열·컬럼·REPLACE 시맨틱(G-12) 무변경 — 호출 형태만 배치.
+        // upsertTraceSummary 의 spans SQL 재집계 구조는 절대 불변 (diff 0).
+        insertSpans(spans);
+        insertPayloads(spans);
         upsertTraceSummary(traceId, spans, receivedAt);
         // [Phase H] AC-06-3 — D-02 경로 B (자동 등록). 사용자 명시 비협상 결정.
         // CLAUDE.md '아키텍처 핵심 원칙' (Agent 자체 장애가 호스트 앱에 영향 0) 인용.
@@ -134,40 +133,67 @@ public class IngestService {
         }
     }
 
-    private void insertSpan(Span span) {
-        jdbc.update(
+    /**
+     * [Phase R12] AC-A5-1 — spans batchUpdate 1회. SQL 문자열·컬럼·INSERT OR REPLACE
+     * 시맨틱은 v0.1 단건 버전과 동일 (G-12 — REPLACE 시맨틱 무변경).
+     */
+    private void insertSpans(List<Span> spans) {
+        List<Object[]> rows = spans.stream()
+                .map(span -> new Object[]{
+                        span.spanId(),
+                        span.traceId(),
+                        span.parentSpanId(),
+                        span.serviceName(),
+                        span.operationName(),
+                        span.spanKind().name(),
+                        span.startTime(),
+                        span.endTime(),
+                        span.status().name(),
+                        serializeAttributes(span.attributes())
+                })
+                .toList();
+        jdbc.batchUpdate(
                 """
                         INSERT OR REPLACE INTO spans (
                             span_id, trace_id, parent_span_id, service_name, operation_name,
                             span_kind, start_time, end_time, status, attributes_json
                         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
-                span.spanId(),
-                span.traceId(),
-                span.parentSpanId(),
-                span.serviceName(),
-                span.operationName(),
-                span.spanKind().name(),
-                span.startTime(),
-                span.endTime(),
-                span.status().name(),
-                serializeAttributes(span.attributes())
+                rows
         );
     }
 
-    private void insertPayload(String spanId, Payload payload) {
-        String maskedBody = masking.mask(payload.body(), payload.contentType());
-        jdbc.update(
+    /**
+     * [Phase R12] AC-A5-1 — payloads 마스킹 적용 후 batchUpdate 1회.
+     * 마스킹은 저장 전 1회 적용 구조 그대로 (BL-06 — 기존 payload 재마스킹 경로 없음).
+     */
+    private void insertPayloads(List<Span> spans) {
+        List<Object[]> rows = new ArrayList<>();
+        for (Span span : spans) {
+            if (span.payloads() == null) {
+                continue;
+            }
+            for (Payload payload : span.payloads()) {
+                String maskedBody = maskingHolder.current().mask(payload.body(), payload.contentType());
+                rows.add(new Object[]{
+                        span.spanId(),
+                        payload.direction().name().toLowerCase(Locale.ROOT),
+                        payload.contentType(),
+                        maskedBody,
+                        payload.sizeBytes(),
+                        payload.truncated() ? 1 : 0
+                });
+            }
+        }
+        if (rows.isEmpty()) {
+            return;
+        }
+        jdbc.batchUpdate(
                 """
                         INSERT INTO payloads (span_id, direction, content_type, body, size_bytes, truncated)
                         VALUES (?, ?, ?, ?, ?, ?)
                         """,
-                spanId,
-                payload.direction().name().toLowerCase(Locale.ROOT),
-                payload.contentType(),
-                maskedBody,
-                payload.sizeBytes(),
-                payload.truncated() ? 1 : 0
+                rows
         );
     }
 

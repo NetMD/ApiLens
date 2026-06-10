@@ -16,41 +16,25 @@
 package io.apilens.server.masking;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.apilens.common.MaskingEngine;
-import io.apilens.common.MaskingRule;
-import io.apilens.common.MaskingRuleType;
-import io.apilens.common.MaskingStrategy;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.jdbc.core.JdbcTemplate;
-
-import java.util.List;
-import java.util.Locale;
 
 /**
- * Loads enabled masking rules from {@code masking_rules} once at startup and
- * registers a {@link MaskingEngine} bean. Rule edits via API (v0.2) will require
- * either a refresh endpoint or replacing the bean — out of scope for v0.1.
+ * Registers the hot-reloadable {@link MaskingEngineHolder} bean.
+ *
+ * <p>// [Phase R12] AC-B2-3 — v0.1 의 "Rule edits via API (v0.2) will require either a
+ * // refresh endpoint or replacing the bean" 예약 문구 **이행 완료**: startup 1회 고정
+ * // MaskingEngine 빈 → MaskingEngineHolder (AtomicReference 인스턴스 교체) 로 대체.
+ * // 룰 mutation(POST/PATCH/DELETE) 성공 직후 MaskingRuleService 가 reload() 호출 —
+ * // 이후 ingest 분부터 반영 (BL-06). apilens-common MaskingEngine 코드 diff 0 (NFR-03).
  */
 @Configuration
 public class MaskingConfig {
 
     @Bean
-    public MaskingEngine maskingEngine(JdbcTemplate jdbc, ObjectMapper mapper) {
-        List<MaskingRule> rules = jdbc.query(
-                """
-                        SELECT name, rule_type, pattern, mask_strategy, enabled
-                        FROM masking_rules
-                        WHERE enabled = 1
-                        """,
-                (rs, rowNum) -> new MaskingRule(
-                        rs.getString("name"),
-                        MaskingRuleType.valueOf(rs.getString("rule_type").toUpperCase(Locale.ROOT)),
-                        rs.getString("pattern"),
-                        MaskingStrategy.valueOf(rs.getString("mask_strategy").toUpperCase(Locale.ROOT)),
-                        rs.getInt("enabled") == 1
-                )
-        );
-        return new MaskingEngine(rules, mapper);
+    public MaskingEngineHolder maskingEngineHolder(MaskingRuleRepository repository, ObjectMapper mapper) {
+        MaskingEngineHolder holder = new MaskingEngineHolder(repository, mapper);
+        holder.reload(); // startup 1회 — 저장 룰 반영 (v0.1 빈 로딩과 동일 시점 보장)
+        return holder;
     }
 }

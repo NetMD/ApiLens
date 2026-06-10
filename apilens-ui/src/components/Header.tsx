@@ -7,9 +7,10 @@
 //   - SH-12 활성 표시 = bg-stone-100 text-stone-900 font-medium (밑줄 톤 회피)
 //   - SH-17 [+] 버튼 aria-label="Add service" + tooltip "Service 를 추가해요"
 import type { ReactNode } from 'react';
-import { Link, useLocation, useSearchParams } from 'react-router';
+import { Link, useSearchParams } from 'react-router';
 import { searchAcrossRoutes } from '../lib/routeSearch';
 import type { RangePreset } from '../lib/time';
+import { BrandNav } from './BrandNav';
 import { ServiceSelector } from './ServiceSelector';
 import { TimeRangeSelector } from './TimeRangeSelector';
 import { LiveToggle } from './LiveToggle';
@@ -34,43 +35,16 @@ export function Header({
   onLiveChange,
   hideDashboardControls = false,
 }: Props): ReactNode {
-  const location = useLocation();
   const [searchParams] = useSearchParams();
   // route 전환 링크는 setup 의 step 을 싣지 않는다 (routeSearch 참고).
   const search = searchAcrossRoutes(searchParams);
 
-  // SH-12 활성 판정 — /traces/:id 는 Dashboard 하위 화면 메타.
-  const dashboardActive =
-    location.pathname === '/' || location.pathname.startsWith('/traces/');
-  const servicesActive = location.pathname === '/services';
-
-  const activeMenuClass =
-    'px-3 py-1.5 text-sm rounded-md text-stone-900 font-medium bg-stone-100';
-  const inactiveMenuClass =
-    'px-3 py-1.5 text-sm rounded-md text-stone-500 hover:text-stone-900 hover:bg-stone-50';
-
   return (
     <header className="flex h-14 items-center justify-between border-b border-stone-200 bg-white px-6">
+      {/* Phase R12 (FR-B4, AC-B4-1): 좌측부 (로고+버전+네비) → BrandNav 공통 승격 (UX-G-01 / 설계 §3.2.1).
+          W-03 가로 메뉴 / SH-06 search 보존 / SH-12 활성 표시는 BrandNav 내부로 이동 — 의미 변경 0. */}
       <div className="flex items-center gap-3">
-        <span className="text-base font-semibold text-stone-900">ApiLens</span>
-        <span className="text-xs text-stone-500">v0.1</span>
-        {/* W-03: 좌측 가로 메뉴 "Dashboard | Services" / SH-06 search 보존 / SH-12 활성 표시 */}
-        <nav className="ml-4 flex items-center gap-1" aria-label="Main navigation">
-          <Link
-            to={{ pathname: '/', search }}
-            className={dashboardActive ? activeMenuClass : inactiveMenuClass}
-            aria-current={dashboardActive ? 'page' : undefined}
-          >
-            Dashboard
-          </Link>
-          <Link
-            to={{ pathname: '/services', search }}
-            className={servicesActive ? activeMenuClass : inactiveMenuClass}
-            aria-current={servicesActive ? 'page' : undefined}
-          >
-            Services
-          </Link>
-        </nav>
+        <BrandNav />
         <div aria-hidden className="mx-2 h-6 border-r border-stone-200" />
       </div>
       {!hideDashboardControls && (

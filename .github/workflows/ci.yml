@@ -63,11 +63,13 @@ jobs:
       - name: Verify shadow jar relocate clean (D-01 인용)
         run: |
           # apilens-agent 의 shadow jar 안에 raw bytebuddy / jackson 클래스 0 hit 검증
-          AGENT_JAR=$(find apilens-agent/build/libs -name 'apilens-agent*.jar' | head -1)
-          if [ -z "$AGENT_JAR" ]; then
-            echo "ERROR: agent shadow jar not produced."
+          # [R12 D3 / DG-03] 글롭 매칭 1개 단언 — 0개(미산출)/2개 이상(stale 혼입) 즉시 실패
+          mapfile -t AGENT_JARS < <(find apilens-agent/build/libs -name 'apilens-agent*.jar' -not -name '*sources*' -not -name '*plain*' | sort)
+          if [ ${#AGENT_JARS[@]} -ne 1 ]; then
+            echo "ERROR: agent shadow jar 매칭 개수 비정상 (${#AGENT_JARS[@]}) — 정확히 1개여야 합니다: ${AGENT_JARS[*]:-'(none)'}"
             exit 1
           fi
+          AGENT_JAR=${AGENT_JARS[0]}
           jar tf "$AGENT_JAR" | tee /tmp/agent-jar-entries.txt > /dev/null
           # raw 패키지 (relocate 안 된 클래스) 0 hit
           if grep -E '^net/bytebuddy/' /tmp/agent-jar-entries.txt; then
@@ -168,11 +170,13 @@ jobs:
       - name: Verify agent jar embedded + static embedded (D-02 인용)
         run: |
           ls -la apilens-server/build/libs/
-          SERVER_JAR=$(find apilens-server/build/libs -name 'apilens-server-*.jar' -not -name '*plain*' -not -name '*sources*' | head -1)
-          if [ -z "$SERVER_JAR" ]; then
-            echo "ERROR: server bootJar not produced."
+          # [R12 D3 / DG-03] 글롭 매칭 1개 단언 — 0개(미산출)/2개 이상(stale 혼입) 즉시 실패
+          mapfile -t SERVER_JARS < <(find apilens-server/build/libs -name 'apilens-server-*.jar' -not -name '*plain*' -not -name '*sources*' | sort)
+          if [ ${#SERVER_JARS[@]} -ne 1 ]; then
+            echo "ERROR: server bootJar 매칭 개수 비정상 (${#SERVER_JARS[@]}) — 정확히 1개여야 합니다: ${SERVER_JARS[*]:-'(none)'}"
             exit 1
           fi
+          SERVER_JAR=${SERVER_JARS[0]}
           jar tf "$SERVER_JAR" | tee /tmp/server-jar-entries.txt > /dev/null
           # agent jar embed 검증
           if ! grep -q 'agent/apilens-agent.*\.jar' /tmp/server-jar-entries.txt; then

@@ -22,14 +22,12 @@ import io.apilens.agent.transport.SpanQueue;
 import io.apilens.agent.transport.SpanSender;
 import io.apilens.agent.util.AgentLogger;
 import io.apilens.common.IngestRequest;
-import io.apilens.common.MaskingEngine;
-import io.apilens.common.MaskingRule;
-import io.apilens.common.MaskingRuleType;
-import io.apilens.common.MaskingStrategy;
 import io.apilens.common.Span;
 import io.apilens.common.SpanKind;
 import io.apilens.common.SpanStatus;
 import io.apilens.server.ingest.IngestService;
+import io.apilens.server.masking.MaskingEngineHolder;
+import io.apilens.server.masking.MaskingRuleRepository;
 import io.apilens.server.query.TraceQueryRepository;
 import io.apilens.server.query.TraceQueryService;
 import io.apilens.server.query.dto.TraceListResponse;
@@ -43,7 +41,6 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.sqlite.SQLiteDataSource;
 
 import javax.sql.DataSource;
-import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
@@ -96,8 +93,13 @@ class AgentToServerIntegrationTest {
         JdbcTemplate jdbc = new JdbcTemplate(dataSource);
 
         // 2) Server-side services
-        MaskingEngine engine = buildEngine(jdbc);
-        IngestService ingestService = new IngestService(jdbc, engine, mapper);
+        // [Phase R12] AC-B2-3 연쇄: IngestService 주입이 MaskingEngine → MaskingEngineHolder 로
+        // 전환 (핫 리로드 — Design §3.1.4). production 동일 경로(repository → holder.reload)로
+        // V1 시드 default 룰을 적재한다. agent src/main diff 0 — 본 파일은 agent 모듈 거주
+        // 통합 테스트(CLAUDE.md Build lessons §1 거주지 규칙)의 server-side fixture 보정.
+        MaskingEngineHolder maskingHolder = new MaskingEngineHolder(new MaskingRuleRepository(jdbc), mapper);
+        maskingHolder.reload();
+        IngestService ingestService = new IngestService(jdbc, maskingHolder, mapper);
         queryService = new TraceQueryService(new TraceQueryRepository(jdbc, mapper));
 
         // 3) HttpServer bridges POST /v1/spans → ingestService.ingest
@@ -206,17 +208,4 @@ class AgentToServerIntegrationTest {
         return null;
     }
 
-    private MaskingEngine buildEngine(JdbcTemplate jdbc) {
-        List<MaskingRule> rules = jdbc.query(
-                "SELECT name, rule_type, pattern, mask_strategy, enabled FROM masking_rules WHERE enabled = 1",
-                (rs, rowNum) -> new MaskingRule(
-                        rs.getString("name"),
-                        MaskingRuleType.valueOf(rs.getString("rule_type").toUpperCase()),
-                        rs.getString("pattern"),
-                        MaskingStrategy.valueOf(rs.getString("mask_strategy").toUpperCase()),
-                        rs.getInt("enabled") == 1
-                )
-        );
-        return new MaskingEngine(rules, mapper);
-    }
 }

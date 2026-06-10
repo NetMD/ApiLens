@@ -17,16 +17,14 @@ package io.apilens.server.query;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.apilens.common.IngestRequest;
-import io.apilens.common.MaskingEngine;
-import io.apilens.common.MaskingRule;
-import io.apilens.common.MaskingRuleType;
-import io.apilens.common.MaskingStrategy;
 import io.apilens.common.Payload;
 import io.apilens.common.PayloadDirection;
 import io.apilens.common.Span;
 import io.apilens.common.SpanKind;
 import io.apilens.common.SpanStatus;
 import io.apilens.server.ingest.IngestService;
+import io.apilens.server.masking.MaskingEngineHolder;
+import io.apilens.server.masking.MaskingRuleRepository;
 import io.apilens.server.query.dto.PayloadDto;
 import io.apilens.server.query.dto.PayloadListResponse;
 import io.apilens.server.query.dto.ServiceInfo;
@@ -88,8 +86,9 @@ class TraceQueryServiceTest {
                 .migrate();
 
         JdbcTemplate jdbc = new JdbcTemplate(dataSource);
-        MaskingEngine engine = buildEngineFromSeededRules(jdbc);
-        this.ingestService = new IngestService(jdbc, engine, mapper);
+        MaskingEngineHolder maskingHolder = new MaskingEngineHolder(new MaskingRuleRepository(jdbc), mapper);
+        maskingHolder.reload(); // V1 시드 룰 로드 — v0.1 buildEngineFromSeededRules 와 동등 (R12 holder 전환)
+        this.ingestService = new IngestService(jdbc, maskingHolder, mapper);
         this.queryService = new TraceQueryService(new TraceQueryRepository(jdbc, mapper));
     }
 
@@ -100,19 +99,6 @@ class TraceQueryServiceTest {
         }
     }
 
-    private MaskingEngine buildEngineFromSeededRules(JdbcTemplate jdbc) {
-        List<MaskingRule> rules = jdbc.query(
-                "SELECT name, rule_type, pattern, mask_strategy, enabled FROM masking_rules WHERE enabled = 1",
-                (rs, rowNum) -> new MaskingRule(
-                        rs.getString("name"),
-                        MaskingRuleType.valueOf(rs.getString("rule_type").toUpperCase()),
-                        rs.getString("pattern"),
-                        MaskingStrategy.valueOf(rs.getString("mask_strategy").toUpperCase()),
-                        rs.getInt("enabled") == 1
-                )
-        );
-        return new MaskingEngine(rules, mapper);
-    }
 
     // ─── 1. List round-trip ──────────────────────────────────────────────
 
@@ -352,9 +338,12 @@ class TraceQueryServiceTest {
     // 사용자 명시 비협상 결정. CLAUDE.md '아키텍처 핵심 원칙' 인용.
     @Test
     void servicesListAggregatesAcrossTraces() {
-        ingestSimpleTrace("t1", "svc-a", 1_000L, 1_100L, SpanStatus.OK);
-        ingestSimpleTrace("t2", "svc-a", 2_000L, 2_050L, SpanStatus.OK);
-        ingestSimpleTrace("t3", "svc-b", 3_000L, 3_100L, SpanStatus.ERROR);
+        // [Phase R12] AC-A3-1: traceCount 의미 변경 — 최근 24h 윈도우 (start_time 기준).
+        // 1970 epoch 고정 픽스처(1_000L 등)는 윈도우 밖 → 카운트 0 이 되므로 now 기준으로 보정.
+        long now = System.currentTimeMillis();
+        ingestSimpleTrace("t1", "svc-a", now - 3_000L, now - 2_900L, SpanStatus.OK);
+        ingestSimpleTrace("t2", "svc-a", now - 2_000L, now - 1_950L, SpanStatus.OK);
+        ingestSimpleTrace("t3", "svc-b", now - 1_000L, now - 900L, SpanStatus.ERROR);
 
         List<ServiceInfo> services = queryService.listServices().services();
 

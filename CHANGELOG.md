@@ -17,6 +17,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - (candidate) JDBC PreparedStatement 파라미터의 이름 기반 마스킹 보강 — 현재 PAYLOAD IN 키가 parameterIndex 라 이름 기반 룰이 매칭되지 않는 한계 개선.
 
+## [0.2.0] - 2026-06-11
+
+> 성능 수습 + 설정 페이지 + trace 필터. agent 모듈은 변경 없음 (v0.1 agent 그대로 호환).
+
+### BREAKING CHANGES
+
+- **`GET /v1/services` 의 `traceCount` 의미 변경 — 누적 전수 → 최근 24시간** (`start_time` 기준, 경계값 포함). 누적 카운트가 대용량 DB 에서 매 호출 풀스캔을 유발해 윈도우 한정으로 변경했습니다. 필드명·응답 구조는 무변경이며 UI 라벨은 `Trace 수 (24h)` 로 표기합니다. 이 값을 누적 카운트로 소비하던 외부 스크립트가 있다면 의미를 재해석해야 합니다.
+- **retention cleanup 이 실제로 동작 시작 — 기본 30일 초과 trace 자동 영구 삭제**. v0.1 의 retention 설정은 읽는 코드가 없는 dead key 여서 데이터가 무한 보관됐지만, v0.2.0 부터 매일 04:00 에 보관 기간(기본 30일)을 초과한 trace 가 영구 삭제됩니다 (복구 불가). 30일 넘은 trace 를 보존하려면 업그레이드 후 첫 04:00 전에 설정 페이지(`/settings`)에서 보관 기간을 늘려 두세요 (1~3650일).
+- **SQLite `journal_mode` 가 `delete` → `WAL` 로 전환** — DB 파일 옆에 `-wal` / `-shm` 동반 파일이 생기며, 한 번 WAL 로 전환된 DB 는 v0.1 jar 로 롤백해도 WAL 이 유지됩니다 (v0.1 동작에 문제는 없음). 또한 `auto_vacuum=INCREMENTAL` 전환을 위해 v0.2.0 첫 기동 시 1회 `VACUUM` 이 수행됩니다 — 기존 DB 크기에 비례한 1회성 기동 지연이 있습니다 (멱등 — 2회차 기동부터 건너뜀).
+
+### Added
+
+- **설정 페이지 (`/settings`)** — 보관 기간(retention) 변경 + 마스킹 룰 관리 UI.
+- **마스킹 룰 관리 API** (`/v1/masking-rules` — 목록/추가/삭제/토글 + 라이브 프리뷰). v0.1 의 빌트인 default 룰 4종(주민번호/카드번호/password/token)은 그대로이며, 관리 동작이 추가된 것입니다. default 룰은 **삭제 불가(409), 비활성 토글만 가능**. 프리뷰는 agent/server 와 같은 공유 마스킹 엔진으로 계산 — 화면 토글(저장 전) 상태를 그대로 반영합니다.
+- **룰 핫 리로드** — 룰 추가/삭제/토글이 서버 재기동 없이 적용됩니다. **룰 변경은 이후 ingest 분에만 적용 — 기존 저장 payload 의 재마스킹은 없습니다** (재마스킹 경로 자체가 없음). 룰 로드 실패 시 동작: 기동 시점 실패는 기동을 차단하고 (마스킹 없는 침묵 기동 방지 — v0.1 의 fail-closed 와 동일한 의미), 운영 중 reload 실패는 기존 룰 세트를 그대로 유지합니다.
+- **설정 API** (`GET/PUT /v1/settings`) — `retention.days` (정수 1~3650, 원자 적용). **설정 페이지 저장 값(DB)이 yml 값보다 우선**, 미설정 시 yml fallback (기본 30일).
+- **retention cleanup 스케줄러** — 매일 04:00 (yml `apilens.retention.cleanup-cron`), payloads → spans → traces 순 행 단위 배치 삭제 (DB 파일 삭제/재생성 없음).
+- **Dashboard trace 필터** — status + operation 검색 (`GET /v1/traces?q=` — root operation 풀 FQCN 부분 일치, `%`/`_`/`\` 리터럴 매칭).
+
+### Changed
+
+- **ingest 저장을 batchUpdate 로 전환** — span/payload 단건 INSERT 루프 제거 (수신 batch 당 왕복 감소). 저장 결과·REPLACE 동작은 동일.
+- **SQLite 운영 설정 적용** — `journal_mode=WAL` (위 BREAKING CHANGES 참조) / `synchronous=NORMAL` / `busy_timeout=5000` 을 JDBC URL 로 모든 connection 에 적용. `auto_vacuum=INCREMENTAL` 전환은 첫 기동 시 1회 자동 수행 (기존 v0.1 DB 포함, 멱등 — sqlite-jdbc 가 auto_vacuum 을 URL 파라미터로 지원하지 않아 startup 전환 방식 채택). 조회 인덱스 1종 추가 (`traces(service_name, start_time DESC, trace_id DESC)`).
+
 ## [0.1.0] - 2026-06-03
 
 > 첫 public release. 한국 SI 운영자가 NAS 같은 환경에 결재 없이 깔 수 있는 가벼운 호출 추적 도구.
