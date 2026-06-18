@@ -99,7 +99,10 @@ class AgentToServerIntegrationTest {
         // 통합 테스트(CLAUDE.md Build lessons §1 거주지 규칙)의 server-side fixture 보정.
         MaskingEngineHolder maskingHolder = new MaskingEngineHolder(new MaskingRuleRepository(jdbc), mapper);
         maskingHolder.reload();
-        IngestService ingestService = new IngestService(jdbc, maskingHolder, mapper);
+        // [Phase R13 hotfix] IngestService 생성자에 IngestProperties 추가(AC-A2-1) — server 클래스를
+        // 직접 생성하는 본 통합 테스트 fixture 도 4-인자로 갱신. 기본 1MB 한도(IngestProperties @DefaultValue 동일값).
+        IngestService ingestService = new IngestService(jdbc, maskingHolder, mapper,
+                new io.apilens.server.ingest.IngestProperties(1_048_576L));
         queryService = new TraceQueryService(new TraceQueryRepository(jdbc, mapper));
 
         // 3) HttpServer bridges POST /v1/spans → ingestService.ingest
