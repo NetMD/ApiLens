@@ -20,6 +20,7 @@ import io.apilens.common.IngestRequest;
 import io.apilens.common.Span;
 import io.apilens.common.SpanKind;
 import io.apilens.common.SpanStatus;
+import io.apilens.server.ingest.IngestProperties;
 import io.apilens.server.ingest.IngestService;
 import io.apilens.server.masking.MaskingEngineHolder;
 import io.apilens.server.masking.MaskingRuleRepository;
@@ -72,7 +73,7 @@ class TraceQueryRepositoryTest {
         ObjectMapper mapper = new ObjectMapper();
         MaskingEngineHolder holder = new MaskingEngineHolder(new MaskingRuleRepository(jdbc), mapper);
         holder.reload();
-        this.ingestService = new IngestService(jdbc, holder, mapper);
+        this.ingestService = new IngestService(jdbc, holder, mapper, new IngestProperties(1_048_576L));
         this.repository = new TraceQueryRepository(jdbc, mapper);
     }
 

@@ -53,11 +53,16 @@ public class IngestService {
     // 매 mask 호출 시점에 current() 로 최신 엔진을 읽는다 — 룰 변경은 이후 ingest 분부터 반영 (BL-06).
     private final MaskingEngineHolder maskingHolder;
     private final ObjectMapper mapper;
+    // [Phase R13] AC-A2-1 — payload 저장 직전 크기 가드 한도(개별 payload body byte).
+    // @ConfigurationPropertiesScan(ApiLensApplication.java:27)으로 bean 자동 등록 → 생성자 주입.
+    private final IngestProperties ingestProperties;
 
-    public IngestService(JdbcTemplate jdbc, MaskingEngineHolder maskingHolder, ObjectMapper mapper) {
+    public IngestService(JdbcTemplate jdbc, MaskingEngineHolder maskingHolder, ObjectMapper mapper,
+                         IngestProperties ingestProperties) {
         this.jdbc = jdbc;
         this.maskingHolder = maskingHolder;
         this.mapper = mapper;
+        this.ingestProperties = ingestProperties;
     }
 
     @Transactional
@@ -174,14 +179,22 @@ public class IngestService {
                 continue;
             }
             for (Payload payload : span.payloads()) {
+                // NFR-06 비협상: mask → guard 순서 (마스킹 회피 차단). mask 결과를 측정·절단한다.
                 String maskedBody = maskingHolder.current().mask(payload.body(), payload.contentType());
+                // [Phase R13] AC-A1-1/AC-A1-2/AC-A1-5 — D-03 server-side truncate 가드.
+                // 한도 초과 시 잘라 저장 + truncated=1. agent 가 정상 흐름에서 먼저 자르므로 보통 idle(안전망).
+                PayloadGuard.Result guarded = PayloadGuard.guard(maskedBody, ingestProperties.maxPayloadBytes());
                 rows.add(new Object[]{
                         span.spanId(),
                         payload.direction().name().toLowerCase(Locale.ROOT),
                         payload.contentType(),
-                        maskedBody,
-                        payload.sizeBytes(),
-                        payload.truncated() ? 1 : 0
+                        // 한도 초과면 절단 본문, 아니면 mask 결과 그대로 (무손실).
+                        guarded.body(),
+                        // size_bytes: server 가 절단했을 때만 mask 결과의 원본 byte 로 재계산해 덮어씀.
+                        // 미발동 시 agent 가 보낸 sizeBytes 신뢰 — "자르기 전 원본 크기" 의미 보존 (AC-A1-5, D-A3).
+                        guarded.truncated() ? guarded.sizeBytes() : payload.sizeBytes(),
+                        // truncated: server 가 잘랐거나(신규) agent 가 이미 잘랐으면(기존) 1 — OR 보존 (AC-A1-5).
+                        (guarded.truncated() || payload.truncated()) ? 1 : 0
                 });
             }
         }

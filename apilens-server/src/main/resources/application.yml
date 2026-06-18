@@ -58,8 +58,9 @@ management:
 # ApiLens 자체 설정
 apilens:
   ingest:
-    # span 배치 수신 시 max payload size (byte). 초과 시 reject
-    max-batch-size-bytes: 1048576  # 1 MB
+    # 개별 payload body 의 최대 저장 크기 (byte). 초과 시 server 가 한도까지 잘라 저장 + truncated=true
+    # (agent 가 64KB 로 못 자른 거대 payload 방어용 안전망 — mask 적용 후 측정·절단, UTF-8 경계 보존).
+    max-payload-bytes: 1048576  # 1 MB
   retention:
     # 보관 기간(일). 설정 페이지 저장 값(settings DB)이 이 값보다 우선 — 이 키는 settings 미설정 시 fallback (D-05).
     # cleanup 은 아래 cleanup-cron 스케줄로 실행 (payloads → spans → traces 행 단위 DELETE — 파일 삭제 0, D-04).

@@ -32,6 +32,8 @@ dependencies {
 // server jar 안에 agent jar를 리소스로 넣어두고, 첫 실행 시 ~/.apilens/agent.jar로 풀어줌
 // (운영자는 별도 다운로드 없이 server 한 번 띄우면 agent.jar 위치 안내받음)
 
+// [Phase R13] E3: embedAgent 는 Copy 유지 — rename 으로 고정 파일명(apilens-agent.jar)을 쓰므로
+// 버전 bump 시에도 이름이 바뀌지 않아 옛 산출물 잔존이 없다 (embedUi 의 Sync 전환과 무관).
 val embedAgent by tasks.registering(Copy::class) {
     dependsOn(":apilens-agent:shadowJar")
     from(project(":apilens-agent").tasks.named("shadowJar"))
@@ -43,7 +45,10 @@ val embedAgent by tasks.registering(Copy::class) {
 // apilens-ui (Vite)의 dist를 server resources/static으로 복사
 // UI 빌드는 별도 스크립트(npm run build)에서 수행 — Gradle은 산출물만 가져다 씀
 
-val embedUi by tasks.registering(Copy::class) {
+// [Phase R13] E3: Copy → Sync 전환 — UI 빌드 산출물은 hash 가 박힌 파일명(index-<hash>.js 등)이라
+// Copy 면 옛 assets 가 static 에 잔존해 stale 번들이 임베드될 수 있다. Sync 는 source 에 없는
+// 대상 파일을 자동 제거해 dist 와 1:1 동기화한다 (embedAgent 는 고정명이라 Copy 유지 — 위 주석 참조).
+val embedUi by tasks.registering(Sync::class) {
     val uiDist = rootProject.file("apilens-ui/dist")
     from(uiDist)
     into(layout.buildDirectory.dir("resources/main/static"))

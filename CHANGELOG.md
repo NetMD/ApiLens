@@ -17,6 +17,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - (candidate) JDBC PreparedStatement 파라미터의 이름 기반 마스킹 보강 — 현재 PAYLOAD IN 키가 parameterIndex 라 이름 기반 룰이 매칭되지 않는 한계 개선.
 
+## [0.2.1] - 2026-06-18
+
+<!--
+  v0.2.1 anchor (EXT-009 frontmatter 4 요소):
+  - phase: R13 (server-only)
+  - ac: AC-A1-1/AC-A1-2/AC-A1-5 (payload 가드), AC-B3-1/AC-B3-2 (maintenance 계약), AC-D1-2/AC-D1-3 (디스크 회수)
+  - 비협상: 사용자 명시 비협상 결정 (D-04 운영 DB 파일 삭제 금지 / D-05 마스킹·relocate 불변 / D-07 무인증). agent 모듈 무변경(NFR-01).
+  - claude-md: CLAUDE.md '데이터 모델 (5개 테이블, 변경 신중히)' · 'v0.1 범위' · 'Build 설정 lessons §1'
+-->
+
+> server-only 유지보수 릴리스. **agent 모듈은 변경 없음** (v0.1/v0.2 agent 그대로 호환). 스키마 변경 0 (마이그레이션 미추가).
+
+### Added
+
+- **payload 크기 가드 (server-side)** — ingest 저장 직전, 개별 payload body 가 `apilens.ingest.max-payload-bytes`(기본 1MB)를 넘으면 server 가 한도까지 잘라 저장하고 `truncated=true` 로 기록합니다. agent 가 정상 흐름에서 먼저 64KB 로 자르므로 보통은 동작하지 않는 안전망이며, agent 우회·오작동·대형 payload 폭증을 server 저장 시점에 차단합니다. 마스킹 적용 후 측정·절단하므로(mask → truncate) 마스킹을 우회하지 않고, UTF-8 문자 경계를 보존해 멀티바이트 문자를 쪼개지 않습니다.
+- **수동 데이터 정리 API** (`POST /v1/maintenance/cleanup` · `POST /v1/maintenance/purge`) — 설정 페이지 "데이터 관리"에서 보관 기간 즉시 적용 / 전체 삭제를 트리거합니다. 두 동작 모두 `payloads → spans → traces` 순 행 단위 배치 DELETE + PRAGMA 로만 공간을 회수하며 **DB 파일을 삭제/이동/재생성하지 않습니다** (D-04). purge 는 되돌릴 수 없으며 **인증이 없으므로** server 를 신뢰 네트워크에만 노출해야 합니다 (D-07). 응답은 `{ deletedTraces, freedBytes, dbSizeBytes }`.
+
+### Changed
+
+- **ingest 설정 키 이름 교정** — `apilens.ingest.max-batch-size-bytes` → `apilens.ingest.max-payload-bytes`. 옛 키는 "batch 총합 거부"를 암시했지만 v0.1 부터 읽는 코드가 없는 dead key 였고, 실제 정책은 위 payload 가드의 **개별 payload body 한도**입니다. yml override 에 옛 키를 적어 둔 환경은 새 키로 바꿔 주세요 (안 바꿔도 기본 1MB 로 동작).
+- **수동 정리 시 WAL 회수 보강 + 한계 명문화** — `cleanup`/`purge` 후 `incremental_vacuum → wal_checkpoint(TRUNCATE) → ANALYZE` 순서로 `-wal` 파일을 0바이트로 잘라 디스크를 회수합니다. 다만 `incremental_vacuum` 은 파일 끝(tail)의 free page 만 회수하고, `wal_checkpoint` 는 화면을 보는 중(reader 활성) 실행 시 busy 로 부분 실패할 수 있어(다음 정리에서 재시도) `freedBytes` 가 삭제량 대비 작게 나올 수 있습니다 (한도이지 결함 아님).
+
 ## [0.2.0] - 2026-06-11
 
 > 성능 수습 + 설정 페이지 + trace 필터. agent 모듈은 변경 없음 (v0.1 agent 그대로 호환).

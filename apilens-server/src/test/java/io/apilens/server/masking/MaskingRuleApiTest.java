@@ -22,6 +22,7 @@ import io.apilens.common.PayloadDirection;
 import io.apilens.common.Span;
 import io.apilens.common.SpanKind;
 import io.apilens.common.SpanStatus;
+import io.apilens.server.ingest.IngestProperties;
 import io.apilens.server.ingest.IngestService;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeEach;
@@ -89,7 +90,7 @@ class MaskingRuleApiTest {
         this.mockMvc = MockMvcBuilders
                 .standaloneSetup(new MaskingRuleController(service, previewService))
                 .build();
-        this.ingestService = new IngestService(jdbc, holder, mapper);
+        this.ingestService = new IngestService(jdbc, holder, mapper, new IngestProperties(1_048_576L));
     }
 
     // ─── 목록 (Design §5.3 — default 4종 상단 고정) ─────────────────────────

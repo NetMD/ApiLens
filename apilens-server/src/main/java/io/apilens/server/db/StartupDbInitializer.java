@@ -94,7 +94,11 @@ public class StartupDbInitializer implements ApplicationRunner {
             log.warn("SQLite auto_vacuum conversion failed — continuing startup (incremental cleanup will compensate)", e);
         }
         try {
-            // AC-A4-3: ANALYZE 는 매 기동 무조건 (수십 ms 수준) — V3 인덱스 통계 신선도 유지
+            // AC-A4-3: ANALYZE 는 매 기동 무조건 — V3 인덱스 통계 신선도 유지.
+            // [Phase R13] AC-D1-2 규모 동반 정정: 소규모 DB 에서는 수십 ms 수준이나,
+            // 대용량에서는 비용이 크다 (실측 3.7GB DB 에서 약 30.7s 기동 지연). 매 기동 무조건 실행은
+            // 통계 신선도 우선 결정 — analysis_limit / PRAGMA optimize 로 비용을 제어하는 방안은
+            // 동작 변경(통계 신선도 trade-off)이라 본 라운드 server-only 범위 밖 (backlog, Design §8 D-E2).
             jdbc.execute("ANALYZE");
         } catch (Exception e) {
             log.warn("SQLite ANALYZE failed — continuing startup", e);

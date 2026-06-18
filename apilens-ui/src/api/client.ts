@@ -21,6 +21,26 @@ export class ApiError extends Error {
 interface RequestOptions {
   signal?: AbortSignal;
   query?: Record<string, string | number | boolean | undefined>;
+  // [Phase R13] FR-B2/BL-07/D-08 — 동기 응답 타임아웃(ms). postJson 만 소비(다른 메서드 무변경).
+  // 미지정 시 기존 동작(브라우저 기본 타임아웃) 유지. maintenance(purge/cleanup) 만 5분 전달.
+  timeoutMs?: number;
+}
+
+/**
+ * [Phase R13] postJson 전용 signal 합성 helper (FR-B2/BL-07/D-08).
+ * - timeoutMs 미지정: 기존 동작 그대로(options.signal 만 사용 — 분기 미진입, 회귀 0).
+ * - timeoutMs 만 지정: AbortSignal.timeout(timeoutMs) 단독.
+ * - signal + timeoutMs 동시: AbortSignal.any([signal, timeout]) — 둘 중 먼저 abort 우선.
+ */
+function resolveSignal(options: RequestOptions): AbortSignal | undefined {
+  if (options.timeoutMs === undefined) {
+    return options.signal; // 기존 호출 경로 — 동작 불변
+  }
+  const timeoutSignal = AbortSignal.timeout(options.timeoutMs);
+  if (options.signal) {
+    return AbortSignal.any([options.signal, timeoutSignal]);
+  }
+  return timeoutSignal;
 }
 
 function buildUrl(path: string, query?: RequestOptions['query']): string {
@@ -102,8 +122,10 @@ export async function postJson<TReq, TRes>(
     },
     body: JSON.stringify(body),
   };
-  if (options.signal) {
-    fetchInit.signal = options.signal;
+  // [Phase R13] timeoutMs 옵션 소비(getJson/putJson/patchJson/deleteResource 는 무변경 — postJson 단독).
+  const signal = resolveSignal(options);
+  if (signal) {
+    fetchInit.signal = signal;
   }
   const res = await fetch(url, fetchInit);
 

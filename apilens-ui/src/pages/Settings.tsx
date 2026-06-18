@@ -13,6 +13,7 @@
 import type { ReactNode } from 'react';
 import { NavHeader } from '../components/NavHeader';
 import { RetentionSection } from '../components/settings/RetentionSection';
+import { DataManagementSection } from '../components/settings/DataManagementSection';
 import { MaskingRulesSection } from '../components/settings/MaskingRulesSection';
 
 export function Settings(): ReactNode {
@@ -24,6 +25,8 @@ export function Settings(): ReactNode {
           {/* T-03 — h1, ActiveServices.tsx h1 전례 동형 */}
           <h1 className="text-lg font-medium text-stone-900">Settings</h1>
           <RetentionSection />
+          {/* 데이터 관리 — 디스크 용량 수동 확보 (보관 정책의 Retention 섹션 바로 아래 배치). */}
+          <DataManagementSection />
           <MaskingRulesSection />
         </div>
       </main>

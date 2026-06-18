@@ -26,6 +26,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import java.util.Collections;
 import java.util.List;
+import java.util.OptionalLong;
 
 /**
  * Retention cleanup: deletes traces older than the resolved retention window,
@@ -49,6 +50,12 @@ public class RetentionCleanupService {
      * 배치당 trace 수 (Design §2-A1): SQLite 파라미터 바인딩 한계(구버전 999) 안전 마진 +
      * 실측 비율(traces:spans:payloads ≈ 1:2:3.1) 기준 배치당 ≈ 3,000행 — 배치 트랜잭션
      * 수십 ms 수준으로 장시간 writer 락 금지(NFR-04) 충족.
+     *
+     * <p>// [Phase R13] AC-D1-2 / E1 — 값 변경 없이 측정 조건 명문 (Design §7.3 / §8 D-E1):
+     * // 배치 500 유지. 250 으로 낮추면 배치당 tx 는 짧아지나 배치 수가 2배가 되어 전체 cleanup
+     * // 시간이 오히려 늘 수 있다. 성능 합격 기준은 단일 수치 단정이 아니라 cold(첫 기동 직후, page
+     * // cache 비움) / warm(반복 실행) + DB 규모(1만/10만/100만 trace) 를 동반해 측정한다
+     * // (R12 교훈: "cleanup <500ms" 단정이 cold 0.65~0.81s 에서 모호했음). 250 채택은 실측 후 backlog.
      */
     static final int RETENTION_DELETE_BATCH_SIZE = 500;
 
@@ -93,20 +100,66 @@ public class RetentionCleanupService {
         // [Phase R12] AC-A1-6 — D-05 resolve 경유 (settings DB 값 > yml fallback)
         long cutoffMs = nowMs - settingsService.resolveRetentionDays() * DAY_MS;
 
+        // 배치 3단 DELETE 루프 (cleanup/purgeAll 공통) — cutoff 지정 = 만료분만 삭제.
+        CleanupResult result = deleteInBatches(OptionalLong.of(cutoffMs));
+
+        finalizeMaintenance(nowMs);
+
+        log.info("retention cleanup finished: deletedTraces={} batches={} cutoffMs={}",
+                result.deletedTraces(), result.batches(), cutoffMs);
+        return result;
+    }
+
+    /**
+     * Purge ALL traces/spans/payloads (manual "clear everything" action).
+     *
+     * <p>// [수동 정리] D-04 비협상 verbatim: "운영 DB **파일** 삭제/이동/재생성 절대 금지.
+     * // 행 단위 DELETE + PRAGMA만으로 공간 회수". 사용자 명시 비협상 결정.
+     * // cleanup 의 배치/트랜잭션/3단 DELETE 패턴을 그대로 재사용 — cutoff 없는 전체 삭제만 차이.
+     * // CLAUDE.md '데이터 모델 (5개 테이블, 변경 신중히)' + RetentionCleanupService 클래스 주석 인용.
+     */
+    public CleanupResult purgeAll() {
+        long now = System.currentTimeMillis();
+
+        // cutoff 미지정(empty) = 전체 trace 가 삭제 대상.
+        CleanupResult result = deleteInBatches(OptionalLong.empty());
+
+        finalizeMaintenance(now);
+
+        log.info("manual purge-all finished: deletedTraces={} batches={}",
+                result.deletedTraces(), result.batches());
+        return result;
+    }
+
+    /**
+     * Batch loop shared by cleanup (cutoff present) and purgeAll (cutoff absent).
+     * Each batch is its own transaction (writer 락 분산) + explicit 3-step child-first DELETE.
+     *
+     * @param cutoffMs present → {@code received_at < cutoff} 만 삭제. empty → 전체 삭제.
+     */
+    private CleanupResult deleteInBatches(OptionalLong cutoffMs) {
         int batches = 0;
         int deletedTraces = 0;
         while (true) {
-            List<String> traceIds = jdbc.queryForList(
-                    """
-                            SELECT trace_id FROM traces
-                            WHERE received_at < ?
-                            ORDER BY received_at ASC
-                            LIMIT ?
-                            """,
-                    String.class, cutoffMs, batchSize
-            );
+            // cutoff 유무로 대상 선정만 분기 — cutoff 없으면 전체에서 오래된 순으로 배치.
+            List<String> traceIds = cutoffMs.isPresent()
+                    ? jdbc.queryForList(
+                            """
+                                    SELECT trace_id FROM traces
+                                    WHERE received_at < ?
+                                    ORDER BY received_at ASC
+                                    LIMIT ?
+                                    """,
+                            String.class, cutoffMs.getAsLong(), batchSize)
+                    : jdbc.queryForList(
+                            """
+                                    SELECT trace_id FROM traces
+                                    ORDER BY received_at ASC
+                                    LIMIT ?
+                                    """,
+                            String.class, batchSize);
             if (traceIds.isEmpty()) {
-                break; // AC-A1-5: 대상 소진 = 종료 조건
+                break; // AC-A1-5: 대상 소진 = 종료 조건 (purgeAll 도 동일)
             }
             String in = String.join(",", Collections.nCopies(traceIds.size(), "?"));
             Object[] params = traceIds.toArray();
@@ -121,17 +174,58 @@ public class RetentionCleanupService {
             batches++;
             deletedTraces += traceIds.size();
         }
+        return new CleanupResult(batches, deletedTraces);
+    }
 
+    /**
+     * Post-delete maintenance shared by cleanup and purgeAll:
+     * stamp last_cleanup_at, reclaim free pages, truncate WAL, refresh stats.
+     *
+     * <p>// [Phase R13] AC-D1-2 — 디스크 회수의 구조적 한계 2가지 (D-04 파일 삭제 금지 전제):
+     * // (i) incremental_vacuum 는 tail-only — free page 가 파일 끝에 모일 때만 회수한다.
+     * //     중간 단편화는 즉시 안 줄 수 있다 (full VACUUM 은 파일 재생성이라 D-04 로 금지).
+     * // (ii) wal_checkpoint(TRUNCATE) 는 reader 경합(SQLITE_BUSY)에 취약 — 수동 purge 는 운영자가
+     * //      화면을 보는 중(reader 활성) 실행될 확률이 높아 busy 로 부분 실패할 수 있다.
+     * //      그 경우 다음 cleanup(nightly/수동)에서 자연 재시도된다 (재시도 코드 불요).
+     */
+    private void finalizeMaintenance(long nowMs) {
         // AC-A1-7: 정상 종료 시 항상 갱신 (삭제 0건 포함) — "마지막 실행 시각" 의미 (T-10).
         jdbc.update("UPDATE retention_meta SET last_cleanup_at = ? WHERE id = 1", nowMs);
 
-        // BL-03: incremental_vacuum — full VACUUM 경로 아님 (D-04: 파일 삭제/재생성 0).
+        // BL-03: incremental_vacuum — full VACUUM 경로 아님 (D-04: 파일 삭제/재생성 0). tail-only 한계 (i).
         jdbc.execute("PRAGMA incremental_vacuum");
+        // [수동 정리] WAL truncate 미호출 시 -wal 파일이 안 줄어드는 문제 (디스크 회수 보강).
+        // 순서: incremental_vacuum → wal_checkpoint(TRUNCATE) → ANALYZE. (순서 불변 봉인 — Design §2.D.1)
+        // TRUNCATE 모드는 checkpoint 후 -wal 파일을 0 바이트로 잘라 디스크를 즉시 회수한다.
+        checkpointWal();
         // AC-A4-3: cleanup 후 ANALYZE — 인덱스 통계 갱신.
         jdbc.execute("ANALYZE");
+    }
 
-        log.info("retention cleanup finished: deletedTraces={} batches={} cutoffMs={}",
-                deletedTraces, batches, cutoffMs);
-        return new CleanupResult(batches, deletedTraces);
+    /**
+     * [Phase R13] AC-D1-3 — wal_checkpoint(TRUNCATE) 결과 로깅 (재시도 안 함 — 한계 (ii)).
+     *
+     * <p>// PRAGMA wal_checkpoint(TRUNCATE) 는 단일 row 3컬럼 (busy, log, checkpointed) 을 반환한다.
+     * // busy=1 이면 reader 경합으로 부분 실패 — 다음 cleanup 에서 자연 재시도되므로 로깅만 한다.
+     * // queryForMap 매핑이 드라이버 사정으로 불가하면 execute fallback (busy 관측 생략, 가용성 우선).
+     */
+    private void checkpointWal() {
+        try {
+            java.util.Map<String, Object> ck = jdbc.queryForMap("PRAGMA wal_checkpoint(TRUNCATE)");
+            Object busy = ck.get("busy"); // SQLite: 첫 컬럼명 "busy"
+            if (busy instanceof Number n && n.intValue() != 0) {
+                log.info("wal_checkpoint(TRUNCATE) busy — reader 경합, 부분 회수 (다음 cleanup 에서 재시도). result={}",
+                        ck);
+            }
+        } catch (Exception e) {
+            // queryForMap 매핑 실패(드라이버 차이) 또는 checkpoint 자체 실패 — execute fallback.
+            // 디스크 회수 한계를 가용성보다 우선하지 않는다 (cleanup 종료를 막지 않음).
+            log.warn("wal_checkpoint(TRUNCATE) result mapping unavailable — falling back to execute", e);
+            try {
+                jdbc.execute("PRAGMA wal_checkpoint(TRUNCATE)");
+            } catch (Exception e2) {
+                log.warn("wal_checkpoint(TRUNCATE) failed — continuing (디스크 회수 한계, 가용성 우선)", e2);
+            }
+        }
     }
 }

@@ -20,6 +20,7 @@ import io.apilens.common.IngestRequest;
 import io.apilens.common.Span;
 import io.apilens.common.SpanKind;
 import io.apilens.common.SpanStatus;
+import io.apilens.server.ingest.IngestProperties;
 import io.apilens.server.ingest.IngestService;
 import io.apilens.server.masking.MaskingEngineHolder;
 import io.apilens.server.masking.MaskingRuleRepository;
@@ -79,7 +80,7 @@ class ServicesServiceTest {
         this.service = new ServicesService(jdbc);
         MaskingEngineHolder maskingHolder = new MaskingEngineHolder(new MaskingRuleRepository(jdbc), mapper);
         maskingHolder.reload(); // V1 시드 룰 로드 — v0.1 buildEngineFromSeededRules 와 동등 (R12 holder 전환)
-        this.ingestService = new IngestService(jdbc, maskingHolder, mapper);
+        this.ingestService = new IngestService(jdbc, maskingHolder, mapper, new IngestProperties(1_048_576L));
     }
 
     @AfterEach

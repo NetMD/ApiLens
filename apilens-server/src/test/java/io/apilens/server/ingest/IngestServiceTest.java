@@ -57,6 +57,7 @@ class IngestServiceTest {
     Path tempDir;
     private Path dbFile;
     private JdbcTemplate jdbc;
+    private MaskingEngineHolder maskingHolder;
     private IngestService service;
 
     @BeforeEach
@@ -77,9 +78,15 @@ class IngestServiceTest {
                 .migrate();
 
         this.jdbc = new JdbcTemplate(dataSource);
-        MaskingEngineHolder maskingHolder = new MaskingEngineHolder(new MaskingRuleRepository(jdbc), mapper);
+        this.maskingHolder = new MaskingEngineHolder(new MaskingRuleRepository(jdbc), mapper);
         maskingHolder.reload(); // V1 시드 룰 로드 — v0.1 buildEngineFromSeededRules 와 동등 (R12 holder 전환)
-        this.service = new IngestService(jdbc, maskingHolder, mapper);
+        // 기본 1MB 한도 — A 가드는 정상 흐름에서 idle (agent 64KB 가 먼저 자름).
+        this.service = new IngestService(jdbc, maskingHolder, mapper, new IngestProperties(1_048_576L));
+    }
+
+    /** 작은 한도(maxBytes)로 server-side 가드 발동을 강제하는 IngestService 헬퍼. */
+    private IngestService serviceWithLimit(long maxBytes) {
+        return new IngestService(jdbc, maskingHolder, mapper, new IngestProperties(maxBytes));
     }
 
     @AfterEach
@@ -254,5 +261,70 @@ class IngestServiceTest {
         Integer traceCount = jdbc.queryForObject(
                 "SELECT COUNT(*) FROM traces WHERE trace_id = ?", Integer.class, "t1");
         assertEquals(1, traceCount);
+    }
+
+    // ─── [Phase R13] A server-side truncate 가드 통합 (AC-A1-1/AC-A1-2/AC-A1-5) ──
+
+    @Test
+    void truncatesOversizedPayloadBodyAndStoresOriginalSizeOnGuardTrigger() {
+        // 한도 10 byte 로 강제 발동. mask 가 길이를 바꾸지 않는 평문 body 사용 ("plain/text").
+        IngestService limited = serviceWithLimit(10L);
+        String body = "0123456789ABCDEF"; // 16 byte (> 10)
+        Span span = new Span(
+                "s-trunc", "t-trunc", null,
+                "svc", "GET /big", SpanKind.SERVER,
+                100L, 200L, SpanStatus.OK,
+                null,
+                // agent truncated=false, agent sizeBytes=16 (가드 미발동 가정 입력)
+                List.of(new Payload(PayloadDirection.IN, "text/plain", body, 16, false))
+        );
+        limited.ingest(new IngestRequest(List.of(span)));
+
+        Map<String, Object> p = jdbc.queryForMap(
+                "SELECT body, size_bytes, truncated FROM payloads WHERE span_id = ?", "s-trunc");
+        // AC-A1-1: 한도까지 잘라 저장 + truncated=1
+        assertEquals("0123456789", p.get("body"), "앞 10 byte 만 저장");
+        assertEquals(1, ((Number) p.get("truncated")).intValue(), "server 절단 → truncated=1");
+        // AC-A1-2: size_bytes = mask 결과 원본 byte (16) — server 절단 시 재계산해 덮어씀
+        assertEquals(16L, ((Number) p.get("size_bytes")).longValue(), "자르기 전 원본 16 byte");
+    }
+
+    @Test
+    void keepsPayloadUntouchedWhenWithinLimit() {
+        // 한도 1MB(기본) — 작은 body 는 가드 idle, agent 값 그대로 신뢰.
+        Span span = new Span(
+                "s-small", "t-small", null,
+                "svc", "GET /x", SpanKind.SERVER,
+                100L, 200L, SpanStatus.OK,
+                null,
+                List.of(new Payload(PayloadDirection.IN, "text/plain", "hello", 5, false))
+        );
+        service.ingest(new IngestRequest(List.of(span)));
+
+        Map<String, Object> p = jdbc.queryForMap(
+                "SELECT body, size_bytes, truncated FROM payloads WHERE span_id = ?", "s-small");
+        assertEquals("hello", p.get("body"), "한도 이하 — 원본 무손실");
+        assertEquals(0, ((Number) p.get("truncated")).intValue());
+        assertEquals(5L, ((Number) p.get("size_bytes")).longValue(), "agent sizeBytes 신뢰 유지 (AC-A1-5)");
+    }
+
+    @Test
+    void preservesAgentTruncatedFlagWhenServerGuardIdle() {
+        // TC-A7: agent 가 이미 truncated=true 로 보낸 한도 이하 body → truncated 유지 (OR 보존).
+        // server 가드 미발동 → agent size_bytes(9999, 원본) 그대로 신뢰.
+        Span span = new Span(
+                "s-agent-trunc", "t-agent-trunc", null,
+                "svc", "GET /x", SpanKind.SERVER,
+                100L, 200L, SpanStatus.OK,
+                null,
+                List.of(new Payload(PayloadDirection.IN, "text/plain", "short-body", 9999L, true))
+        );
+        service.ingest(new IngestRequest(List.of(span)));
+
+        Map<String, Object> p = jdbc.queryForMap(
+                "SELECT body, size_bytes, truncated FROM payloads WHERE span_id = ?", "s-agent-trunc");
+        assertEquals("short-body", p.get("body"), "한도 이하 — server 미절단");
+        assertEquals(1, ((Number) p.get("truncated")).intValue(), "AC-A1-5: agent truncated=true 보존 (OR)");
+        assertEquals(9999L, ((Number) p.get("size_bytes")).longValue(), "agent 원본 size_bytes 신뢰 유지");
     }
 }

@@ -51,6 +51,30 @@ export function formatJsonPretty(s: string): string {
 }
 
 /**
+ * 바이트 수를 사람이 읽기 좋은 문자열로 포맷 (디스크 용량 표시용).
+ * - 음수 / NaN / Infinity → "0 B" fallback
+ * - 1024 미만 → "{n} B"
+ * - 이후 KB / MB / GB / TB 로 1024 단위 환산, 소수 1자리 (정수면 소수 생략)
+ *
+ * 예: 0 → "0 B", 1536 → "1.5 KB", 53687091200 → "50 GB", 41943040 → "40 MB"
+ */
+export function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return '0 B';
+  if (bytes < 1024) return `${Math.round(bytes)} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'] as const;
+  let value = bytes / 1024;
+  let unitIdx = 0;
+  while (value >= 1024 && unitIdx < units.length - 1) {
+    value /= 1024;
+    unitIdx += 1;
+  }
+  // 정수면 소수점 생략 (50 GB), 아니면 소수 1자리 (1.5 KB)
+  const rounded = Math.round(value * 10) / 10;
+  const text = Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+  return `${text} ${units[unitIdx]}`;
+}
+
+/**
  * body 길이가 max 초과 시 잘라낸 부분과 잘림 여부 반환.
  * UTF-16 length 기준 — 한글/이모지의 실제 byte와 다를 수 있으나, UI 가독성 차단이 목적.
  *

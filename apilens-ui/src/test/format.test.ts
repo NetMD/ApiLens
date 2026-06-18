@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  formatBytes,
   formatDuration,
   formatJsonPretty,
   shortenOperation,
@@ -83,6 +84,44 @@ describe('formatJsonPretty', () => {
 
   it('빈 문자열은 빈 문자열', () => {
     expect(formatJsonPretty('')).toBe('');
+  });
+});
+
+describe('formatBytes', () => {
+  it('음수는 0 B로 fallback', () => {
+    expect(formatBytes(-1)).toBe('0 B');
+  });
+
+  it('NaN은 0 B로 fallback', () => {
+    expect(formatBytes(NaN)).toBe('0 B');
+  });
+
+  it('0은 0 B', () => {
+    expect(formatBytes(0)).toBe('0 B');
+  });
+
+  it('1024 미만은 바이트 그대로', () => {
+    expect(formatBytes(512)).toBe('512 B');
+  });
+
+  it('1024는 1 KB (정수면 소수 생략)', () => {
+    expect(formatBytes(1024)).toBe('1 KB');
+  });
+
+  it('1536은 1.5 KB (소수 1자리)', () => {
+    expect(formatBytes(1536)).toBe('1.5 KB');
+  });
+
+  it('41943040은 40 MB', () => {
+    expect(formatBytes(41943040)).toBe('40 MB');
+  });
+
+  it('53687091200은 50 GB (계약 예시 freedBytes)', () => {
+    expect(formatBytes(53687091200)).toBe('50 GB');
+  });
+
+  it('1 TB 단위까지 환산', () => {
+    expect(formatBytes(1099511627776)).toBe('1 TB');
   });
 });
 

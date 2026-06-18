@@ -82,7 +82,8 @@ class IngestServiceServiceRegistrationTest {
         this.jdbc = new JdbcTemplate(dataSource);
         MaskingEngineHolder maskingHolder = new MaskingEngineHolder(new MaskingRuleRepository(jdbc), mapper);
         maskingHolder.reload(); // V1 시드 룰 로드 — v0.1 buildEngineFromSeededRules 와 동등 (R12 holder 전환)
-        this.service = new IngestService(jdbc, maskingHolder, mapper);
+        // [Phase R13] IngestService 생성자에 IngestProperties 추가 — 기본 1MB 한도 (A 가드 idle).
+        this.service = new IngestService(jdbc, maskingHolder, mapper, new IngestProperties(1_048_576L));
     }
 
     @AfterEach

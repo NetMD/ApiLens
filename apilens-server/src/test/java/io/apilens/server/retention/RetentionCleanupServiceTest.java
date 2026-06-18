@@ -33,6 +33,8 @@ import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * [Phase R12] T-A1 — RetentionCleanupService 단위 테스트 (Design §7.2).
@@ -195,6 +197,90 @@ class RetentionCleanupServiceTest {
     void fallsBackToYmlDaysWhenSettingsRowAbsent() {
         assertEquals(30, settingsService.resolveRetentionDays(),
                 "settings 행 부재 → yml apilens.retention.days(30) fallback (D-05 '없으면 yml')");
+    }
+
+    // ─── purgeAll: 전체 비우기 (수동 정리 — cutoff 없이 전부 삭제) ───────────
+
+    @Test
+    void purgesAllTracesSpansAndPayloadsRegardlessOfAge() {
+        long now = System.currentTimeMillis();
+        // 만료분과 최근분이 섞여 있어도 전부 삭제되어야 한다 (cutoff 무시).
+        insertTraceTree("t-old", now - 100 * DAY_MS);
+        insertTraceTree("t-recent", now - DAY_MS);
+        insertTraceTree("t-just-now", now);
+
+        RetentionCleanupService.CleanupResult result = service.purgeAll();
+
+        assertEquals(3, result.deletedTraces(), "최근 행 포함 전체 삭제");
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM traces", Integer.class),
+                "traces 0건");
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM spans", Integer.class),
+                "spans 0건");
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM payloads", Integer.class),
+                "payloads 0건");
+    }
+
+    @Test
+    void purgeAllUpdatesLastCleanupAtAndLeavesZeroOrphans() {
+        long before = System.currentTimeMillis();
+        insertTraceTree("t-a", before - 5 * DAY_MS);
+        insertTraceTree("t-b", before - 2 * DAY_MS);
+
+        service.purgeAll();
+
+        // 전체 삭제 후 고아 0 (3단 DELETE 정합 — payloads→spans→traces).
+        assertEquals(0, jdbc.queryForObject(
+                "SELECT COUNT(*) FROM spans WHERE trace_id NOT IN (SELECT trace_id FROM traces)",
+                Integer.class), "고아 span 0");
+        assertEquals(0, jdbc.queryForObject(
+                "SELECT COUNT(*) FROM payloads WHERE span_id NOT IN (SELECT span_id FROM spans)",
+                Integer.class), "고아 payload 0");
+        // retention_meta.last_cleanup_at 가 작업 시각으로 갱신 (마지막 실행 시각 의미).
+        Long lastCleanupAt = jdbc.queryForObject(
+                "SELECT last_cleanup_at FROM retention_meta WHERE id = 1", Long.class);
+        assertNotNull(lastCleanupAt);
+        assertTrue(lastCleanupAt >= before, "purgeAll 후 last_cleanup_at 갱신");
+    }
+
+    @Test
+    void purgeAllOnEmptyDbDeletesNothingAndDoesNotThrow() {
+        // 빈 DB 에서도 정상 종료 (대상 0건 → 즉시 종료, PRAGMA/ANALYZE 만 수행).
+        RetentionCleanupService.CleanupResult result =
+                assertDoesNotThrow(() -> service.purgeAll());
+        assertEquals(0, result.deletedTraces());
+        assertEquals(0, result.batches());
+    }
+
+    // ─── WAL checkpoint(TRUNCATE) 추가가 기존 cleanup 을 깨지 않음 ────────────
+
+    @Test
+    void cleanupStillSucceedsWithWalCheckpointAdded() {
+        long now = System.currentTimeMillis();
+        insertTraceTree("t-expired", now - 100 * DAY_MS);
+        insertTraceTree("t-live", now - DAY_MS);
+
+        // WAL checkpoint(TRUNCATE) 가 finalizeMaintenance 에 추가된 뒤에도 throw 없이 동작.
+        RetentionCleanupService.CleanupResult result =
+                assertDoesNotThrow(() -> service.cleanup(now));
+
+        assertEquals(1, result.deletedTraces(), "만료분만 삭제 (cleanup 기존 동작 보존)");
+        assertEquals(1, countRows("traces", "t-live"), "최근 행은 보존");
+    }
+
+    // ─── [Phase R13] GT-3 게이트: wal_checkpoint(TRUNCATE) row 매핑 확정 (AC-D1-3) ──
+
+    @Test
+    void mapsWalCheckpointTruncateResultColumns() {
+        // GT-3: sqlite-jdbc 3.47.1.0 가 PRAGMA wal_checkpoint(TRUNCATE) 를 queryForMap 으로
+        // busy/log/checkpointed 3컬럼 row 로 반환하는지 확정 (반환하면 busy 로깅 경로 유효).
+        jdbc.execute("PRAGMA journal_mode=WAL");
+        insertTraceTree("t-x", System.currentTimeMillis() - DAY_MS);
+
+        java.util.Map<String, Object> ck =
+                assertDoesNotThrow(() -> jdbc.queryForMap("PRAGMA wal_checkpoint(TRUNCATE)"));
+        // busy 컬럼이 존재하고 Number 로 매핑되면 finalizeMaintenance 의 busy 로깅 경로가 유효.
+        assertTrue(ck.containsKey("busy"), "wal_checkpoint row 에 busy 컬럼 존재 (GT-3 확정)");
+        assertTrue(ck.get("busy") instanceof Number, "busy 가 Number 로 매핑");
     }
 
     // ─── job 예외 격리 (AC-A1-8 — throw 전파 0) ─────────────────────────────

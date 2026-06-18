@@ -151,6 +151,24 @@ export interface SettingsUpdateRequest {
   'retention.days': number;
 }
 
+/**
+ * POST /v1/maintenance/cleanup · POST /v1/maintenance/purge 공통 응답 (BE 계약 1:1).
+ *
+ * 두 엔드포인트 응답 형태 동일:
+ *   { "deletedTraces": 12345, "freedBytes": 53687091200, "dbSizeBytes": 41943040 }
+ * - deletedTraces : 삭제된 trace 건수 (정수).
+ * - freedBytes    : 이번 정리로 확보한 디스크 용량 (바이트). 사람이 읽는 단위로 포맷해 표시.
+ * - dbSizeBytes   : 정리 후 DB 파일 크기 (바이트).
+ * 에러 응답은 공통 { "error": "<message>" } (ApiErrorBody) — 서버 본문 직접 노출 금지.
+ *
+ * [S-64] 식별자·수치 타입 대조: 세 필드 모두 BE 응답에서 정수(long/int) → number.
+ */
+export interface MaintenanceResult {
+  deletedTraces: number;
+  freedBytes: number;
+  dbSizeBytes: number;
+}
+
 /** 마스킹 룰 타입 — V1 rule_type 컬럼 값 그대로. */
 export type MaskingRuleType = 'field_name' | 'regex';
 
