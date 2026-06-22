@@ -303,6 +303,7 @@ curl -H "Authorization: Bearer $APILENS_TOKEN" http://localhost:8765/v1/traces
 - **계측량 제어 + 거대 trace 완화** — agent 의 패키지 include/exclude 필터·최소 duration 필터로 과잉 계측을 줄여 용량·잠금 경합을 근본적으로 낮추고, server 는 대형 span 배치를 청크로 나눠 커밋
 - **멀티 서비스 분산 추적 (MSA)** — `traceparent` 전파 기반 cross-service trace 연결. 단일 서비스 추적 한계 해소
 - **인증 보강** — TLS 종단·ingest 토큰·세션 기반 인증 (v0.3.0 API Key 인증의 후속)
+- **API 문서 자동화 (OpenAPI/Swagger UI)** — 손으로 쓰는 API 문서를 코드 생성으로 전환하고, `/swagger-ui` 인터랙티브 문서를 단일 jar 에 임베드 (server 전용 — agent 무관). 문서가 코드와 어긋나지 않도록 하는 게 목적
 - **agent 보강 후보** — JDBC 파라미터 이름 기반 마스킹(컬럼 이름 추적), `java.time` 타입 직렬화 확장, `@Async` 비동기 경로, 공유 마스킹 엔진의 ReDoS 근본 차단 ([CHANGELOG](./CHANGELOG.md) Unreleased 후보 참조)
 
 ---
@@ -310,9 +311,12 @@ curl -H "Authorization: Bearer $APILENS_TOKEN" http://localhost:8765/v1/traces
 ## 문서 | Documentation
 
 - **[API 계약](./docs/api.md)** — 5개 엔드포인트의 요청/응답 계약, 인증, 유지보수 모드(수신 일시정지) API, 마스킹 동작. | REST API reference.
+- **[Agent 옵션](./docs/agent-options.md)** — agent 부착 시 JVM 시스템 프로퍼티 명세. | Agent JVM system properties.
+- **[설치·설정 가이드](./docs/setup.md)** — 설치 마법사·서비스 등록·인증·헬스 체크. | Setup guide.
+- **[Span attribute 키](./docs/otel-attributes.md)** — OpenTelemetry semantic conventions 기반 span 속성 키. | Span attribute keys.
 - **[변경 이력](./CHANGELOG.md)** — 버전별 변경 사항. | Changelog.
 
-> Agent 옵션·설치 가이드·span attribute 명세는 정비 후 공개 예정이고, API 문서는 향후 OpenAPI/Swagger UI 자동 생성으로 전환을 검토 중입니다 ([CHANGELOG](./CHANGELOG.md) Unreleased 참조). | Agent options / setup guide / attribute spec will be published after a refresh; a generated OpenAPI/Swagger UI is on the roadmap.
+> API 문서는 향후 OpenAPI/Swagger UI 자동 생성으로 전환을 검토 중입니다 ([CHANGELOG](./CHANGELOG.md) Unreleased 참조). | A generated OpenAPI/Swagger UI is on the roadmap.
 
 ---
 
