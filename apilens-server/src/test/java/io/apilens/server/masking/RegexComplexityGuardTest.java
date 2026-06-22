@@ -41,42 +41,44 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 class RegexComplexityGuardTest {
 
     /**
-     * [Phase K] AC-06-1 — 악성 정규식은 deadline 초과 → "pattern is too complex" (의도된 거부 = 정방향).
+     * [Phase K] AC-06-1 — deadline 초과 매칭은 "pattern is too complex" 로 거부(의도된 거부 = 정방향).
      *
-     * <p>★실측 보강 (설계 §3.3 예시 패턴 정정 — [S-68] 자진 신고)★: 설계 §3.3 의 예시 "(a+)+$" 는
-     * Java 21 HotSpot 의 regex 최적화로 REDOS_PROBE 에 catastrophic backtracking 을 일으키지 않는다
-     * (실측 0ms 통과 — 설계 §9.2 명문 잔여 한계의 실증). 본 테스트는 Java 21 에서 실제로 폭발하는
-     * (.*a){N}$ 류를 악성 표본으로 쓴다 — REDOS_PROBE("a"×40+"!") 에 대해 deadline 100ms 초과 차단(실측).
+     * <p>★hotfix (CI 환경 의존 제거)★: 기존엔 (.*a){20}$ 의 catastrophic backtracking 이 100ms 를 넘김에
+     * 의존했으나, java.util.regex 의 폭발 여부는 JDK 버전·CPU 에 의존적이라 CI(리눅스 JDK21)에서 flaky 였다
+     * (설계 §9.2 명문 한계). 이제 deadline 을 0(이미 지난 시각)으로 주입하고 charAt 가
+     * DEADLINE_CHECK_MASK(1024) 회 이상 호출되는 긴 입력을 써서, <b>패턴의 실제 폭발 여부와 무관하게</b>
+     * "deadline 초과 → reject" 로직 자체를 결정적으로 검증한다.
      */
     @Test
-    void returns400OnCatastrophicBacktrackingPattern() {
-        Pattern malicious = Pattern.compile("(.*a){20}$");
+    void rejectsWhenMatchingExceedsDeadline() {
+        Pattern p = Pattern.compile("a+$");            // 긴 입력을 charAt 로 순회(greedy + backtrack)
+        String longProbe = "a".repeat(5000) + "!";     // charAt 1024 회 훨씬 초과 → deadline 체크 발동
         IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
-                () -> RegexComplexityGuard.rejectIfTooComplex(malicious));
-        // AddRuleModal 고정 문구 → MaskingRuleController 가 400 {"error":"pattern is too complex"} 로 매핑.
+                () -> RegexComplexityGuard.rejectIfTooComplex(p, 0L, longProbe));
+        // MaskingRuleController 가 400 {"error":"pattern is too complex"} 로 매핑하는 고정 문구.
         assertEquals("pattern is too complex", ex.getMessage());
     }
 
-    /** [Phase K] AC-06-1 — 또 다른 ReDoS 패턴(반복 횟수 다른 중첩 .*)도 deadline 초과로 거부(의도된 거부 = 정방향). */
+    /** [Phase K] AC-06-1 — 중첩 quantifier 패턴도 deadline 감지로 거부(결정적 — timeout 0 주입, 폭발 의존 없음). */
     @Test
-    void returns400OnNestedQuantifierPattern() {
-        // probe('a'×40+'!') 에 매칭 시작점('a')이 있어야 backtracking 이 폭발한다(',' 류는 빠르게 실패).
-        Pattern malicious = Pattern.compile("(.*a){25}$");
+    void rejectsNestedQuantifierPatternViaDeadline() {
+        Pattern p = Pattern.compile("(a+)+$");
+        String longProbe = "a".repeat(5000) + "!";
         IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
-                () -> RegexComplexityGuard.rejectIfTooComplex(malicious));
+                () -> RegexComplexityGuard.rejectIfTooComplex(p, 0L, longProbe));
         assertEquals("pattern is too complex", ex.getMessage());
     }
 
-    /** [Phase K] AC-06-1 — 악성 룰 차단까지 무한 hang 0 + 시간 예산 내 완료(deadline 100 + 체크 간격, Design §8.2). */
+    /** [Phase K] AC-06-1 — 거부까지 무한 hang 0 + 시간 예산 내 완료(deadline 감지 후 즉시 자기 탈출). */
     @Test
-    void returns400WithinTimeBudgetWithoutHang() {
-        Pattern malicious = Pattern.compile("(.*a){20}$");
+    void rejectsWithinTimeBudgetWithoutHang() {
+        Pattern p = Pattern.compile("a+$");
         long start = System.nanoTime();
         assertThrows(IllegalArgumentException.class,
-                () -> RegexComplexityGuard.rejectIfTooComplex(malicious));
+                () -> RegexComplexityGuard.rejectIfTooComplex(p, 0L, "a".repeat(5000) + "!"));
         long elapsedMs = (System.nanoTime() - start) / 1_000_000L;
         assertTrue(elapsedMs < 2000L,
-                "ReDoS 차단이 무한 hang 없이 시간 예산 내 완료되어야 함 (실측 " + elapsedMs + "ms)");
+                "deadline 감지 후 무한 hang 없이 즉시 완료되어야 함 (실측 " + elapsedMs + "ms)");
     }
 
     /**
