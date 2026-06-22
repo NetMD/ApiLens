@@ -16,6 +16,7 @@ import { Settings } from './pages/Settings';
 import { FirstRunGuard } from './components/FirstRunGuard';
 import { ToastProvider } from './components/Toast';
 import { LazyDevtools } from './components/LazyDevtools';
+import { MaintenanceModeBanner } from './components/MaintenanceModeBanner';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -33,6 +34,8 @@ export function App(): ReactNode {
       <ToastProvider>
         <BrowserRouter>
           <FirstRunGuard>
+            {/* [Phase R15] AC-B3-1 — 전역 상단 고정 배너(Routes 직전, 모든 화면 상단). 사용자 명시 비협상 결정(D03/D06). CLAUDE.md 'UI 디자인 철학'. */}
+            <MaintenanceModeBanner />
             <Routes>
               <Route path="/" element={<Dashboard />} />
               <Route path="/traces/:traceId" element={<TraceDetail />} />

@@ -176,6 +176,24 @@ export interface MaintenanceResult {
   busy?: boolean;
 }
 
+/**
+ * [Phase R15] AC-A3-1/AC-A3-2 — GET/POST /v1/maintenance/{status,pause,resume} 공통 응답
+ * (BE MaintenanceStatusResponse record 1:1).
+ *   { "paused": true, "pausedAt": 1730000000000 }  // 일시정지 중
+ *   { "paused": false, "pausedAt": null }          // 수신 중
+ * BE 가 paused=false 시 pausedAt=null 보장(echo 일관성). MaintenanceResult 와 별도 타입(이종 반환 회피).
+ * 사용자 명시 비협상 결정(D03 in-memory 상태). CLAUDE.md '아키텍처 핵심 원칙' (수신 일시정지 단일 기능).
+ *
+ * [S-64] BE↔FE 식별자 타입 1:1 대조: BE MaintenanceStatusResponse record(io.apilens.server.retention)
+ *   = `record MaintenanceStatusResponse(boolean paused, Long pausedAt)` (설계 §2.4 실측).
+ *   - paused : boolean → boolean
+ *   - pausedAt : Long(박싱, null 가능, epoch millis) → number | null (Jackson null 직렬화).
+ */
+export interface MaintenanceStatusResponse {
+  paused: boolean;
+  pausedAt: number | null; // epoch millis. BE Long → number | null.
+}
+
 /** 마스킹 룰 타입 — V1 rule_type 컬럼 값 그대로. */
 export type MaskingRuleType = 'field_name' | 'regex';
 

@@ -19,6 +19,7 @@ import { deleteService, listServicesDetailed } from '../api/services';
 import type { HealthStatus, ServiceInfo } from '../types/api';
 import { STATUS_HEX_HEALTH, STATUS_LABEL_KO } from '../lib/colors';
 import { useSearchPreservingNavigate } from '../hooks/useSearchPreservingNavigate';
+import { useMaintenanceStatus } from '../hooks/useMaintenanceStatus';
 import { NavHeader } from '../components/NavHeader';
 import { ErrorState } from '../components/ErrorState';
 import { LoadingSkeleton } from '../components/LoadingSkeleton';
@@ -32,6 +33,8 @@ export function ActiveServices(): ReactNode {
   const nav = useSearchPreservingNavigate();
   const queryClient = useQueryClient();
   const toast = useToast();
+  // [Phase R15] AC-B4-1 — 전역 일시정지 배지(h1 우측 inline). 공유 queryKey ['maintenance','status'] (health dot 별개).
+  const { paused } = useMaintenanceStatus();
 
   // [R10] AC-06-6 / AC-06-7 / AC-06-8 (D-H10-04 비협상 — auto-refetch 강화).
   // SH-13 정합 — queryKey 정적 ['services', 'detailed'] 보존 (시간 변수 박지 말 것).
@@ -133,7 +136,15 @@ export function ActiveServices(): ReactNode {
       <main className="flex-1 overflow-auto px-6 py-6">
         <div className="mx-auto max-w-5xl space-y-4">
           <div className="flex items-center justify-between">
-            <h1 className="text-lg font-medium text-stone-900">Services</h1>
+            <div className="flex items-center gap-2">
+              <h1 className="text-lg font-medium text-stone-900">Services</h1>
+              {/* [Phase R15] AC-B4-1/T-02 — 전역 일시정지 배지(neutral amber, health dot 별개). 사용자 명시 비협상 결정(D03). CLAUDE.md 'UI 디자인 철학'. */}
+              {paused && (
+                <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-xs text-amber-900">
+                  수신 일시정지 중
+                </span>
+              )}
+            </div>
             {/* [+ Add service] 버튼 — search 보존 (SH-06) */}
             <Link
               to={{ pathname: '/setup', search }}

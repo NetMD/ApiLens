@@ -47,7 +47,9 @@ application-local.properties
 .serena/
 .mcp.json
 CLAUDE.md
-docs/
+# docs/ 는 공개 API 계약 문서(api.md)만 선별 추적 — 내부 메모·mockups·images·.DS_Store·미정비 문서(agent-options/otel-attributes/setup)는 정비 후 공개
+docs/*
+!docs/api.md
 examples/
 prompt/
 scripts/stop-words.txt

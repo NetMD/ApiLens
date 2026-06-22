@@ -15,6 +15,8 @@
  */
 package io.apilens.server.retention;
 
+import io.apilens.server.ingest.IngestPauseState;
+import io.apilens.server.ingest.IngestPauseStateTestFactory;
 import io.apilens.server.settings.SettingsRegistry;
 import io.apilens.server.settings.SettingsService;
 import org.flywaydb.core.Flyway;
@@ -33,8 +35,10 @@ import org.sqlite.SQLiteDataSource;
 import javax.sql.DataSource;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -79,7 +83,9 @@ class MaintenanceControllerTest {
         RetentionCleanupService cleanupService =
                 new RetentionCleanupService(jdbc, txManager, settingsService);
 
-        MaintenanceController controller = new MaintenanceController(cleanupService, jdbc);
+        // [Phase R15] 3-인자 — IngestPauseState 추가 주입. 기본 시간 소스(System) 인스턴스.
+        MaintenanceController controller =
+                new MaintenanceController(cleanupService, jdbc, new IngestPauseState());
         this.mockMvc = MockMvcBuilders.standaloneSetup(controller).build();
     }
 
@@ -194,6 +200,93 @@ class MaintenanceControllerTest {
         boolean busy = cleanupService.optimizeDatabase();
         org.junit.jupiter.api.Assertions.assertFalse(busy,
                 "충분한 디스크에서 VACUUM 은 tx 밖 실행으로 SQLITE_ERROR 없이 성공해야 함 (GT-5)");
+    }
+
+    // ── [Phase R15] 수신 일시정지 set 모델 — status/pause/resume (D03/D05/D08) ──
+
+    /**
+     * standaloneSetup 으로 MaintenanceController + 주입한 IngestPauseState 를 묶어 새 MockMvc 를 만든다.
+     * cap 결정적 주입을 위해 시간 소스를 외부에서 제어할 수 있게 한다.
+     */
+    private MockMvc mockMvcWith(IngestPauseState pauseState) {
+        MaintenanceController controller =
+                new MaintenanceController(newCleanupService(), jdbc, pauseState);
+        return MockMvcBuilders.standaloneSetup(controller).build();
+    }
+
+    /**
+     * [Phase R15] AC-A3-2 verbatim: "pause 후 status 가 paused=true, pausedAt != null 을 echo 한다".
+     * 정방향: reports paused true after pause.
+     */
+    @Test
+    void reportsPausedTrueAfterPause() throws Exception {
+        IngestPauseState pauseState = IngestPauseStateTestFactory.withClock(() -> 1_000L);
+        MockMvc mvc = mockMvcWith(pauseState);
+
+        mvc.perform(post("/v1/maintenance/pause"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.paused").value(true))
+                .andExpect(jsonPath("$.pausedAt").value(1000));
+
+        mvc.perform(get("/v1/maintenance/status"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.paused").value(true))
+                .andExpect(jsonPath("$.pausedAt").value(1000));
+    }
+
+    /**
+     * [Phase R15] AC-A3-2 — resume 후 status 가 paused=false, pausedAt=null 을 echo 한다.
+     * 정방향: reports resumed false after resume.
+     */
+    @Test
+    void reportsResumedFalseAfterResume() throws Exception {
+        IngestPauseState pauseState = IngestPauseStateTestFactory.withClock(() -> 1_000L);
+        MockMvc mvc = mockMvcWith(pauseState);
+        pauseState.pause();
+
+        mvc.perform(post("/v1/maintenance/resume"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.paused").value(false))
+                .andExpect(jsonPath("$.pausedAt").doesNotExist());
+
+        mvc.perform(get("/v1/maintenance/status"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.paused").value(false))
+                .andExpect(jsonPath("$.pausedAt").doesNotExist());
+    }
+
+    /**
+     * [Phase R15] AC-A1-3 verbatim: "재시작 시 in-memory 상태가 false 로 복귀한다" — 새 bean status = false.
+     * 정방향: reports false on fresh bean.
+     */
+    @Test
+    void reportsFalseOnFreshBean() throws Exception {
+        MockMvc mvc = mockMvcWith(new IngestPauseState());
+
+        mvc.perform(get("/v1/maintenance/status"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.paused").value(false))
+                .andExpect(jsonPath("$.pausedAt").doesNotExist());
+    }
+
+    /**
+     * [Phase R15] AC-A1-4 — cap 경과(결정적 주입) 후 status 가 paused=false echo(status() 가 isPaused() 호출 →
+     * 자가 재개). 정방향: reports false after cap elapsed.
+     */
+    @Test
+    void reportsFalseAfterCapElapsed() throws Exception {
+        AtomicLong clock = new AtomicLong(0L);
+        IngestPauseState pauseState = IngestPauseStateTestFactory.withClock(clock::get);
+        MockMvc mvc = mockMvcWith(pauseState);
+        pauseState.pause(); // pausedAt = 0
+
+        // cap 초과 시각으로 진행 → status 조회 시점 자가 재개.
+        clock.set(30L * 60L * 1000L + 1L); // MAX_PAUSE_MS + 1
+
+        mvc.perform(get("/v1/maintenance/status"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.paused").value(false))
+                .andExpect(jsonPath("$.pausedAt").doesNotExist());
     }
 
     private RetentionCleanupService newCleanupService() {

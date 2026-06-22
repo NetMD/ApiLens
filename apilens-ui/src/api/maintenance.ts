@@ -7,8 +7,8 @@
 //
 // 응답 = 두 엔드포인트 공통 MaintenanceResult (설계 계약 1:1). 본문 없이 POST (body 불필요)지만
 // client.ts 의 postJson 헬퍼는 JSON body 직렬화를 전제하므로 빈 객체({})를 전송한다 (saveSettings 동형).
-import { postJson } from './client';
-import type { MaintenanceResult } from '../types/api';
+import { getJson, postJson } from './client';
+import type { MaintenanceResult, MaintenanceStatusResponse } from '../types/api';
 
 // [Phase R13] D-08 — purge 는 대량 시 동기 응답이 수 분 걸릴 수 있어 브라우저 기본 타임아웃에
 // 끊길 위험이 있다. cleanup/purge 두 동기 호출에 5분 상한을 둔다(매직넘버 금지 — 명명 상수).
@@ -51,4 +51,40 @@ export async function optimizeDatabase(): Promise<MaintenanceResult> {
   return postJson<Record<string, never>, MaintenanceResult>('/v1/maintenance/optimize', {}, {
     timeoutMs: MAINTENANCE_TIMEOUT_MS,
   });
+}
+
+// [Phase R15] AC-A3-1/AC-B1-1~3 — 수신 일시정지 set 2엔드포인트 + status 조회.
+// 사용자 명시 비협상 결정(D02 503+Retry-After / D03 in-memory). CLAUDE.md '아키텍처 핵심 원칙' (수신 일시정지 단일 기능).
+// ⚠️ MAINTENANCE_TIMEOUT_MS 재사용 안 함 — status/pause/resume 은 즉답이라 신규 timeout 상수 0 (설계 §2.6/G-10 보존).
+
+/**
+ * [Phase R15] AC-A3-1 — GET /v1/maintenance/status — 현재 일시정지 상태 폴링(즉답, timeout 미지정 — 기본 동작).
+ *
+ * 응답 = MaintenanceStatusResponse ({ paused, pausedAt }). 인증 보호 경로(키 설정 시 토큰 자동 첨부 — client.ts buildHeaders).
+ */
+export async function getMaintenanceStatus(signal?: AbortSignal): Promise<MaintenanceStatusResponse> {
+  // exactOptionalPropertyTypes 정합 — signal 은 정의된 경우만 전달(listServices 동형).
+  const fetchOpts: { signal?: AbortSignal } = {};
+  if (signal) {
+    fetchOpts.signal = signal;
+  }
+  return getJson<MaintenanceStatusResponse>('/v1/maintenance/status', fetchOpts);
+}
+
+/**
+ * [Phase R15] AC-A3-1 — POST /v1/maintenance/pause — 수신 일시정지(빈 body, 즉답). 멱등.
+ *
+ * 응답 = MaintenanceStatusResponse. 기존 maintenance POST(cleanup/purge/optimize) 동형 빈 body 패턴.
+ */
+export async function pauseReceiving(): Promise<MaintenanceStatusResponse> {
+  return postJson<Record<string, never>, MaintenanceStatusResponse>('/v1/maintenance/pause', {});
+}
+
+/**
+ * [Phase R15] AC-A3-1 — POST /v1/maintenance/resume — 수신 재개(빈 body, 즉답). 멱등.
+ *
+ * 응답 = MaintenanceStatusResponse.
+ */
+export async function resumeReceiving(): Promise<MaintenanceStatusResponse> {
+  return postJson<Record<string, never>, MaintenanceStatusResponse>('/v1/maintenance/resume', {});
 }

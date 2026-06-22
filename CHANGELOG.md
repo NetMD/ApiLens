@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- (candidate) **유지보수 모드(수신 일시정지)** — collector 가 agent 적재를 잠시 멈춘 상태에서 디스크 최적화(VACUUM)·정리(purge)를 잠금 경합 없이 안전하게 수행 (v0.3.1 예정). 운영 중인 서비스를 멈추지 않고, collector 쪽 수신만 일시 차단합니다 (agent 는 silent drop — 호스트 앱 영향 0).
+- (candidate) **API 문서 자동화 (OpenAPI / Swagger UI)** — 손으로 쓰는 마크다운 API 문서가 코드와 어긋나는 문제를 근본 해소하기 위해 springdoc-openapi 로 컨트롤러에서 스펙을 생성하고 `/swagger-ui` 인터랙티브 문서를 단일 jar 에 임베드 검토 (server 전용 의존성 — agent 무관). 운영 서사(503 부작용·마스킹 의미 등)는 별도 산문 문서로 병행.
 - (candidate) `JdbcParamSerializer` 의 `java.time` 타입 확장 (LocalDate / LocalDateTime / LocalTime / ZonedDateTime).
 
 ### Changed
@@ -23,15 +23,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - (candidate) **공유 마스킹 엔진 ReDoS 근본 차단** — 신규 룰 저장뿐 아니라 이미 저장된 룰·ingest 마스킹 경로까지 linear-time 매칭(RE2/j 류)으로 보호. 엔진 변경이 agent 재빌드를 동반해 다음 agent 라운드로 묶음.
 - (candidate) JDBC PreparedStatement 파라미터의 이름 기반 마스킹 보강 — 현재 PAYLOAD IN 키가 parameterIndex 라 이름 기반 룰이 매칭되지 않는 한계 개선.
 
-## [0.3.0] - 2026-06-22
+## [0.3.1] - 2026-06-23
 
-<!--
-  v0.3.0 anchor (EXT-009 frontmatter 4 요소):
-  - phase: K (R14, v0.3 첫 라운드 — server + UI, agent 모듈 무변경)
-  - ac: AC-A (API Key 인증) / AC-B (마스킹 ReDoS 가드) / AC-C (온라인 VACUUM 최적화)
-  - 비협상: 사용자 명시 비협상 결정 (R14-D01 agent·common 엔진 무변경 / R14-D02 API Key / R14-D04 ingest 무인증 / R14-D05 마스킹 엔진 불변)
-  - claude-md: CLAUDE.md '아키텍처 핵심 원칙' · 'v0.1 범위'(인증 = v0.3) · 'Build 설정 lessons §1'
--->
+> 유지보수 모드(수신 일시정지). 디스크 최적화(VACUUM)·정리를 잠금 경합 없이 끝내도록 **collector 의 적재만 잠시 멈추는** 기능입니다. server 와 UI 만 바뀌고 **agent·common 모듈은 변경 없음** (v0.1~v0.3.0 agent 그대로 호환). 스키마 변경 0 (마이그레이션 미추가 — 상태는 in-memory).
+
+### Added
+
+- **유지보수 모드 (수신 일시정지)** — 설정 페이지 "데이터 관리" 섹션의 [수신 일시정지]/[수신 재개] 버튼으로 collector 의 적재를 잠시 끊습니다. 운영 중인 서비스는 멈추지 않고 collector 쪽 수신만 일시 차단해, 디스크 최적화(VACUUM)·정리(purge/cleanup)를 SQLite write 잠금 경합 없이 안전하게 수행합니다.
+- **수신 일시정지 API 3종** (`io.apilens.server.retention.MaintenanceController`) — `GET /v1/maintenance/status`(상태 조회) · `POST /v1/maintenance/pause`(일시정지) · `POST /v1/maintenance/resume`(재개). 모두 `MaintenanceStatusResponse { paused, pausedAt }` 를 echo 하고 **멱등**합니다. `/v1/**` default-deny 로 보호됩니다 (v0.3.0 의 API Key 인증 자동 계승 — 키 설정 시 토큰 필수).
+- **max-pause cap (30분 자동 재개)** — 운영자가 일시정지를 켜둔 채 잊어도 30분 뒤 server 가 자동으로 수신을 재개합니다 (안전장치). 별도 스케줄러 없이 요청 시점 lazy 판정으로 동작합니다.
+- **유지보수 모드 UI** — 화면 상단 고정 배너("수신 일시정지 중 — 이 동안 들어온 데이터는 저장되지 않습니다") · Services 화면 배지 · 일시정지 중 대시보드 실시간 갱신 자동 중단. 정리(최적화·삭제) 전 수신 일시정지를 권장하는 안내 텍스트 (강제 아님).
+
+### Changed
+
+- **`POST /v1/spans` ingest 응답** — 유지보수 모드(수신 일시정지) 중에는 `503 Service Unavailable` + `Retry-After: 60` 헤더로 응답하고, validate/mask/DB write 를 전부 건너뜁니다. 일시정지 중 들어온 trace 는 **저장되지 않습니다** (agent 는 해당 batch 를 drop). 정상 수신 시 응답은 기존과 동일(`202` + `{ accepted, traces }`).
+
+### Notes
+
+- **상태는 in-memory 입니다** — server 를 재시작하면 항상 수신 중(`paused=false`)으로 복귀합니다 (DB 에 저장하지 않음, 스키마 변경 0).
+- **agent·common 모듈 무변경** — agent jar 재빌드가 필요 없습니다. jar 만 0.3.1 로 교체하고 재기동하면 됩니다.
+- **업그레이드/롤백** — 0.3.0 jar 와 DB 가 그대로 호환됩니다 (스키마 미변경). 0.3.0 으로 롤백해도 데이터 영향 0.
+
+## [0.3.0] - 2026-06-22
 
 > v0.3 첫 릴리스. **API Key 인증 + 마스킹 정규식 ReDoS 가드 + 온라인 디스크 최적화(VACUUM)**. server 와 UI 만 바뀌고 **agent 모듈은 변경 없음** (v0.1/v0.2 agent 그대로 호환). 스키마 변경 0 (마이그레이션 미추가).
 
@@ -59,7 +72,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **API Key 인증** (`io.apilens.server.auth`) — Spring Security 의존성을 추가하지 않은 경량 서블릿 필터(`OncePerRequestFilter`)로 단일 토큰을 검증합니다. 토큰 비교는 타이밍 공격을 막기 위해 상수 시간(`MessageDigest.isEqual`)으로 수행합니다. **인증 면제(무토큰 허용) 경로**: setup wizard(`/v1/setup/**`) · agent 적재(`POST /v1/spans`) · 헬스체크(`/actuator/health`) · 정적 자산과 SPA 화면(`/`, `/index.html`, `/assets/**`). 그 외 모든 `/v1/**` 는 토큰이 설정돼 있으면 보호됩니다. 토큰은 server 기동 옵션으로만 두며 **DB 에 저장하지 않습니다** (키 교체 = server 재시작).
 - **인증 토큰 입력 UI** — 설정 페이지에서 토큰을 입력하면 브라우저 세션(`sessionStorage`)에 보관하고 이후 모든 요청에 헤더로 붙입니다. 토큰이 없거나 틀려 401 이 나면 자동 새로고침(polling)을 멈추고 토큰 입력을 유도합니다 (잘못된 토큰으로 401 이 반복되며 화면이 먹통이 되는 것을 막습니다). 토큰 저장은 브라우저 보관만 하고 어떤 보호 API 도 호출하지 않습니다 (토큰 입력 화면 자체가 인증에 막혀 영구 잠기는 일이 없게).
 - **마스킹 정규식 ReDoS 가드** — 사용자가 마스킹 룰(custom 정규식)을 추가/수정할 때, 저장 직전에 제한 시간(100ms) 안에 시험 매칭이 끝나는지 검사합니다. catastrophic backtracking(입력 길이에 지수적으로 느려지는 정규식)이 의심되면 저장을 거부하고 400 `pattern is too complex` 를 반환합니다. 별도 스레드를 띄우지 않고 매칭 도중 경과 시간을 검사해 스스로 빠져나오는 방식이라 스레드 누수가 없습니다.
-- **온라인 디스크 최적화(VACUUM)** (`POST /v1/maintenance/optimize`) — 설정 페이지 "데이터 관리" 에 "최적화" 버튼이 추가됐습니다. 데이터를 지우지 않고 SQLite `VACUUM` 으로 파일 내부의 빈 공간(free page)을 회수해 DB 파일 크기를 줄입니다. `cleanup`/`purge` 가 행을 지워도 파일 크기가 잘 안 줄던 한계(삭제된 빈 page 가 파일에 남음)를 보완합니다. **VACUUM 은 운영 DB 파일을 삭제/재생성하지 않습니다** (같은 파일을 내부 재구성 — D-04 준수). 응답 `{ deletedTraces: 0, freedBytes, dbSizeBytes, busy }`.
+- **온라인 디스크 최적화(VACUUM)** (`POST /v1/maintenance/optimize`) — 설정 페이지 "데이터 관리" 에 "최적화" 버튼이 추가됐습니다. 데이터를 지우지 않고 SQLite `VACUUM` 으로 파일 내부의 빈 공간(free page)을 회수해 DB 파일 크기를 줄입니다. `cleanup`/`purge` 가 행을 지워도 파일 크기가 잘 안 줄던 한계(삭제된 빈 page 가 파일에 남음)를 보완합니다. **VACUUM 은 운영 DB 파일을 삭제/재생성하지 않습니다** (같은 파일을 내부 재구성). 응답 `{ deletedTraces: 0, freedBytes, dbSizeBytes, busy }`.
 
 ### Changed
 
@@ -78,20 +91,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.2.1] - 2026-06-18
 
-<!--
-  v0.2.1 anchor (EXT-009 frontmatter 4 요소):
-  - phase: R13 (server-only)
-  - ac: AC-A1-1/AC-A1-2/AC-A1-5 (payload 가드), AC-B3-1/AC-B3-2 (maintenance 계약), AC-D1-2/AC-D1-3 (디스크 회수)
-  - 비협상: 사용자 명시 비협상 결정 (D-04 운영 DB 파일 삭제 금지 / D-05 마스킹·relocate 불변 / D-07 무인증). agent 모듈 무변경(NFR-01).
-  - claude-md: CLAUDE.md '데이터 모델 (5개 테이블, 변경 신중히)' · 'v0.1 범위' · 'Build 설정 lessons §1'
--->
-
 > server-only 유지보수 릴리스. **agent 모듈은 변경 없음** (v0.1/v0.2 agent 그대로 호환). 스키마 변경 0 (마이그레이션 미추가).
 
 ### Added
 
 - **payload 크기 가드 (server-side)** — ingest 저장 직전, 개별 payload body 가 `apilens.ingest.max-payload-bytes`(기본 1MB)를 넘으면 server 가 한도까지 잘라 저장하고 `truncated=true` 로 기록합니다. agent 가 정상 흐름에서 먼저 64KB 로 자르므로 보통은 동작하지 않는 안전망이며, agent 우회·오작동·대형 payload 폭증을 server 저장 시점에 차단합니다. 마스킹 적용 후 측정·절단하므로(mask → truncate) 마스킹을 우회하지 않고, UTF-8 문자 경계를 보존해 멀티바이트 문자를 쪼개지 않습니다.
-- **수동 데이터 정리 API** (`POST /v1/maintenance/cleanup` · `POST /v1/maintenance/purge`) — 설정 페이지 "데이터 관리"에서 보관 기간 즉시 적용 / 전체 삭제를 트리거합니다. 두 동작 모두 `payloads → spans → traces` 순 행 단위 배치 DELETE + PRAGMA 로만 공간을 회수하며 **DB 파일을 삭제/이동/재생성하지 않습니다** (D-04). purge 는 되돌릴 수 없으며 **인증이 없으므로** server 를 신뢰 네트워크에만 노출해야 합니다 (D-07). 응답은 `{ deletedTraces, freedBytes, dbSizeBytes }`.
+- **수동 데이터 정리 API** (`POST /v1/maintenance/cleanup` · `POST /v1/maintenance/purge`) — 설정 페이지 "데이터 관리"에서 보관 기간 즉시 적용 / 전체 삭제를 트리거합니다. 두 동작 모두 `payloads → spans → traces` 순 행 단위 배치 DELETE + PRAGMA 로만 공간을 회수하며 **DB 파일을 삭제/이동/재생성하지 않습니다**. purge 는 되돌릴 수 없으며, 이 버전 시점에는 **인증이 없으므로** server 를 신뢰 네트워크에만 노출해야 합니다. 응답은 `{ deletedTraces, freedBytes, dbSizeBytes }`.
 
 ### Changed
 

@@ -266,6 +266,20 @@ curl -H "Authorization: Bearer $APILENS_TOKEN" http://localhost:8765/v1/traces
 
 ---
 
+## 유지보수 모드 (수신 일시정지) | Maintenance Mode (v0.3.1+)
+
+디스크 최적화(VACUUM)·정리는 SQLite write 잠금을 점유합니다. 적재(ingest)가 계속 들어오는 동안 정리하면 잠금 경합(`SQLITE_BUSY`)으로 부분 실패할 수 있습니다. **유지보수 모드**는 운영 중인 서비스를 멈추지 않고 **collector 의 적재만 잠시 끊어** 정리를 잠금 경합 없이 끝내게 해줍니다.
+
+- 설정 페이지(`/settings`)의 "데이터 관리" 섹션에서 **[수신 일시정지]** 버튼을 누르면 수신이 멈춥니다. 정리(최적화·삭제)가 끝나면 **[수신 재개]** 버튼으로 다시 켜세요.
+- 일시정지 중에는 화면 상단에 배너("수신 일시정지 중 — 이 동안 들어온 데이터는 저장되지 않습니다")가 뜨고, 대시보드 실시간 갱신이 멈춥니다.
+- 일시정지 중 들어오는 trace 는 server 가 **503 으로 거부**하며 **저장되지 않습니다**. agent 는 해당 batch 를 drop 합니다.
+- **켜둔 채 잊어도 30분 뒤 자동으로 재개**됩니다 (안전장치). 유지보수는 수 분 내 짧게 끝내고 즉시 재개하는 것을 전제로 합니다.
+- 상태는 메모리에만 두므로 **server 를 재시작하면 항상 수신 중(false)으로 복귀**합니다 (DB 에 저장하지 않음).
+
+> **Maintenance mode** lets you pause ingest (without stopping your monitored services) so disk optimization (VACUUM) and cleanup run without write-lock contention. Toggle it from the "데이터 관리" section on `/settings`. While paused, `POST /v1/spans` returns `503 Retry-After: 60` and incoming traces are **not stored**. A 30-minute max-pause cap auto-resumes ingest if you forget. The state is in-memory only — a server restart always resumes ingest.
+
+---
+
 ## v0.3 한계 | v0.3 Limitations
 
 투명하게 적어둡니다. 운영 도입 결정 시 참고하세요.
@@ -277,7 +291,7 @@ curl -H "Authorization: Bearer $APILENS_TOKEN" http://localhost:8765/v1/traces
 - **JDBC 파라미터 키 이름 마스킹 한계** — 위 [PII 마스킹](#pii-마스킹--pii-masking) 경고 참조
 - **인증은 선택적, TLS 미내장** — v0.3.0 에서 API Key 인증이 추가됐습니다 (위 [인증](#인증--authentication-v03) 섹션). 다만 토큰은 평문(HTTP)으로 전송되고 agent 적재 경로(`/v1/spans`)는 무인증 면제이므로 **여전히 신뢰 네트워크 전제**입니다. 공용망 직접 노출 금지 — TLS 가 필요하면 리버스 프록시로 종단하세요
 - **마스킹 ReDoS 가드는 신규 룰 저장 시점만 검사** — 악성 정규식은 룰을 저장할 때 차단되지만, 이미 저장된 룰이나 적재된 payload 가 마스킹을 거치는 경로는 가드 대상이 아닙니다. 근본 차단(공유 엔진의 linear-time 매칭)은 차기 agent 라운드로 이월
-- **대용량 단일 trace 의 적재 잠금 경합** — 한 trace 가 수만 개의 span 을 만드는 과잉 계측 환경에서는, 단일 트랜잭션의 대량 INSERT 가 SQLite write 잠금을 오래 점유해 동시에 들어오는 다른 trace 가 일시적으로 거부(`SQLITE_BUSY`)될 수 있습니다. 계측량 제어(차기 agent 라운드)와 유지보수 모드(v0.3.1)로 개선 예정
+- **대용량 단일 trace 의 적재 잠금 경합** — 한 trace 가 수만 개의 span 을 만드는 과잉 계측 환경에서는, 단일 트랜잭션의 대량 INSERT 가 SQLite write 잠금을 오래 점유해 동시에 들어오는 다른 trace 가 일시적으로 거부(`SQLITE_BUSY`)될 수 있습니다. v0.3.1 의 [유지보수 모드](#유지보수-모드-수신-일시정지--maintenance-mode-v031)로 정리 중 잠금 경합은 회피할 수 있고, 적재 자체의 계측량 제어는 차기 agent 라운드로 이월
 
 ---
 
@@ -285,11 +299,20 @@ curl -H "Authorization: Bearer $APILENS_TOKEN" http://localhost:8765/v1/traces
 
 순서와 범위는 바뀔 수 있습니다. Subject to change.
 
-- **유지보수 모드 (수신 일시정지)** — 운영 중인 서비스를 멈추지 않고 collector 의 적재만 잠시 끊어, 디스크 최적화(VACUUM)·정리를 잠금 경합 없이 수행 (v0.3.1)
+- **유지보수 모드 (수신 일시정지)** — ✅ **v0.3.1 출시 완료**. 운영 중인 서비스를 멈추지 않고 collector 의 적재만 잠시 끊어, 디스크 최적화(VACUUM)·정리를 잠금 경합 없이 수행. 위 [유지보수 모드](#유지보수-모드-수신-일시정지--maintenance-mode-v031) 섹션 참조
 - **계측량 제어 + 거대 trace 완화** — agent 의 패키지 include/exclude 필터·최소 duration 필터로 과잉 계측을 줄여 용량·잠금 경합을 근본적으로 낮추고, server 는 대형 span 배치를 청크로 나눠 커밋
 - **멀티 서비스 분산 추적 (MSA)** — `traceparent` 전파 기반 cross-service trace 연결. 단일 서비스 추적 한계 해소
 - **인증 보강** — TLS 종단·ingest 토큰·세션 기반 인증 (v0.3.0 API Key 인증의 후속)
 - **agent 보강 후보** — JDBC 파라미터 이름 기반 마스킹(컬럼 이름 추적), `java.time` 타입 직렬화 확장, `@Async` 비동기 경로, 공유 마스킹 엔진의 ReDoS 근본 차단 ([CHANGELOG](./CHANGELOG.md) Unreleased 후보 참조)
+
+---
+
+## 문서 | Documentation
+
+- **[API 계약](./docs/api.md)** — 5개 엔드포인트의 요청/응답 계약, 인증, 유지보수 모드(수신 일시정지) API, 마스킹 동작. | REST API reference.
+- **[변경 이력](./CHANGELOG.md)** — 버전별 변경 사항. | Changelog.
+
+> Agent 옵션·설치 가이드·span attribute 명세는 정비 후 공개 예정이고, API 문서는 향후 OpenAPI/Swagger UI 자동 생성으로 전환을 검토 중입니다 ([CHANGELOG](./CHANGELOG.md) Unreleased 참조). | Agent options / setup guide / attribute spec will be published after a refresh; a generated OpenAPI/Swagger UI is on the roadmap.
 
 ---
 

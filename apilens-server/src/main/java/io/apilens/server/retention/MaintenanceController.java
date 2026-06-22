@@ -15,11 +15,13 @@
  */
 package io.apilens.server.retention;
 
+import io.apilens.server.ingest.IngestPauseState;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
@@ -42,7 +44,7 @@ import java.util.Map;
  * // 삭제/이동/재생성 0). 공간 회수량 측정은 작업 전후 page_count × page_size 차로 계산한다.
  *
  * <p>에러 응답은 SettingsController 와 동형의 flat 표준 {@code { "error": "<message>" }}.
- * 인증 없음 — 신뢰 네트워크 전제 (기존과 동일).
+ * 인증 필요(키 설정 시) — R14 default-deny(/v1/** 보호) 자동 계승. AuthWhitelist 미등재.
  */
 @RestController
 public class MaintenanceController {
@@ -51,10 +53,16 @@ public class MaintenanceController {
 
     private final RetentionCleanupService cleanupService;
     private final JdbcTemplate jdbc;
+    // [Phase R15] AC-A3-1 — 수신 일시정지 상태(io.apilens.server.ingest.IngestPauseState) 추가 주입.
+    // 사용자 명시 비협상 결정(D03). CLAUDE.md '데이터 모델' (in-memory, V4 금지) 인용.
+    private final IngestPauseState pauseState;
 
-    public MaintenanceController(RetentionCleanupService cleanupService, JdbcTemplate jdbc) {
+    // 3-인자(기존 2-인자 + pauseState). cleanup/purge/optimize 본문 diff 0(D06).
+    public MaintenanceController(RetentionCleanupService cleanupService, JdbcTemplate jdbc,
+                                 IngestPauseState pauseState) {
         this.cleanupService = cleanupService;
         this.jdbc = jdbc;
+        this.pauseState = pauseState;
     }
 
     /**
@@ -102,6 +110,44 @@ public class MaintenanceController {
 
         // deletedTraces=0 — optimize 는 삭제 없음. busy 동반 (Design §4.1).
         return measure(0, beforePages, pageSize, busy);
+    }
+
+    // ── [Phase R15] 수신 일시정지 set 모델 — status/pause/resume (D03/D05/D08) ──
+
+    /**
+     * Current receive-pause state echo.
+     *
+     * <p>// [Phase R15] AC-A3-1 — set 모델 GET. 현재 일시정지 상태 echo. 사용자 명시 비협상 결정(D03).
+     * // CLAUDE.md '데이터 모델' (in-memory 상태, 스키마 변경 0) 인용.
+     * status() 도 isPaused() 를 호출 — 조회 시점 cap 경과면 자가 재개 echo(echo 일관성).
+     */
+    @GetMapping("/v1/maintenance/status")
+    public MaintenanceStatusResponse status() {
+        return new MaintenanceStatusResponse(pauseState.isPaused(), pauseState.pausedAt());
+    }
+
+    /**
+     * Pause receiving (수신 일시정지). Idempotent.
+     *
+     * <p>// [Phase R15] AC-A3-3 — set 모델 POST. 멱등(2회 호출도 true 유지, 최초 시각 보존).
+     * // 사용자 명시 비협상 결정(D03). CLAUDE.md '데이터 모델' (in-memory, 재시작 false) 인용.
+     */
+    @PostMapping("/v1/maintenance/pause")
+    public MaintenanceStatusResponse pause() {
+        pauseState.pause();
+        return new MaintenanceStatusResponse(pauseState.isPaused(), pauseState.pausedAt());
+    }
+
+    /**
+     * Resume receiving (수신 재개). Idempotent.
+     *
+     * <p>// [Phase R15] AC-A3-3 — set 모델 POST. 멱등(2회 호출도 false 유지). D05 수동 재개.
+     * // 사용자 명시 비협상 결정(D03). CLAUDE.md '데이터 모델' (in-memory, 재시작 false) 인용.
+     */
+    @PostMapping("/v1/maintenance/resume")
+    public MaintenanceStatusResponse resume() {
+        pauseState.resume();
+        return new MaintenanceStatusResponse(pauseState.isPaused(), pauseState.pausedAt());
     }
 
     /**

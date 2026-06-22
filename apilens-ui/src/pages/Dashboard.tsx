@@ -19,6 +19,7 @@ import { EmptyState } from '../components/EmptyState';
 import { ErrorState } from '../components/ErrorState';
 import { LoadingSkeleton } from '../components/LoadingSkeleton';
 import { useDashboardState } from '../hooks/useDashboardState';
+import { useMaintenanceStatus } from '../hooks/useMaintenanceStatus';
 import { listServices, listTraces } from '../api/traces';
 import { computeWindow } from '../lib/time';
 
@@ -51,6 +52,11 @@ export function Dashboard(): ReactNode {
   // auth401 = 마지막 tracesQuery 에러가 401 인지. enabled 에 반영해 자동 재조회 차단 + live 강제 off.
   const [auth401, setAuth401] = useState(false);
 
+  // [Phase R15] AC-B5-1 — 수신 일시정지 중이면 Live 폴링 무의미(새 데이터 0) → refetchInterval 조건부 중단.
+  // 사용자 명시 비협상 결정(D05 수동 재개 / D06 정리 미강제). CLAUDE.md '아키텍처 핵심 원칙' (수신 일시정지 단일 기능).
+  // 공유 queryKey ['maintenance','status'] — 배너·배지와 동기. 폴링만 멈추고 Live 토글 컨트롤 자체는 enabled 유지.
+  const { paused } = useMaintenanceStatus();
+
   // [R12] AC-C1-2/AC-C2-3 — queryKey 에 status/q 포함 (캐시 분리) + listTraces 전달.
   // placeholderData: keepPreviousData 채택 (UX §5.3 — 세그먼트 전환 시 스켈레톤 깜빡임 방지).
   const tracesQuery = useQuery({
@@ -76,7 +82,8 @@ export function Dashboard(): ReactNode {
     retry: (failureCount, err) => !(err instanceof ApiError && err.status === 401) && failureCount < 1,
     refetchOnWindowFocus: false,
     // [Phase K] (US-05, AC-05-1): 401 이면 live 여도 폴링 중단 (refetchInterval false).
-    refetchInterval: live && !auth401 ? 5_000 : false,
+    // [Phase R15] AC-B5-1: 수신 일시정지(paused) 중에도 폴링 중단(새 데이터 0). 사용자 명시 비협상 결정(D05/D06). CLAUDE.md '아키텍처 핵심 원칙'.
+    refetchInterval: live && !auth401 && !paused ? 5_000 : false,
     refetchIntervalInBackground: false,
     placeholderData: keepPreviousData,
   });
@@ -205,7 +212,15 @@ export function Dashboard(): ReactNode {
         onLiveChange={setLive}
       />
       <main className="flex-1 overflow-auto px-6 py-4">
-        <div className="mx-auto max-w-6xl">{renderBody()}</div>
+        <div className="mx-auto max-w-6xl">
+          {/* [Phase R15] AC-B5-2/T-09 — 일시정지로 Live 폴링이 멈춘 사유 안내(텍스트만, 컨트롤 disabled 아님). 사용자 명시 비협상 결정(D05/D06). CLAUDE.md '아키텍처 핵심 원칙'. */}
+          {paused && (
+            <p role="status" className="mb-3 text-center text-xs text-amber-700">
+              수신 일시정지 중이라 실시간 갱신을 멈췄어요.
+            </p>
+          )}
+          {renderBody()}
+        </div>
       </main>
     </div>
   );

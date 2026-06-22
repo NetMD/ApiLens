@@ -50,6 +50,11 @@ function mockApi(
       typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
     const method = init?.method ?? 'GET';
 
+    // [Phase R15] 수신 일시정지 상태 폴링 — DataManagementSection 이 useMaintenanceStatus 공유(기본 paused=false).
+    if (url.includes('/v1/maintenance/status')) {
+      return Promise.resolve(jsonResponse({ paused: false, pausedAt: null }));
+    }
+
     if (method === 'POST' && url.includes('/v1/maintenance/cleanup')) {
       log.cleanupCalls += 1;
       if (behavior === 'cleanupFail') {
@@ -287,5 +292,138 @@ describe('DataManagementSection — 디스크 조각 정리(최적화, US-07)', 
     resolveCleanup?.(
       jsonResponse({ deletedTraces: 1, freedBytes: 0, dbSizeBytes: 0 }),
     );
+  });
+});
+
+// [Phase R15] AC-B2-1/AC-B2-2/AC-B6-1 — 수신 일시정지/재개 토글 + 유도(미강제).
+//
+// 검증 의무 (정방향 동사 명시 — EXT-003 lock-in 회귀 가드. 본 phase 는 사용자 명시 비협상 D01~D08 보유):
+//   pausesReceivingAndInvalidatesOnToggle — 토글 클릭 → pauseReceiving 호출 + invalidate + toast(T-07)
+//   showsErrorToastOnToggleFailure — 토글 실패 → toast(T-08), BE 본문 비노출
+//   disablesToggleWhileCleanupRunning — cleanup pending 중 토글 disabled(§7.1 매트릭스)
+//   showsCleanupHintAndKeepsButtonsEnabledWhenNotPaused — paused=false + optimize/purge → T-10 유도 + 버튼 enabled
+// 반대 방향 lock-in 동사(hides*/rejects*/denies*) 0건.
+interface ToggleLog {
+  pauseCalls: number;
+  resumeCalls: number;
+  statusInvalidations: number;
+}
+
+/**
+ * status(paused 분기) + pause/resume mock. behavior 로 토글 성공·실패.
+ *   - paused=false → 토글은 pause 방향. paused=true → resume 방향.
+ *   - 'toggleFail' → pause POST 가 500(BE 본문 'boom') 반환.
+ */
+function mockToggleApi(paused: boolean, behavior: 'ok' | 'toggleFail' = 'ok'): ToggleLog {
+  const log: ToggleLog = { pauseCalls: 0, resumeCalls: 0, statusInvalidations: 0 };
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url =
+      typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+    const method = init?.method ?? 'GET';
+
+    if (method === 'GET' && url.includes('/v1/maintenance/status')) {
+      log.statusInvalidations += 1;
+      return Promise.resolve(
+        jsonResponse({ paused, pausedAt: paused ? 1_730_000_000_000 : null }),
+      );
+    }
+    if (method === 'POST' && url.includes('/v1/maintenance/pause')) {
+      log.pauseCalls += 1;
+      if (behavior === 'toggleFail') {
+        return Promise.resolve(jsonResponse({ error: 'boom' }, 500));
+      }
+      return Promise.resolve(jsonResponse({ paused: true, pausedAt: 1_730_000_000_000 }));
+    }
+    if (method === 'POST' && url.includes('/v1/maintenance/resume')) {
+      log.resumeCalls += 1;
+      return Promise.resolve(jsonResponse({ paused: false, pausedAt: null }));
+    }
+    return Promise.resolve(jsonResponse({ error: 'unexpected' }, 500));
+  });
+  return log;
+}
+
+describe('DataManagementSection — 수신 일시정지/재개 토글 (R15)', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('pausesReceivingAndInvalidatesOnToggle — 토글 클릭 시 pauseReceiving 호출 + status 무효화 + 토스트(T-07)', async () => {
+    const log = mockToggleApi(false, 'ok');
+    renderSection();
+
+    // 초기 status 폴링(paused=false) 완료 후 버튼 라벨 = "수신 일시정지".
+    const toggleBtn = await screen.findByRole('button', { name: '수신 일시정지' });
+    const initialStatus = log.statusInvalidations;
+    fireEvent.click(toggleBtn);
+
+    await waitFor(() => expect(log.pauseCalls).toBe(1));
+    // 성공 토스트(T-07).
+    expect(
+      await screen.findByText('수신을 일시정지했어요. 정리가 끝나면 다시 재개해 주세요.'),
+    ).toBeInTheDocument();
+    // invalidate(['maintenance','status']) → status 재폴링 발생.
+    await waitFor(() => expect(log.statusInvalidations).toBeGreaterThan(initialStatus));
+  });
+
+  it('showsErrorToastOnToggleFailure — 토글 실패 시 고정 문구 토스트(T-08), BE 본문 비노출', async () => {
+    mockToggleApi(false, 'toggleFail');
+    renderSection();
+
+    const toggleBtn = await screen.findByRole('button', { name: '수신 일시정지' });
+    fireEvent.click(toggleBtn);
+
+    expect(
+      await screen.findByText('상태 변경에 실패했어요. 잠시 후 다시 시도해 주세요.'),
+    ).toBeInTheDocument();
+    // 서버 error 본문('boom') 직접 노출 금지.
+    expect(screen.queryByText(/boom/)).toBe(null);
+  });
+
+  it('disablesToggleWhileCleanupRunning — cleanup pending 중 토글 버튼 disabled (§7.1 매트릭스)', async () => {
+    // status(paused=false) 는 즉답, cleanup 은 지연시켜 isPending 구간 확보.
+    let resolveCleanup: ((r: Response) => void) | undefined;
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+      const url =
+        typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      const method = init?.method ?? 'GET';
+      if (url.includes('/v1/maintenance/status')) {
+        return Promise.resolve(jsonResponse({ paused: false, pausedAt: null }));
+      }
+      if (method === 'POST' && url.includes('/v1/maintenance/cleanup')) {
+        return new Promise<Response>((resolve) => {
+          resolveCleanup = resolve;
+        });
+      }
+      return Promise.resolve(jsonResponse({ error: 'unexpected' }, 500));
+    });
+    renderSection();
+
+    // 토글 버튼이 뜬 뒤 cleanup 시작.
+    await screen.findByRole('button', { name: '수신 일시정지' });
+    fireEvent.click(screen.getByRole('button', { name: '지난 데이터 정리' }));
+    fireEvent.click(screen.getByRole('button', { name: '확인' }));
+
+    // cleanup pending 동안 토글 버튼 disabled (§7.1).
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: '수신 일시정지' })).toBeDisabled(),
+    );
+
+    resolveCleanup?.(jsonResponse({ deletedTraces: 1, freedBytes: 0, dbSizeBytes: 0 }));
+  });
+
+  it('showsCleanupHintAndKeepsButtonsEnabledWhenNotPaused — paused=false 시 유도 텍스트(T-10) + optimize/purge 버튼 enabled', async () => {
+    mockToggleApi(false, 'ok');
+    renderSection();
+
+    // status(paused=false) 도착 후 유도 텍스트 노출 (optimize/purge 카드, 미강제).
+    const hints = await screen.findAllByText('먼저 수신을 일시정지하면 정리가 더 빠르고 안전해요.');
+    expect(hints.length).toBeGreaterThanOrEqual(2); // optimize + purge 두 곳
+    // 버튼은 disabled 아님(enabled 유지 — 미강제).
+    expect(screen.getByRole('button', { name: '최적화' })).not.toBeDisabled();
+    expect(screen.getByRole('button', { name: '전체 삭제' })).not.toBeDisabled();
   });
 });

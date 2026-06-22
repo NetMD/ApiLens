@@ -17,14 +17,23 @@ import { useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Modal } from '../Modal';
-import { runRetentionCleanup, purgeAllData, optimizeDatabase } from '../../api/maintenance';
+import {
+  runRetentionCleanup,
+  purgeAllData,
+  optimizeDatabase,
+  pauseReceiving,
+  resumeReceiving,
+} from '../../api/maintenance';
 import type { MaintenanceResult } from '../../types/api';
 import { formatBytes } from '../../lib/format';
 import { useToast } from '../useToast';
+import { useMaintenanceStatus } from '../../hooks/useMaintenanceStatus';
 
 export function DataManagementSection(): ReactNode {
   const queryClient = useQueryClient();
   const toast = useToast();
+  // [Phase R15] AC-B2-1 — 현재 일시정지 상태(버튼 라벨·유도 텍스트 분기). 공유 queryKey ['maintenance','status'].
+  const { paused } = useMaintenanceStatus();
 
   // ① cleanup 인라인 확인 단계 노출 여부 (가벼운 확인 — 같은 자리에서 [확인]/[취소]).
   const [confirmingCleanup, setConfirmingCleanup] = useState(false);
@@ -105,6 +114,29 @@ export function DataManagementSection(): ReactNode {
     },
   });
 
+  // [Phase R15] AC-B2-1/AC-B2-2 — 수신 일시정지/재개 토글 mutation. paused 로 방향 분기(set 모델).
+  //   사용자 명시 비협상 결정(D02 503+Retry-After / D06 정리 미강제). CLAUDE.md '아키텍처 핵심 원칙'.
+  //   onError 는 BE 본문 노출 금지 — 고정 문구 토스트(RetentionSection E-01 동일 원칙, T-08).
+  const pauseToggle = useMutation({
+    mutationFn: () => (paused ? resumeReceiving() : pauseReceiving()),
+    onSuccess: () => {
+      // [Phase R15] AC-B2-2 — 상태 변경 후 ['maintenance','status'] 무효화 → 배너·배지·Dashboard 즉시 동기화.
+      void queryClient.invalidateQueries({ queryKey: ['maintenance', 'status'] });
+      // T-06(재개) / T-07(일시정지) — 사용자 자연어 + 존댓말.
+      toast.success(
+        paused
+          ? '수신을 재개했어요.'
+          : '수신을 일시정지했어요. 정리가 끝나면 다시 재개해 주세요.',
+      );
+    },
+    // T-08 — BE 본문 노출 금지(고정 문구).
+    onError: () => toast.error('상태 변경에 실패했어요. 잠시 후 다시 시도해 주세요.'),
+  });
+
+  // [Phase R15] AC-B2-1(§7.1 매트릭스) — 토글 disabled = pauseToggle/cleanup/purge/optimize 중 하나라도 pending.
+  const pauseToggleDisabled =
+    pauseToggle.isPending || cleanup.isPending || purge.isPending || optimize.isPending;
+
   // [Phase K] (US-07, C-C01) — optimize 버튼 disabled = 세 동작 중 하나라도 실행 중 (전체락 충돌 회피, planner §8.1).
   const optimizeButtonDisabled = optimize.isPending || cleanup.isPending || purge.isPending;
   // [Phase K] (US-07, planner §8.2) — 역방향 동기화: optimize 실행 중이면 cleanup/purge 도 잠금 (전체락 충돌 회피).
@@ -182,6 +214,12 @@ export function DataManagementSection(): ReactNode {
             <p className="mt-1 text-xs text-stone-500">
               모든 로그(trace · span · payload)를 삭제해요. 되돌릴 수 없어요.
             </p>
+            {/* [Phase R15] AC-B6-1/T-10 — 유도(미강제): 수신 중이면 일시정지 권유 텍스트만. 버튼 disabled 아님(enabled 유지). 사용자 명시 비협상 결정(D06 정리 미강제). CLAUDE.md '아키텍처 핵심 원칙'. */}
+            {!paused && (
+              <p className="mt-1 text-xs text-stone-400">
+                먼저 수신을 일시정지하면 정리가 더 빠르고 안전해요.
+              </p>
+            )}
           </div>
           <button
             type="button"
@@ -246,6 +284,37 @@ export function DataManagementSection(): ReactNode {
               데이터는 그대로 두고 파일 조각만 정리할까요? 라이브 적재 중이면 일부만 회수될 수 있어요.
             </p>
           )}
+          {/* [Phase R15] AC-B6-1/T-10 — 유도(미강제): 수신 중이면 일시정지 권유 텍스트만. 버튼 disabled 아님(enabled 유지). 사용자 명시 비협상 결정(D06 정리 미강제). CLAUDE.md '아키텍처 핵심 원칙'. */}
+          {!paused && (
+            <p className="text-xs text-stone-400">
+              먼저 수신을 일시정지하면 정리가 더 빠르고 안전해요.
+            </p>
+          )}
+        </div>
+
+        {/* [Phase R15] AC-B2-1/AC-B2-2 — ④ 수신 일시정지/재개 토글. set 2엔드포인트(pause/resume).
+            사용자 명시 비협상 결정(D02 503+Retry-After / D03 in-memory / D06 정리 미강제). CLAUDE.md '아키텍처 핵심 원칙'.
+            neutral stone(red 미사용 — 되돌릴 수 있는 일시정지). */}
+        <div className="flex flex-col gap-2 border-t border-stone-200 pt-4">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="text-sm font-medium text-stone-900">수신 일시정지</p>
+              {/* T-11 — 정리 전 일시정지 권유 설명. */}
+              <p className="mt-1 text-xs text-stone-500">
+                정리(최적화·삭제) 전에 수신을 잠시 멈추면 잠금 경합 없이 끝나요.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => pauseToggle.mutate()}
+              // [Phase R15] AC-B2-1(§7.1) — pauseToggle/cleanup/purge/optimize 중 하나라도 pending 이면 잠금.
+              disabled={pauseToggleDisabled}
+              className="shrink-0 rounded-md border border-stone-200 bg-white px-4 py-2 text-sm font-medium text-stone-900 hover:bg-stone-50 disabled:opacity-50"
+            >
+              {/* T-05(pending) / T-04(재개, paused=true) / T-03(일시정지, paused=false) */}
+              {pauseToggle.isPending ? '처리 중…' : paused ? '수신 재개' : '수신 일시정지'}
+            </button>
+          </div>
         </div>
       </div>
 
