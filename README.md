@@ -50,10 +50,12 @@ what value actually hit the database.* It has been dogfooded against a live prod
 | 🧭 노드 그래프 추적 | controller → service → repository → SQL 흐름을 mind-map 형태로 시각화 (gantt chart 아님) |
 | 📦 payload 캡처 | 각 노드의 요청/응답 본문 + JDBC 파라미터·결과셋을 단계별로 확인 |
 | 🗂️ MyBatis 지원 | `@Mapper` 인터페이스 호출을 한 점(`MapperProxy`)으로 자동 추적 |
-| 🛡️ PII 마스킹 내장 | 주민번호·카드번호·password/token 등 기본 룰을 server-side 에서 자동 마스킹 + 룰 관리 UI·라이브 프리뷰 |
+| 🛡️ PII 마스킹 내장 | 주민번호·카드번호·password/token 등 기본 룰을 server-side 에서 자동 마스킹 + 룰 관리 UI·라이브 프리뷰 + 악성 정규식(ReDoS) 저장 차단 |
+| 🔐 API Key 인증 (선택) | 관리·조회 API 에 `Authorization: Bearer` 토큰 검증 — 켜면 설정·삭제·조회를 보호, agent 적재(`/v1/spans`)는 면제. 미설정 시 무인증(v0.2 호환) |
 | 🔴 에러 즉시 표시 | 끊긴 노드가 빨갛게 멈추고 옆에 stack trace 박스 |
 | 📊 응답시간 대시보드 | 시간축 산점도 + 서비스별 필터 + status·operation 검색 + Live 모드 |
 | ⚙️ 설정 페이지 | 보관 기간(기본 30일 — 초과 trace 는 매일 04:00 자동 정리)과 마스킹 룰을 브라우저에서 관리 |
+| 🧹 디스크 최적화 | 데이터를 지우지 않고 SQLite `VACUUM` 으로 DB 파일의 빈 공간을 회수 — 설정 페이지 버튼 (수동) |
 | 🧙 Setup 마법사 | 브라우저에서 옵션을 고르면 부착용 JVM 옵션 한 줄을 만들어 줌 |
 | 📕 단일 jar 배포 | agent + collector + storage + UI 가 하나의 jar |
 | 🧩 표준 호환 | W3C Trace Context (`traceparent`) + OpenTelemetry 호환 span 모델 |
@@ -170,7 +172,7 @@ JSON payload 의 키 이름이 아래와 정확히 일치하면(대소문자 구
 > -Dapilens.jdbc.capture-params=false   # JDBC 파라미터 캡처 비활성 (advice weaving 자체 skip)
 > ```
 >
-> 컬럼 이름 추적 기반 보강이 차기 release 후보로 등재되어 있습니다 (v0.2 는 agent 무변경 릴리스라 이월).
+> 컬럼 이름 추적 기반 보강이 차기 release 후보로 등재되어 있습니다 (agent 모듈을 바꾸는 라운드로 이월).
 
 룰 추가/삭제·토글과 라이브 프리뷰는 v0.2 부터 설정 페이지(`/settings`)에서 제공됩니다.
 default 룰 4종(주민번호·카드번호·password·token)은 삭제 불가이며 비활성 토글만 가능합니다.
@@ -197,26 +199,97 @@ truncate, NULL 처리 분기가 호스트 기동을 막던 문제)는 **모두 v
 
 ---
 
-## v0.2 한계 | v0.2 Limitations
+## 인증 | Authentication (v0.3+)
 
-투명하게 적어둡니다. 운영 도입 결정 시 참고하세요.
-(v0.2 는 server·UI 중심 릴리스로 agent 모듈 변경이 없어, agent 쪽 한계는 v0.1 과 동일합니다.)
+기본은 **무인증**입니다 — 토큰을 설정하지 않으면 v0.2 와 똑같이 동작하므로 기존 환경이 그대로 호환됩니다. 관리·조회 API 를 보호하려면 server 기동 시 **API Key 토큰**을 설정하세요. 토큰을 켜면 `/v1/**` 관리·조회 API(설정·마스킹 룰·데이터 관리·trace 조회 등)는 `Authorization: Bearer <토큰>` 헤더를 요구합니다.
 
-- **단일 서비스 추적** — 서비스 간 분산 trace 연결(MSA)은 v0.3 예정
-- **동기 호출만** — `@Async` / WebFlux 비동기 경로는 차기 agent 업데이트로 이월
-- **메서드 파라미터 이름이 `arg0`·`arg1`…** — 모든 인자를 캡처하지만, 사용자 앱이 `-parameters` 컴파일 옵션 없이 빌드되면 파라미터 이름 대신 인덱스로 표시됩니다. `-parameters` 로 빌드하면 실제 이름이 나타납니다. 차기 agent 업데이트로 이월
-- **JDBC 파라미터 키 이름 마스킹 한계** — 위 [PII 마스킹](#pii-마스킹--pii-masking) 경고 참조
-- **인증·권한 없음** — 운영망 내부에서 신뢰된 네트워크 사용을 가정합니다. 외부 노출 금지. v0.2 에서 추가된 설정·마스킹 룰 API 도 무인증입니다. 접근 제어는 v0.3 예정
+> ⚠️ **신뢰 네트워크 전제 도구입니다.** 토큰은 평문(HTTP)으로 전송됩니다. 운영망/방화벽 격리 환경에서만 쓰고, 공용망에 노출할 때는 리버스 프록시(nginx 등)로 TLS 를 종단하세요.
+
+### 1. 토큰 만들기
+
+```bash
+# 충분히 긴 랜덤 토큰을 하나 생성 (예시)
+openssl rand -hex 32
+#  → 7f3a9c2e8b1d4f6a0c5e9b2d7a4f1c8e3b6d9a2f5c8e1b4d7a0c3e6b9d2f5a8c
+```
+
+### 2. server 기동 시 토큰 설정
+
+```bash
+# 방법 A — 환경변수 (운영 권장)
+export APILENS_AUTH_API_KEY="여기에-생성한-토큰"
+java -jar apilens-server-<version>.jar
+
+# 방법 B — 한 줄로 (inline 환경변수)
+APILENS_AUTH_API_KEY="여기에-생성한-토큰" java -jar apilens-server-<version>.jar
+
+# 방법 C — 시스템 프로퍼티 (env 보다 우선)
+java -Dapilens.auth.api-key="여기에-생성한-토큰" -jar apilens-server-<version>.jar
+
+# 방법 D — Docker
+docker run -e APILENS_AUTH_API_KEY="여기에-생성한-토큰" -p 8765:8765 <image>
+
+# 토큰을 설정하지 않으면? → 무인증으로 기동 (v0.2 동일) + 기동 시 경고 로그 1회
+```
+
+### 3. 브라우저(UI)에서 사용
+
+토큰을 켠 server 에 브라우저로 접속하면 조회가 401 로 막히고 토큰 입력을 안내합니다. 설정 페이지(`/settings`)에서 토큰을 입력하면 브라우저 세션(`sessionStorage`)에 저장되고, 이후 모든 요청에 자동으로 헤더가 붙습니다. (브라우저 탭을 닫으면 토큰도 지워집니다 — 재접속 시 다시 입력.)
+
+### 4. API 직접 호출 (curl · 스크립트)
+
+```bash
+# 토큰 없이 → 401
+curl http://localhost:8765/v1/traces
+#  → {"error":"unauthorized"}
+
+# 토큰 헤더로 → 200
+curl -H "Authorization: Bearer 여기에-생성한-토큰" http://localhost:8765/v1/traces
+
+# 스크립트에서는 환경변수로 깔끔하게
+export APILENS_TOKEN="여기에-생성한-토큰"
+curl -H "Authorization: Bearer $APILENS_TOKEN" http://localhost:8765/v1/traces
+```
+
+### 면제 경로 (토큰 없이도 동작)
+
+토큰을 켜도 아래 경로는 인증에서 **제외**됩니다:
+
+- **agent 적재** (`POST /v1/spans`) — agent 모듈을 바꾸지 않기 위한 선택입니다. **토큰을 켜도 NAS·원격 agent 의 trace 적재는 끊기지 않습니다.**
+- **Setup wizard** (`/v1/setup/**`) · **헬스체크** (`/actuator/health`) · **정적 화면·자산** (`/`, `/index.html`, `/assets/**`)
+
+### 키 교체
+
+토큰은 DB 에 저장하지 않고 server 기동 옵션으로만 둡니다. 키를 바꾸려면 **새 토큰으로 server 를 재시작**하세요.
+
+> Authentication is **opt-in**. Set `APILENS_AUTH_API_KEY` (env) or `-Dapilens.auth.api-key` (system property) to require a `Authorization: Bearer <token>` header on management/query APIs. The agent ingest endpoint (`POST /v1/spans`), setup wizard, health check, and static assets are exempt. Without a token the server runs unauthenticated (same as v0.2) with a one-time warning. Token travels over plain HTTP — keep it on a trusted network or terminate TLS with a reverse proxy.
 
 ---
 
-## v0.3 예정 | Planned for v0.3
+## v0.3 한계 | v0.3 Limitations
+
+투명하게 적어둡니다. 운영 도입 결정 시 참고하세요.
+(v0.3 은 server·UI 중심 릴리스 — 인증·ReDoS 가드·온라인 VACUUM. agent 모듈은 변경이 없어 agent 쪽 한계는 v0.1 과 동일합니다.)
+
+- **단일 서비스 추적** — 서비스 간 분산 trace 연결(MSA)은 향후 예정 (아래 로드맵)
+- **동기 호출만** — `@Async` / WebFlux 비동기 경로는 차기 agent 업데이트로 이월
+- **메서드 파라미터 이름이 `arg0`·`arg1`…** — 모든 인자를 캡처하지만, 사용자 앱이 `-parameters` 컴파일 옵션 없이 빌드되면 파라미터 이름 대신 인덱스로 표시됩니다. `-parameters` 로 빌드하면 실제 이름이 나타납니다. 차기 agent 업데이트로 이월
+- **JDBC 파라미터 키 이름 마스킹 한계** — 위 [PII 마스킹](#pii-마스킹--pii-masking) 경고 참조
+- **인증은 선택적, TLS 미내장** — v0.3.0 에서 API Key 인증이 추가됐습니다 (위 [인증](#인증--authentication-v03) 섹션). 다만 토큰은 평문(HTTP)으로 전송되고 agent 적재 경로(`/v1/spans`)는 무인증 면제이므로 **여전히 신뢰 네트워크 전제**입니다. 공용망 직접 노출 금지 — TLS 가 필요하면 리버스 프록시로 종단하세요
+- **마스킹 ReDoS 가드는 신규 룰 저장 시점만 검사** — 악성 정규식은 룰을 저장할 때 차단되지만, 이미 저장된 룰이나 적재된 payload 가 마스킹을 거치는 경로는 가드 대상이 아닙니다. 근본 차단(공유 엔진의 linear-time 매칭)은 차기 agent 라운드로 이월
+- **대용량 단일 trace 의 적재 잠금 경합** — 한 trace 가 수만 개의 span 을 만드는 과잉 계측 환경에서는, 단일 트랜잭션의 대량 INSERT 가 SQLite write 잠금을 오래 점유해 동시에 들어오는 다른 trace 가 일시적으로 거부(`SQLITE_BUSY`)될 수 있습니다. 계측량 제어(차기 agent 라운드)와 유지보수 모드(v0.3.1)로 개선 예정
+
+---
+
+## 향후 예정 | Roadmap
 
 순서와 범위는 바뀔 수 있습니다. Subject to change.
 
+- **유지보수 모드 (수신 일시정지)** — 운영 중인 서비스를 멈추지 않고 collector 의 적재만 잠시 끊어, 디스크 최적화(VACUUM)·정리를 잠금 경합 없이 수행 (v0.3.1)
+- **계측량 제어 + 거대 trace 완화** — agent 의 패키지 include/exclude 필터·최소 duration 필터로 과잉 계측을 줄여 용량·잠금 경합을 근본적으로 낮추고, server 는 대형 span 배치를 청크로 나눠 커밋
 - **멀티 서비스 분산 추적 (MSA)** — `traceparent` 전파 기반 cross-service trace 연결. 단일 서비스 추적 한계 해소
-- **인증·접근 제어** — server API 전체(v0.2 의 설정·마스킹 룰 API 포함)에 인증 적용. 방식(Basic Auth / API Key 등)은 결정 예정
-- **agent 보강 후보** — JDBC 파라미터 이름 기반 마스킹(컬럼 이름 추적), `java.time` 타입 직렬화 확장, `@Async` 비동기 경로 ([CHANGELOG](./CHANGELOG.md) Unreleased 후보 참조)
+- **인증 보강** — TLS 종단·ingest 토큰·세션 기반 인증 (v0.3.0 API Key 인증의 후속)
+- **agent 보강 후보** — JDBC 파라미터 이름 기반 마스킹(컬럼 이름 추적), `java.time` 타입 직렬화 확장, `@Async` 비동기 경로, 공유 마스킹 엔진의 ReDoS 근본 차단 ([CHANGELOG](./CHANGELOG.md) Unreleased 후보 참조)
 
 ---
 

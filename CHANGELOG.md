@@ -11,11 +11,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- (candidate) **유지보수 모드(수신 일시정지)** — collector 가 agent 적재를 잠시 멈춘 상태에서 디스크 최적화(VACUUM)·정리(purge)를 잠금 경합 없이 안전하게 수행 (v0.3.1 예정). 운영 중인 서비스를 멈추지 않고, collector 쪽 수신만 일시 차단합니다 (agent 는 silent drop — 호스트 앱 영향 0).
 - (candidate) `JdbcParamSerializer` 의 `java.time` 타입 확장 (LocalDate / LocalDateTime / LocalTime / ZonedDateTime).
+
+### Changed
+
+- (candidate) **거대 trace 의 ingest 잠금 독점 완화** — 한 trace 가 수만 개의 span 을 만들면 단일 트랜잭션의 INSERT 가 DB write 잠금을 오래 점유해 동시 적재가 `SQLITE_BUSY` 로 유실되던 문제를, span 배치를 청크로 나눠 커밋하는 방식으로 완화 검토. 근본 해소는 agent 계측량 제어(다음 agent 라운드).
 
 ### Security
 
+- (candidate) **공유 마스킹 엔진 ReDoS 근본 차단** — 신규 룰 저장뿐 아니라 이미 저장된 룰·ingest 마스킹 경로까지 linear-time 매칭(RE2/j 류)으로 보호. 엔진 변경이 agent 재빌드를 동반해 다음 agent 라운드로 묶음.
 - (candidate) JDBC PreparedStatement 파라미터의 이름 기반 마스킹 보강 — 현재 PAYLOAD IN 키가 parameterIndex 라 이름 기반 룰이 매칭되지 않는 한계 개선.
+
+## [0.3.0] - 2026-06-22
+
+<!--
+  v0.3.0 anchor (EXT-009 frontmatter 4 요소):
+  - phase: K (R14, v0.3 첫 라운드 — server + UI, agent 모듈 무변경)
+  - ac: AC-A (API Key 인증) / AC-B (마스킹 ReDoS 가드) / AC-C (온라인 VACUUM 최적화)
+  - 비협상: 사용자 명시 비협상 결정 (R14-D01 agent·common 엔진 무변경 / R14-D02 API Key / R14-D04 ingest 무인증 / R14-D05 마스킹 엔진 불변)
+  - claude-md: CLAUDE.md '아키텍처 핵심 원칙' · 'v0.1 범위'(인증 = v0.3) · 'Build 설정 lessons §1'
+-->
+
+> v0.3 첫 릴리스. **API Key 인증 + 마스킹 정규식 ReDoS 가드 + 온라인 디스크 최적화(VACUUM)**. server 와 UI 만 바뀌고 **agent 모듈은 변경 없음** (v0.1/v0.2 agent 그대로 호환). 스키마 변경 0 (마이그레이션 미추가).
+
+### BREAKING CHANGES
+
+- **관리/조회 API 에 선택적 API Key 인증이 신설됐습니다.** `APILENS_AUTH_API_KEY` 환경변수(또는 `-Dapilens.auth.api-key` 시스템 프로퍼티)로 토큰을 설정하면, 그 시점부터 settings / masking-rules / maintenance / traces / services 등 `/v1/**` 관리·조회 API 는 `Authorization: Bearer <토큰>` 헤더를 요구합니다. 헤더가 없거나 틀리면 401 `{"error":"unauthorized"}` 를 반환합니다.
+  - **업그레이드 경로**: jar 만 0.3.0 으로 교체하고 재기동하면 됩니다 (스키마·agent 무변경). **토큰을 설정하지 않으면 0.2.x 와 똑같이 무인증으로 동작**하고 기동 시 경고 로그를 1회 남깁니다 — 기존 환경이 그대로 깨지지 않으니, 준비되면 토큰을 켜세요.
+  - **롤백**: 0.2.x jar 로 되돌려도 DB 가 그대로 호환됩니다 (이 릴리스는 스키마를 바꾸지 않습니다).
+  - **agent(ingest) 영향 0**: agent 가 trace 를 보내는 `POST /v1/spans` 는 **인증에서 제외**됩니다. 토큰을 켜도 NAS 등 원격 agent 의 적재는 끊기지 않습니다 (신뢰 네트워크 전제).
+  - **사용 예시**:
+    ```bash
+    # 토큰을 켜서 기동 (관리·조회 API 보호)
+    APILENS_AUTH_API_KEY="your-secret-token" java -jar apilens-server-0.3.0.jar
+
+    # API 호출 시 헤더로 토큰 전달
+    curl -H "Authorization: Bearer your-secret-token" http://localhost:8765/v1/traces
+
+    # 토큰을 빼면 0.2.x 와 동일 (무인증 + 기동 경고 1회)
+    java -jar apilens-server-0.3.0.jar
+    ```
+    토큰 생성·UI 입력·Docker·키 교체 등 자세한 사용법은 [README 의 '인증 | Authentication' 절](./README.md#인증--authentication-v03)을 참조하세요.
+
+### Added
+
+- **API Key 인증** (`io.apilens.server.auth`) — Spring Security 의존성을 추가하지 않은 경량 서블릿 필터(`OncePerRequestFilter`)로 단일 토큰을 검증합니다. 토큰 비교는 타이밍 공격을 막기 위해 상수 시간(`MessageDigest.isEqual`)으로 수행합니다. **인증 면제(무토큰 허용) 경로**: setup wizard(`/v1/setup/**`) · agent 적재(`POST /v1/spans`) · 헬스체크(`/actuator/health`) · 정적 자산과 SPA 화면(`/`, `/index.html`, `/assets/**`). 그 외 모든 `/v1/**` 는 토큰이 설정돼 있으면 보호됩니다. 토큰은 server 기동 옵션으로만 두며 **DB 에 저장하지 않습니다** (키 교체 = server 재시작).
+- **인증 토큰 입력 UI** — 설정 페이지에서 토큰을 입력하면 브라우저 세션(`sessionStorage`)에 보관하고 이후 모든 요청에 헤더로 붙입니다. 토큰이 없거나 틀려 401 이 나면 자동 새로고침(polling)을 멈추고 토큰 입력을 유도합니다 (잘못된 토큰으로 401 이 반복되며 화면이 먹통이 되는 것을 막습니다). 토큰 저장은 브라우저 보관만 하고 어떤 보호 API 도 호출하지 않습니다 (토큰 입력 화면 자체가 인증에 막혀 영구 잠기는 일이 없게).
+- **마스킹 정규식 ReDoS 가드** — 사용자가 마스킹 룰(custom 정규식)을 추가/수정할 때, 저장 직전에 제한 시간(100ms) 안에 시험 매칭이 끝나는지 검사합니다. catastrophic backtracking(입력 길이에 지수적으로 느려지는 정규식)이 의심되면 저장을 거부하고 400 `pattern is too complex` 를 반환합니다. 별도 스레드를 띄우지 않고 매칭 도중 경과 시간을 검사해 스스로 빠져나오는 방식이라 스레드 누수가 없습니다.
+- **온라인 디스크 최적화(VACUUM)** (`POST /v1/maintenance/optimize`) — 설정 페이지 "데이터 관리" 에 "최적화" 버튼이 추가됐습니다. 데이터를 지우지 않고 SQLite `VACUUM` 으로 파일 내부의 빈 공간(free page)을 회수해 DB 파일 크기를 줄입니다. `cleanup`/`purge` 가 행을 지워도 파일 크기가 잘 안 줄던 한계(삭제된 빈 page 가 파일에 남음)를 보완합니다. **VACUUM 은 운영 DB 파일을 삭제/재생성하지 않습니다** (같은 파일을 내부 재구성 — D-04 준수). 응답 `{ deletedTraces: 0, freedBytes, dbSizeBytes, busy }`.
+
+### Changed
+
+- **버전 0.2.1 → 0.3.0** (server jar / UI `package.json` / UI 표시 라벨).
+- **`MaintenanceResult` 응답에 `busy` 필드 추가** — `cleanup`/`purge`/`optimize` 응답에 `busy`(boolean)가 추가됐습니다. `optimize` 가 라이브 적재와 경합해 잠금을 못 얻으면 예외를 던지지 않고 `busy=true` 로 부분 실패를 알립니다 (`cleanup`/`purge` 는 항상 `false`). 기존 필드(`deletedTraces`/`freedBytes`/`dbSizeBytes`)는 그대로입니다.
+- **`application.yml` 에 `apilens.auth.api-key` 설정 추가** (기본 비어 있음 = 무인증 폴백). env/시스템 프로퍼티 주입을 권장합니다.
+
+### Security
+
+- **maintenance·설정·마스킹 룰·조회 API 를 인증으로 보호할 수 있습니다** — v0.2.x 까지 무인증이던 파괴적/상태변경 동작(전체 삭제 `purge`, 설정 변경, 룰 추가/삭제, 서비스 삭제)을 토큰으로 막을 수 있게 됐습니다.
+- **온라인 VACUUM 디스크 여유 가드** — `VACUUM` 은 작업 중 원본 크기만큼 임시 파일을 만들어 디스크를 일시적으로 약 2배 점유합니다. 실행 전 가용 디스크가 DB 크기보다 작으면 거부하고, 실행 중 `SQLITE_FULL`/`SQLITE_BUSY` 가 나도 예외를 던지지 않고 상태로만 알립니다 (디스크가 꽉 차는 2차 사고 방지).
+- **남은 한계 (모두 신뢰 네트워크 전제의 의도된 제약)**:
+  - **agent 적재(`/v1/spans`)는 무인증** — agent 모듈을 바꾸지 않기 위한 선택입니다. 신뢰망 밖에서 접근하면 가짜 trace 주입이 가능하니, 방화벽/망 격리가 유일한 방어입니다.
+  - **토큰이 평문(HTTP)으로 전송됩니다** — v0.3 은 TLS 를 내장하지 않습니다. 같은 망의 패킷 스니핑에 토큰이 노출될 수 있으니, 운영망/방화벽 격리 환경에서만 쓰고 필요하면 리버스 프록시(nginx 등)로 TLS 를 종단하세요. 공용망에 직접 노출하지 마세요.
+  - **ReDoS 가드는 신규 룰 저장 시점만 검사** — 이미 저장된 룰이나, 무인증 적재(`/v1/spans`)로 들어온 payload 가 마스킹을 거치는 핫패스는 가드 대상이 아닙니다. 근본 차단(공유 마스킹 엔진의 linear-time 매칭)은 agent 와 함께 바꿔야 해 다음 agent 라운드로 미뤘습니다.
 
 ## [0.2.1] - 2026-06-18
 

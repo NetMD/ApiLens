@@ -8,6 +8,14 @@
 //   showsPurgeModalOnPurgeClick — 전체 삭제 클릭 시 강한 확인 모달 노출
 //   showsPurgeSuccessToastAfterModalConfirm — 모달 [확인] 후에만 purge 호출 + 성공 토스트
 //   showsErrorToastOnCleanupFailure — cleanup 실패 시 고정 문구 토스트 (BE 본문 노출 0)
+//
+// [Phase K] (US-07) optimize 추가 검증 (정방향 동사 명시 — EXT-003 lock-in 가드):
+//   showsOptimizeButton — 진입 시 "최적화" 버튼 노출
+//   showsInlineConfirmBeforeOptimize — optimize 는 인라인 [확인] 후에만 호출
+//   showsOptimizeSuccessToastWithFreedBytes — busy=false 정상 회수 시 확보 용량 토스트 (T-C06)
+//   showsPartialReclaimToastWhenBusyWithFreedBytes — busy=true + freedBytes>0 부분 회수 (T-C07)
+//   showsDiskShortageToastWhenBusyWithZeroFreed — busy=true + freedBytes==0 디스크 부족 거부 (T-C08)
+//   disablesOptimizeButtonWhileCleanupRunning — cleanup 실행 중이면 optimize 버튼 잠금 (C-C01)
 // 반대 방향 lock-in 동사(hides*/rejects*/skips*) 0건.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -25,11 +33,18 @@ function jsonResponse(body: unknown, status = 200): Response {
 interface FetchLog {
   cleanupCalls: number;
   purgeCalls: number;
+  optimizeCalls: number;
 }
 
-/** URL/method 기반 fetch mock. behavior 로 cleanup/purge 성공·실패 분기. */
-function mockApi(behavior: 'ok' | 'cleanupFail'): FetchLog {
-  const log: FetchLog = { cleanupCalls: 0, purgeCalls: 0 };
+/**
+ * URL/method 기반 fetch mock. behavior 로 cleanup/purge/optimize 성공·실패·busy 분기.
+ *   - 'optimizeBusyPartial' : optimize 응답 busy=true + freedBytes>0 (부분 회수, T-C07).
+ *   - 'optimizeBusyDisk'    : optimize 응답 busy=true + freedBytes==0 (디스크 부족, T-C08).
+ */
+function mockApi(
+  behavior: 'ok' | 'cleanupFail' | 'optimizeBusyPartial' | 'optimizeBusyDisk',
+): FetchLog {
+  const log: FetchLog = { cleanupCalls: 0, purgeCalls: 0, optimizeCalls: 0 };
   vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
     const url =
       typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
@@ -49,6 +64,25 @@ function mockApi(behavior: 'ok' | 'cleanupFail'): FetchLog {
       log.purgeCalls += 1;
       return Promise.resolve(
         jsonResponse({ deletedTraces: 99999, freedBytes: 53687091200, dbSizeBytes: 0 }),
+      );
+    }
+    if (method === 'POST' && url.includes('/v1/maintenance/optimize')) {
+      log.optimizeCalls += 1;
+      if (behavior === 'optimizeBusyPartial') {
+        // busy=true + freedBytes>0 → 부분 회수 (T-C07). 1048576 → "1 MB"
+        return Promise.resolve(
+          jsonResponse({ deletedTraces: 0, freedBytes: 1048576, dbSizeBytes: 41943040, busy: true }),
+        );
+      }
+      if (behavior === 'optimizeBusyDisk') {
+        // busy=true + freedBytes==0 → 디스크 부족 거부 (T-C08).
+        return Promise.resolve(
+          jsonResponse({ deletedTraces: 0, freedBytes: 0, dbSizeBytes: 41943040, busy: true }),
+        );
+      }
+      // 정상 회수 (busy=false). freedBytes = 53687091200 → "50 GB"
+      return Promise.resolve(
+        jsonResponse({ deletedTraces: 0, freedBytes: 53687091200, dbSizeBytes: 41943040, busy: false }),
       );
     }
     return Promise.resolve(jsonResponse({ error: 'unexpected call' }, 500));
@@ -147,5 +181,111 @@ describe('DataManagementSection — 수동 디스크 정리 (cleanup / purge)', 
     ).toBeInTheDocument();
     // 서버 error 본문('boom') 직접 노출 금지
     expect(screen.queryByText(/boom/)).toBe(null);
+  });
+});
+
+describe('DataManagementSection — 디스크 조각 정리(최적화, US-07)', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('showsOptimizeButton — 진입 시 "최적화" 버튼 + "삭제 없음" 의미 차별 문구 노출 (T-C01/T-C03)', () => {
+    mockApi('ok');
+    renderSection();
+    expect(screen.getByRole('button', { name: '최적화' })).toBeInTheDocument();
+    // T-C02 — purge 혼동 차단 ("삭제하지 않고")
+    expect(
+      screen.getByText('데이터를 삭제하지 않고 파일 조각만 정리해 디스크 크기를 줄여요.'),
+    ).toBeInTheDocument();
+  });
+
+  it('showsInlineConfirmBeforeOptimize — optimize 는 인라인 [확인] 후에만 호출 (T-C05)', async () => {
+    const log = mockApi('ok');
+    renderSection();
+
+    // 첫 클릭 = 확인 단계 노출만 (API 호출 0)
+    fireEvent.click(screen.getByRole('button', { name: '최적화' }));
+    expect(log.optimizeCalls).toBe(0);
+    expect(
+      screen.getByText(
+        '데이터는 그대로 두고 파일 조각만 정리할까요? 라이브 적재 중이면 일부만 회수될 수 있어요.',
+      ),
+    ).toBeInTheDocument();
+
+    // [확인] 클릭 → optimize 호출
+    fireEvent.click(screen.getByRole('button', { name: '확인' }));
+    await waitFor(() => expect(log.optimizeCalls).toBe(1));
+  });
+
+  it('showsOptimizeSuccessToastWithFreedBytes — busy=false 정상 회수 시 확보 용량 토스트 (T-C06)', async () => {
+    mockApi('ok');
+    renderSection();
+
+    fireEvent.click(screen.getByRole('button', { name: '최적화' }));
+    fireEvent.click(screen.getByRole('button', { name: '확인' }));
+
+    expect(
+      await screen.findByText('파일 조각을 정리했어요. (약 50 GB 확보)'),
+    ).toBeInTheDocument();
+  });
+
+  it('showsPartialReclaimToastWhenBusyWithFreedBytes — busy=true + freedBytes>0 부분 회수 토스트 (T-C07)', async () => {
+    mockApi('optimizeBusyPartial');
+    renderSection();
+
+    fireEvent.click(screen.getByRole('button', { name: '최적화' }));
+    fireEvent.click(screen.getByRole('button', { name: '확인' }));
+
+    expect(
+      await screen.findByText('적재 중이라 일부만 회수됐어요. 저사용 시간대에 다시 시도해 주세요.'),
+    ).toBeInTheDocument();
+  });
+
+  it('showsDiskShortageToastWhenBusyWithZeroFreed — busy=true + freedBytes==0 디스크 부족 거부 토스트 (T-C08)', async () => {
+    mockApi('optimizeBusyDisk');
+    renderSection();
+
+    fireEvent.click(screen.getByRole('button', { name: '최적화' }));
+    fireEvent.click(screen.getByRole('button', { name: '확인' }));
+
+    expect(
+      await screen.findByText(
+        '디스크 여유 공간이 부족해 최적화를 건너뛰었어요. DB 크기 이상의 여유가 필요해요.',
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it('disablesOptimizeButtonWhileCleanupRunning — cleanup 실행 중이면 optimize 버튼 잠금 (C-C01 상호 배타)', async () => {
+    // cleanup 응답을 지연시켜 isPending 구간 확보.
+    let resolveCleanup: ((r: Response) => void) | undefined;
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+      const url =
+        typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      const method = init?.method ?? 'GET';
+      if (method === 'POST' && url.includes('/v1/maintenance/cleanup')) {
+        return new Promise<Response>((resolve) => {
+          resolveCleanup = resolve;
+        });
+      }
+      return Promise.resolve(jsonResponse({ error: 'unexpected' }, 500));
+    });
+    renderSection();
+
+    // cleanup 시작 (인라인 확인 → 확인 클릭 → pending)
+    fireEvent.click(screen.getByRole('button', { name: '지난 데이터 정리' }));
+    fireEvent.click(screen.getByRole('button', { name: '확인' }));
+
+    // cleanup pending 동안 optimize 버튼 disabled (C-C01).
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: '최적화' })).toBeDisabled(),
+    );
+
+    // cleanup 완료시켜 정리.
+    resolveCleanup?.(
+      jsonResponse({ deletedTraces: 1, freedBytes: 0, dbSizeBytes: 0 }),
+    );
   });
 });

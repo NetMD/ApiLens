@@ -137,6 +137,74 @@ class MaintenanceControllerTest {
                 .andExpect(jsonPath("$.dbSizeBytes").exists());
     }
 
+    // ── [Phase K] optimize (online full VACUUM) — V-C01~C04, AC-07 ───────────
+
+    /**
+     * [Phase K] AC-07-1 verbatim: ""최적화" 실행 시 전체 VACUUM 으로 파일 크기가 감소하고
+     * freedBytes 가 응답된다" — deletedTraces=0(삭제 없음) + busy=false(정상 회수). 정방향.
+     *
+     * <p>// R14-D06 비협상 — 충분한 디스크의 임시파일 DB 라 디스크 가드 통과 → 실제 VACUUM 수행.
+     */
+    @Test
+    void optimizeReturns200WithFreedBytesAndDeletesNothing() throws Exception {
+        long now = System.currentTimeMillis();
+        // 행을 넣었다 만료분 cleanup 으로 비워 free page 를 만든 뒤 VACUUM 이 회수하도록 구성.
+        for (int i = 0; i < 30; i++) {
+            insertTraceTree("t-" + i, now - 100 * DAY_MS);
+        }
+        // 만료분 전부 삭제 → free page 생성 (incremental_vacuum tail-only 한계로 중간 단편 잔존 가능).
+        jdbc.update("DELETE FROM payloads");
+        jdbc.update("DELETE FROM spans");
+        jdbc.update("DELETE FROM traces");
+
+        mockMvc.perform(post("/v1/maintenance/optimize"))
+                .andExpect(status().isOk())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                // optimize 는 삭제 없음 → deletedTraces 0.
+                .andExpect(jsonPath("$.deletedTraces").value(0))
+                .andExpect(jsonPath("$.freedBytes").exists())
+                .andExpect(jsonPath("$.dbSizeBytes").exists())
+                // 정상 회수 → busy=false (디스크 충분 + 단일 connection, 경합 없음).
+                .andExpect(jsonPath("$.busy").value(false));
+    }
+
+    /**
+     * [Phase K] AC-07-2 verbatim: "빈 DB(또는 회수 불가) 에서는 no-op 으로 freedBytes 0
+     * (또는 음수 방어로 0)이 반환된다" — VACUUM tx 밖 실행(GT-5)이 SQLITE_ERROR 없이 성공. 정방향.
+     */
+    @Test
+    void optimizeOnEmptyDbReturns200NoOpWithZeroFreed() throws Exception {
+        mockMvc.perform(post("/v1/maintenance/optimize"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.deletedTraces").value(0))
+                // 빈 DB VACUUM = no-op → measure 음수 방어로 freedBytes 0 (GT-4).
+                .andExpect(jsonPath("$.freedBytes").value(0))
+                .andExpect(jsonPath("$.dbSizeBytes").exists())
+                .andExpect(jsonPath("$.busy").value(false));
+    }
+
+    /**
+     * [Phase K] AC-07-3/GT-5 — VACUUM 이 트랜잭션 밖에서 실행되어 "cannot VACUUM from within a
+     * transaction" 예외가 발생하지 않음을 직접 검증(busy=false 면 VACUUM 이 성공한 것). 정방향.
+     */
+    @Test
+    void optimizeRunsVacuumOutsideTransactionWithoutSqliteError() throws Exception {
+        // optimizeDatabase() 직접 호출 — busy=false 면 jdbc.execute("VACUUM") 가 예외 없이 완료.
+        RetentionCleanupService cleanupService = newCleanupService();
+        boolean busy = cleanupService.optimizeDatabase();
+        org.junit.jupiter.api.Assertions.assertFalse(busy,
+                "충분한 디스크에서 VACUUM 은 tx 밖 실행으로 SQLITE_ERROR 없이 성공해야 함 (GT-5)");
+    }
+
+    private RetentionCleanupService newCleanupService() {
+        SQLiteDataSource ds = new SQLiteDataSource();
+        ds.setUrl("jdbc:sqlite:" + dbFile.toAbsolutePath());
+        PlatformTransactionManager txManager = new DataSourceTransactionManager(ds);
+        SettingsService settingsService = new SettingsService(new JdbcTemplate(ds), new SettingsRegistry(),
+                new RetentionProperties(30, "0 0 4 * * *"));
+        return new RetentionCleanupService(new JdbcTemplate(ds), txManager, settingsService);
+    }
+
     // ─── fixture helper (RetentionCleanupServiceTest 와 동형) ─────────────────
 
     private void insertTraceTree(String traceId, long receivedAt) {

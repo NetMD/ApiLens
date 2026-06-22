@@ -12,6 +12,7 @@
 // 모달 열림/샘플 소스/입력 내용을 URL 에 박지 않음 — Setup SH-11 전례).
 import type { ReactNode } from 'react';
 import { NavHeader } from '../components/NavHeader';
+import { ApiKeySection } from '../components/settings/ApiKeySection';
 import { RetentionSection } from '../components/settings/RetentionSection';
 import { DataManagementSection } from '../components/settings/DataManagementSection';
 import { MaskingRulesSection } from '../components/settings/MaskingRulesSection';
@@ -24,6 +25,8 @@ export function Settings(): ReactNode {
         <div className="mx-auto max-w-5xl space-y-6">
           {/* T-03 — h1, ActiveServices.tsx h1 전례 동형 */}
           <h1 className="text-lg font-medium text-stone-900">Settings</h1>
+          {/* [Phase K] (US-04) — API Key 토큰 입력/저장 섹션 (설계 §7.2 — RetentionSection 위 배치). */}
+          <ApiKeySection />
           <RetentionSection />
           {/* 데이터 관리 — 디스크 용량 수동 확보 (보관 정책의 Retention 섹션 바로 아래 배치). */}
           <DataManagementSection />

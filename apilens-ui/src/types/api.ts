@@ -167,6 +167,13 @@ export interface MaintenanceResult {
   deletedTraces: number;
   freedBytes: number;
   dbSizeBytes: number;
+  /**
+   * [Phase K] (US-07, AC-07-3/AC-07-4/AC-07-5) — optimize 전체락 부분 실패(SQLITE_BUSY) /
+   * 디스크 부족 거부 / SQLITE_FULL 비전파 시 true (설계 §4.4 — busy optional 추가).
+   * cleanup/purge 응답에는 false 고정(또는 부재) — optional 이라 기존 파싱 회귀 0.
+   * [S-64] 타입 대조: BE MaintenanceResult record 4번째 필드 boolean → boolean.
+   */
+  busy?: boolean;
 }
 
 /** 마스킹 룰 타입 — V1 rule_type 컬럼 값 그대로. */

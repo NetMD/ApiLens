@@ -36,3 +36,19 @@ export async function purgeAllData(): Promise<MaintenanceResult> {
     timeoutMs: MAINTENANCE_TIMEOUT_MS,
   });
 }
+
+/**
+ * [Phase K] (US-07, AC-07-1) — POST /v1/maintenance/optimize — 삭제 없이 전체 VACUUM 으로
+ * 디스크 조각만 회수 (행 재구성, 파일 삭제 0 — 설계 §4.5 / R14-D06).
+ *
+ * 응답 = MaintenanceResult (deletedTraces=0 / freedBytes / dbSizeBytes / busy).
+ *   - busy=true  : 전체락 경합(SQLITE_BUSY) 부분 회수 / 디스크 부족 거부 / SQLITE_FULL (AC-07-3/4/5).
+ *   - busy=false : 정상 회수.
+ * MAINTENANCE_TIMEOUT_MS 재사용 — 매직넘버 신설 금지 (설계 §5 상수표 / planner §1.1 보존).
+ * cleanup/purge 동형 (빈 body POST).
+ */
+export async function optimizeDatabase(): Promise<MaintenanceResult> {
+  return postJson<Record<string, never>, MaintenanceResult>('/v1/maintenance/optimize', {}, {
+    timeoutMs: MAINTENANCE_TIMEOUT_MS,
+  });
+}

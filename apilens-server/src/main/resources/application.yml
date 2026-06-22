@@ -57,6 +57,15 @@ management:
 
 # ApiLens 자체 설정
 apilens:
+  # [Phase K] AC-01-1/AC-02-1 — API Key 인증 (R14-D02/D03/D08, v0.3 신설).
+  # 관리/조회 API(/v1/** 보호 묶음)에 단일 토큰 헤더 검증을 적용한다.
+  # ⚠️ 토큰 SSOT 는 server 起動 옵션 — DB 저장 안 함(R14-D03). 키 회전 = server 재시작.
+  #   env  : APILENS_AUTH_API_KEY=<토큰>            (운영 권장 — Spring relaxed binding 으로 매핑)
+  #   또는 : -Dapilens.auth.api-key=<토큰>          (시스템 프로퍼티, env 보다 우선)
+  # 값을 비워두면 무인증 폴백으로 기동(0.2.1 동일 동작) + 기동 WARN 1회(R14-D08).
+  # ingest(POST /v1/spans)·setup·actuator/health·정적/SPA 는 무토큰 면제(R14-D04 — agent 무변경).
+  auth:
+    api-key:  # 비워둠 — env/시스템 프로퍼티로 주입 (무인증 폴백 시 비활성)
   ingest:
     # 개별 payload body 의 최대 저장 크기 (byte). 초과 시 server 가 한도까지 잘라 저장 + truncated=true
     # (agent 가 64KB 로 못 자른 거대 payload 방어용 안전망 — mask 적용 후 측정·절단, UTF-8 경계 보존).
