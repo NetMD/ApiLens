@@ -34,6 +34,8 @@ import java.util.Map;
  *       (보관기간 즉시 적용): {@link RetentionCleanupService#cleanup()}.</li>
  *   <li>{@code POST /v1/maintenance/purge} — delete everything (전체 비우기):
  *       {@link RetentionCleanupService#purgeAll()}.</li>
+ *   <li>{@code POST /v1/maintenance/optimize} — online full VACUUM (디스크 조각 정리, 삭제 없음):
+ *       {@link RetentionCleanupService#optimizeDatabase()}.</li>
  * </ul>
  *
  * <p>// 두 동작 모두 행 단위 DELETE + PRAGMA 만으로 공간 회수 (D-04 비협상 — 운영 DB 파일
@@ -67,7 +69,7 @@ public class MaintenanceController {
 
         RetentionCleanupService.CleanupResult result = cleanupService.cleanup();
 
-        return measure(result.deletedTraces(), beforePages, pageSize);
+        return measure(result.deletedTraces(), beforePages, pageSize, false);
     }
 
     /**
@@ -81,21 +83,42 @@ public class MaintenanceController {
 
         RetentionCleanupService.CleanupResult result = cleanupService.purgeAll();
 
-        return measure(result.deletedTraces(), beforePages, pageSize);
+        return measure(result.deletedTraces(), beforePages, pageSize, false);
+    }
+
+    /**
+     * Online full VACUUM (manual "디스크 조각 정리(최적화)" button) — 삭제 없이 파일 조각만 회수.
+     *
+     * <p>// [Phase K] AC-07-1/AC-07-2/AC-07-3 — R14-D06 사용자 명시 비협상 결정: 온라인 전체 VACUUM
+     * // (수동 버튼). deletedTraces=0(삭제 없음). busy 동반(디스크 부족 거부 / SQLITE_BUSY|FULL 부분 실패).
+     * // 사용자 명시 비협상 결정. CLAUDE.md '데이터 모델' (행 재구성·파일 삭제 금지 D-04) 인용.
+     */
+    @PostMapping("/v1/maintenance/optimize")
+    public MaintenanceResult optimize() {
+        long pageSize = readPageSize();
+        long beforePages = readPageCount();
+
+        boolean busy = cleanupService.optimizeDatabase();
+
+        // deletedTraces=0 — optimize 는 삭제 없음. busy 동반 (Design §4.1).
+        return measure(0, beforePages, pageSize, busy);
     }
 
     /**
      * 작업 후 page 수를 다시 읽어 freedBytes / dbSizeBytes 를 계산해 결과로 묶는다.
-     * freedBytes 는 음수가 나오지 않도록 0 으로 하한 (incremental_vacuum 후 회수가 정상이나
-     * WAL 상태에 따라 미세 증가 가능성 방어).
+     * freedBytes 는 음수가 나오지 않도록 0 으로 하한 (incremental_vacuum/VACUUM 후 회수가 정상이나
+     * WAL 상태에 따라 미세 증가 가능성 방어 — GT-4 음수 방어가 빈 DB no-op freedBytes 0 자동 충족).
+     *
+     * <p>// [Phase K] AC-07-3/AC-07-4/AC-07-5 — busy 파라미터 추가(private — agent fixture 무관, NFR-03).
+     * // cleanup/purge 는 busy=false 전달, optimize 만 optimizeDatabase() 결과를 전달.
      */
-    private MaintenanceResult measure(int deletedTraces, long beforePages, long pageSize) {
+    private MaintenanceResult measure(int deletedTraces, long beforePages, long pageSize, boolean busy) {
         long afterPages = readPageCount();
         long freedBytes = Math.max(0L, (beforePages - afterPages) * pageSize);
         long dbSizeBytes = afterPages * pageSize;
-        log.info("maintenance measured: deletedTraces={} freedBytes={} dbSizeBytes={}",
-                deletedTraces, freedBytes, dbSizeBytes);
-        return new MaintenanceResult(deletedTraces, freedBytes, dbSizeBytes);
+        log.info("maintenance measured: deletedTraces={} freedBytes={} dbSizeBytes={} busy={}",
+                deletedTraces, freedBytes, dbSizeBytes, busy);
+        return new MaintenanceResult(deletedTraces, freedBytes, dbSizeBytes, busy);
     }
 
     private long readPageCount() {

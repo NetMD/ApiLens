@@ -17,7 +17,7 @@ import { useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Modal } from '../Modal';
-import { runRetentionCleanup, purgeAllData } from '../../api/maintenance';
+import { runRetentionCleanup, purgeAllData, optimizeDatabase } from '../../api/maintenance';
 import type { MaintenanceResult } from '../../types/api';
 import { formatBytes } from '../../lib/format';
 import { useToast } from '../useToast';
@@ -30,6 +30,8 @@ export function DataManagementSection(): ReactNode {
   const [confirmingCleanup, setConfirmingCleanup] = useState(false);
   // ② purge 모달 열림 여부 (강한 확인 — 파괴적이라 별도 모달).
   const [purgeModalOpen, setPurgeModalOpen] = useState(false);
+  // [Phase K] (US-07) ③ optimize 인라인 확인 단계 노출 여부 (삭제 없음 — cleanup 동형 가벼운 확인).
+  const [confirmingOptimize, setConfirmingOptimize] = useState(false);
   // 모달 첫 focus = 취소 버튼 (SH-09 — 의도치 않은 Enter 로 전체 삭제 방지).
   const cancelPurgeRef = useRef<HTMLButtonElement | null>(null);
 
@@ -70,6 +72,45 @@ export function DataManagementSection(): ReactNode {
     },
   });
 
+  // [Phase K] (US-07, AC-07-1/AC-07-3/AC-07-4/AC-07-5) — optimize: 삭제 없이 전체 VACUUM 으로 조각 회수.
+  //   busy 분기 토스트 (설계 §4.5 / planner §7.3 문구):
+  //     - busy=true  + freedBytes==0 → 디스크 부족 거부 (T-C08, AC-07-4 — 52GB 사고 직결).
+  //     - busy=true  + freedBytes>0  → 전체락 부분 회수 (T-C07, AC-07-3).
+  //     - busy=false 또는 부재       → 정상 회수 (T-C06, AC-07-1).
+  //   디스크 부족 vs 적재 busy 구분: 둘 다 server 가 busy=true 반환 → freedBytes 로 구분 (설계 §4.5).
+  const optimize = useMutation({
+    mutationFn: () => optimizeDatabase(),
+    onSuccess: (data: MaintenanceResult) => {
+      setConfirmingOptimize(false);
+      invalidateAfterMaintenance();
+      if (data.busy === true) {
+        if (data.freedBytes === 0) {
+          // T-C08 — 디스크 부족 거부 (실행 전 거부, freedBytes 0).
+          toast.error(
+            '디스크 여유 공간이 부족해 최적화를 건너뛰었어요. DB 크기 이상의 여유가 필요해요.',
+          );
+        } else {
+          // T-C07 — 전체락 부분 회수.
+          toast.error('적재 중이라 일부만 회수됐어요. 저사용 시간대에 다시 시도해 주세요.');
+        }
+        return;
+      }
+      // T-C06 — 정상 회수.
+      toast.success(`파일 조각을 정리했어요. (약 ${formatBytes(data.freedBytes)} 확보)`);
+    },
+    onError: () => {
+      // BE 본문 직접 노출 금지 — 고정 문구 (RetentionSection E-01 동일 원칙). T-C09.
+      setConfirmingOptimize(false);
+      toast.error('최적화에 실패했어요. 잠시 후 다시 시도해 주세요.');
+    },
+  });
+
+  // [Phase K] (US-07, C-C01) — optimize 버튼 disabled = 세 동작 중 하나라도 실행 중 (전체락 충돌 회피, planner §8.1).
+  const optimizeButtonDisabled = optimize.isPending || cleanup.isPending || purge.isPending;
+  // [Phase K] (US-07, planner §8.2) — 역방향 동기화: optimize 실행 중이면 cleanup/purge 도 잠금 (전체락 충돌 회피).
+  const cleanupButtonDisabled = cleanup.isPending || optimize.isPending;
+  const purgeButtonDisabled = purge.isPending || optimize.isPending;
+
   // pending 중 닫기/취소 차단 (AddRuleModal handleClose 전례).
   const handleClosePurgeModal = (): void => {
     if (purge.isPending) return;
@@ -100,7 +141,8 @@ export function DataManagementSection(): ReactNode {
                 <button
                   type="button"
                   onClick={() => cleanup.mutate()}
-                  disabled={cleanup.isPending}
+                  // [Phase K] (US-07, planner §8.2): || optimize.isPending 역동기화 (전체락 충돌 회피).
+                  disabled={cleanupButtonDisabled}
                   className="rounded-md bg-stone-900 px-4 py-2 text-sm font-medium text-white hover:bg-stone-700 disabled:opacity-50"
                 >
                   {cleanup.isPending ? '정리 중…' : '확인'}
@@ -108,7 +150,7 @@ export function DataManagementSection(): ReactNode {
                 <button
                   type="button"
                   onClick={() => setConfirmingCleanup(false)}
-                  disabled={cleanup.isPending}
+                  disabled={cleanupButtonDisabled}
                   className="rounded-md border border-stone-200 bg-white px-3 py-1.5 text-sm text-stone-900 hover:bg-stone-50 disabled:opacity-50"
                 >
                   취소
@@ -118,7 +160,8 @@ export function DataManagementSection(): ReactNode {
               <button
                 type="button"
                 onClick={() => setConfirmingCleanup(true)}
-                disabled={cleanup.isPending}
+                // [Phase K] (US-07, planner §8.2): || optimize.isPending 역동기화 (전체락 충돌 회피).
+                disabled={cleanupButtonDisabled}
                 className="shrink-0 rounded-md border border-stone-200 bg-white px-4 py-2 text-sm font-medium text-stone-900 hover:bg-stone-50 disabled:opacity-50"
               >
                 지난 데이터 정리
@@ -143,11 +186,66 @@ export function DataManagementSection(): ReactNode {
           <button
             type="button"
             onClick={() => setPurgeModalOpen(true)}
-            disabled={purge.isPending}
+            // [Phase K] (US-07, planner §8.2): || optimize.isPending 역동기화 (전체락 충돌 회피).
+            disabled={purgeButtonDisabled}
             className="shrink-0 rounded-md bg-[var(--color-status-error)] px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
           >
             전체 삭제
           </button>
+        </div>
+
+        {/* [Phase K] (US-07, AC-07-1/AC-07-6) ③ 디스크 조각 정리(최적화) — optimize 엔드포인트.
+            cleanup 동형 인라인 2단계 확인. cleanup/purge 와 의미 차별: "삭제 없음" 명시 (T-C02 — purge 혼동 차단). */}
+        <div className="flex flex-col gap-2 border-t border-stone-200 pt-4">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              {/* T-C01 */}
+              <p className="text-sm font-medium text-stone-900">디스크 조각 정리(최적화)</p>
+              {/* T-C02 — "데이터를 삭제하지 않고" 명시로 purge 혼동 차단 (AC-07-6 의미 차별) */}
+              <p className="mt-1 text-xs text-stone-500">
+                데이터를 삭제하지 않고 파일 조각만 정리해 디스크 크기를 줄여요.
+              </p>
+            </div>
+            {confirmingOptimize ? (
+              <div className="flex shrink-0 items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => optimize.mutate()}
+                  // C-C01 — optimize·cleanup·purge 상호 배타 (전체락 충돌 회피, planner §8.1).
+                  disabled={optimizeButtonDisabled}
+                  className="rounded-md bg-stone-900 px-4 py-2 text-sm font-medium text-white hover:bg-stone-700 disabled:opacity-50"
+                >
+                  {/* T-C04 */}
+                  {optimize.isPending ? '최적화 중…' : '확인'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmingOptimize(false)}
+                  disabled={optimizeButtonDisabled}
+                  className="rounded-md border border-stone-200 bg-white px-3 py-1.5 text-sm text-stone-900 hover:bg-stone-50 disabled:opacity-50"
+                >
+                  취소
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setConfirmingOptimize(true)}
+                // C-C01 — optimize·cleanup·purge 상호 배타 (planner §8.1).
+                disabled={optimizeButtonDisabled}
+                className="shrink-0 rounded-md border border-stone-200 bg-white px-4 py-2 text-sm font-medium text-stone-900 hover:bg-stone-50 disabled:opacity-50"
+              >
+                {/* T-C03 */}
+                최적화
+              </button>
+            )}
+          </div>
+          {confirmingOptimize && (
+            // T-C05 — optimize 인라인 확인 안내
+            <p className="text-xs text-stone-500">
+              데이터는 그대로 두고 파일 조각만 정리할까요? 라이브 적재 중이면 일부만 회수될 수 있어요.
+            </p>
+          )}
         </div>
       </div>
 

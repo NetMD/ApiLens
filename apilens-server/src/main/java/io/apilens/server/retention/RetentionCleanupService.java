@@ -24,8 +24,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.io.File;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.OptionalLong;
 
 /**
@@ -129,6 +131,93 @@ public class RetentionCleanupService {
         log.info("manual purge-all finished: deletedTraces={} batches={}",
                 result.deletedTraces(), result.batches());
         return result;
+    }
+
+    /**
+     * 전체 VACUUM 으로 파일 조각을 회수한다 (삭제 없이 행 재구성). 신규 public 메서드 (Design §4.1).
+     *
+     * <p>// [Phase K] AC-07-1/AC-07-3/AC-07-4/AC-07-5 — R14-D06 사용자 명시 비협상 결정:
+     * // 온라인 전체 VACUUM(수동 버튼). VACUUM 은 같은 경로/inode 의 행 재구성이라 파일 삭제 금지(D-04)와
+     * // 충돌하지 않는다(NFR-05). 사용자 명시 비협상 결정. CLAUDE.md '데이터 모델 (5개 테이블, 변경 신중히)' 인용.
+     *
+     * <p>// ★GT-5 비협상★: VACUUM 은 TransactionTemplate 안에서 실행 금지(SQLite: cannot VACUUM from
+     * // within a transaction). cleanup/purge 의 배치 tx 패턴을 재사용하지 않고 jdbc.execute("VACUUM") 직접.
+     *
+     * @return busy — true 면 부분 실패(SQLITE_BUSY/FULL) 또는 디스크 부족 거부, false 면 정상 회수.
+     */
+    public boolean optimizeDatabase() {
+        // 1. 디스크 여유 가드 — VACUUM 임시파일이 원본 크기만큼 추가 점유(2배)하므로 실행 전 거부 (BL-10, AC-07-4).
+        if (!hasEnoughDiskForVacuum()) {
+            log.warn("optimize skipped — insufficient disk (need >= DB size for VACUUM temp file)");
+            return true; // busy 취급(거부) — FE 디스크 부족 토스트 (Design §4.5)
+        }
+        // 2. ★GT-5★ VACUUM 은 트랜잭션 밖에서 (TransactionTemplate 미사용).
+        try {
+            jdbc.execute("VACUUM");  // 전체 행 재구성 (같은 inode — NFR-05)
+            checkpointWal();         // 기존 private 메서드 재사용 (wal_checkpoint TRUNCATE)
+            return false;            // 정상
+        } catch (Exception e) {
+            // BL-11: SQLITE_BUSY / SQLITE_FULL 비전파 — 호스트로 던지지 않고 busy 상태에 반영 (AC-07-3/07-5).
+            log.warn("VACUUM failed (busy or full) — host unaffected, state reflected", e);
+            return true; // busy=true
+        }
+    }
+
+    /**
+     * VACUUM 실행 전 디스크 여유 가드 (FR-C3 — ★52GB 사고 직결★, BL-10).
+     *
+     * <p>// [Phase K] AC-07-4 — VACUUM 임시파일은 원본 DB 와 같은 디렉토리에 원본 크기만큼 생성되어
+     * // 일시적으로 디스크를 약 2배 점유한다. 가용 디스크가 DB 크기보다 작으면 거부(SQLITE_FULL 2차 사고 차단).
+     * // 임계는 비율 상수 아님 — 런타임 dbFile.length() 와 getUsableSpace() 동적 비교(>=, Design §4.2/§5).
+     */
+    private boolean hasEnoughDiskForVacuum() {
+        File dbFile = resolveDbFile();
+        if (dbFile == null) {
+            // 경로 해석 실패(in-memory DB 등) — 가드를 통과시키되 VACUUM 실패는 catch 가 흡수.
+            log.warn("optimize disk-guard skipped — DB file path unresolved (in-memory or driver limitation)");
+            return true;
+        }
+        return hasEnoughDisk(dbFile.getUsableSpace(), dbFile.length());
+    }
+
+    /**
+     * 디스크 여유 비교 핵심 (경계값 단위 테스트 진입점, [S-66] 임계 분기 봉인).
+     *
+     * <p>// [Phase K] AC-07-4 — VACUUM 임시파일이 원본 크기만큼 추가 점유(2배)하므로
+     * // 가용 >= DB크기 일 때만 허용한다. 경계: 가용 == DB크기 → 허용(>=). 가용 < DB크기 → 거부 (Design §8.1 (C)).
+     *
+     * @param usableSpace DB 파일 디렉토리의 가용 디스크 byte
+     * @param dbSize      현재 DB 파일 byte
+     * @return 허용이면 true, 거부면 false
+     */
+    static boolean hasEnoughDisk(long usableSpace, long dbSize) {
+        return usableSpace >= dbSize;
+    }
+
+    /**
+     * 운영 DB 파일 경로 해석 — SQLite {@code PRAGMA database_list} 의 main DB file 경로(하드코딩 회피).
+     *
+     * <p>// [Phase K] AC-07-4 — datasource URL 의 apilens.db 경로를 드라이버에 직접 질의해 해석한다
+     * // (런타임 해석 — Design §4.2). file 컬럼이 빈 문자열(in-memory) 이거나 매핑 불가면 null.
+     */
+    private File resolveDbFile() {
+        try {
+            // PRAGMA database_list → (seq, name, file). name='main' 행의 file 이 DB 파일 절대경로.
+            List<Map<String, Object>> rows = jdbc.queryForList("PRAGMA database_list");
+            for (Map<String, Object> row : rows) {
+                Object name = row.get("name");
+                Object file = row.get("file");
+                if ("main".equals(String.valueOf(name)) && file != null) {
+                    String path = String.valueOf(file);
+                    if (!path.isBlank()) {
+                        return new File(path);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.warn("DB file path resolution failed — disk guard will be skipped", e);
+        }
+        return null;
     }
 
     /**

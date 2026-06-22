@@ -3,8 +3,19 @@
 // - 4xx/5xx는 ApiError throw — React Query가 onError로 받음.
 // - console.log 0건 (NFR-04). catch에서 silent throw만.
 import type { ApiErrorBody } from '../types/api';
+import { getApiKey } from './auth';
 
 const BASE_URL = '';
+
+// [Phase K] (US-04, AC-04-3): "저장 후 client.ts 의 헤더 첨부 지점이 모든 요청에 Authorization: Bearer <token> 를 조건부로 단다" (US-01 보호 API 인증). 사용자 명시 비협상 결정 (R14-D02 인증 = API Key 헤더 토큰). CLAUDE.md '아키텍처 핵심 원칙' (신뢰망 단일 토큰).
+//
+// 설계 §2.6a / §5 상수표: 5개 헬퍼가 각자 headers 를 구성하던 구조를 buildHeaders() 단일 진입점으로 통일.
+// ⚠️ 회귀 차단 (EXT-008 정신의 FE 적용): 5곳 각자 Authorization 첨부 금지 — buildHeaders() 경유로만.
+//    토큰 prefix 리터럴 "Bearer " 는 ApiKeyAuthFilter(BE) 와 양측 동일 (§5 상수표). 신규 fetch 경로 토큰 누락 회귀를 구조로 차단.
+function buildHeaders(base: Record<string, string>): Record<string, string> {
+  const token = getApiKey(); // api/auth.ts sessionStorage — 미설정 시 null (인증 비활성 환경)
+  return token !== null && token !== '' ? { ...base, Authorization: `Bearer ${token}` } : base;
+}
 
 export class ApiError extends Error {
   readonly status: number;
@@ -85,7 +96,7 @@ export async function getJson<T>(path: string, options: RequestOptions = {}): Pr
   const url = buildUrl(path, options.query);
   const fetchInit: RequestInit = {
     method: 'GET',
-    headers: { Accept: 'application/json' },
+    headers: buildHeaders({ Accept: 'application/json' }),
   };
   if (options.signal) {
     fetchInit.signal = options.signal;
@@ -116,10 +127,10 @@ export async function postJson<TReq, TRes>(
   const url = buildUrl(path, options.query);
   const fetchInit: RequestInit = {
     method: 'POST',
-    headers: {
+    headers: buildHeaders({
       Accept: 'application/json',
       'Content-Type': 'application/json',
-    },
+    }),
     body: JSON.stringify(body),
   };
   // [Phase R13] timeoutMs 옵션 소비(getJson/putJson/patchJson/deleteResource 는 무변경 — postJson 단독).
@@ -154,10 +165,10 @@ export async function putJson<TReq, TRes>(
   const url = buildUrl(path, options.query);
   const fetchInit: RequestInit = {
     method: 'PUT',
-    headers: {
+    headers: buildHeaders({
       Accept: 'application/json',
       'Content-Type': 'application/json',
-    },
+    }),
     body: JSON.stringify(body),
   };
   if (options.signal) {
@@ -190,10 +201,10 @@ export async function patchJson<TReq, TRes>(
   const url = buildUrl(path, options.query);
   const fetchInit: RequestInit = {
     method: 'PATCH',
-    headers: {
+    headers: buildHeaders({
       Accept: 'application/json',
       'Content-Type': 'application/json',
-    },
+    }),
     body: JSON.stringify(body),
   };
   if (options.signal) {
@@ -223,6 +234,8 @@ export async function deleteResource(
   const url = buildUrl(path, options.query);
   const fetchInit: RequestInit = {
     method: 'DELETE',
+    // [Phase K] (US-04, AC-04-3): deleteResource 는 기존 headers 객체가 없었으므로 buildHeaders({}) 신설 — 토큰 첨부 단일화 (설계 §2.6a, DELETE /v1/services/{name} 도 보호 경로라 토큰 필요).
+    headers: buildHeaders({}),
   };
   if (options.signal) {
     fetchInit.signal = options.signal;

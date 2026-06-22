@@ -61,7 +61,12 @@ public class MaskingRuleService {
         String pattern = requireLength(trimToNull(request.pattern()), "pattern", PATTERN_MAX_LENGTH);
         String ruleType = requireOneOf(request.ruleType(), "ruleType", RULE_TYPES);
         String maskStrategy = requireOneOf(request.maskStrategy(), "maskStrategy", MASK_STRATEGIES);
-        compileOrReject(pattern);
+        Pattern compiled = compileOrReject(pattern); // 기존 — 구문 오류 차단
+        // [Phase K] AC-06-1/AC-06-4 — ReDoS 1차 그물 (R14-D05 비협상, server-only 중기안).
+        // RegexComplexityGuard 는 static 유틸이라 생성자 주입 0 → MaskingRuleService 공개 시그니처/생성자
+        // 불변 유지(NFR-03 — agent fixture 가 POJO 로 직접 생성, R13 hotfix 287a7e7 회귀 차단).
+        // 사용자 명시 비협상 결정. CLAUDE.md '아키텍처 핵심 원칙' (공유 엔진 일관성·agent 격리) 인용.
+        RegexComplexityGuard.rejectIfTooComplex(compiled);
         boolean enabled = request.enabled() == null || request.enabled(); // 생략 시 true (Design §5.3)
 
         long ruleId = repository.insert(name, ruleType, pattern, maskStrategy, enabled);
@@ -127,9 +132,10 @@ public class MaskingRuleService {
         return value;
     }
 
-    private static void compileOrReject(String pattern) {
+    private static Pattern compileOrReject(String pattern) {
         try {
-            Pattern.compile(pattern);
+            // [Phase K] 컴파일된 Pattern 반환 — ReDoS 가드(rejectIfTooComplex)가 재컴파일 없이 재사용.
+            return Pattern.compile(pattern);
         } catch (PatternSyntaxException e) {
             // Design §5.3 예시 형태: "pattern is not a valid regex: Unclosed group near index 4"
             throw new IllegalArgumentException("pattern is not a valid regex: " + briefMessage(e));

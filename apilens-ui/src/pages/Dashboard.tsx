@@ -9,6 +9,7 @@
 import type { ReactNode } from 'react';
 import { useEffect, useState } from 'react';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
+import { ApiError } from '../api/client';
 import { Header } from '../components/Header';
 import { LatencyScatter } from '../components/LatencyScatter';
 import { ScatterLegend } from '../components/ScatterLegend';
@@ -44,6 +45,12 @@ export function Dashboard(): ReactNode {
     retry: 1,
   });
 
+  // [Phase K] (US-05, AC-05-1) — 401 무한루프 차단 wiring (설계 §2.6e / GT-8 / BL-13).
+  // AC-05-1 verbatim: "401 수신 시 Live 폴링(Dashboard 5초)·자동 재조회가 중단된다(401 무한루프 차단)." (비협상)
+  // 사용자 명시 비협상 결정 (R14-D02 인증 = API Key 헤더 토큰). CLAUDE.md '아키텍처 핵심 원칙'.
+  // auth401 = 마지막 tracesQuery 에러가 401 인지. enabled 에 반영해 자동 재조회 차단 + live 강제 off.
+  const [auth401, setAuth401] = useState(false);
+
   // [R12] AC-C1-2/AC-C2-3 — queryKey 에 status/q 포함 (캐시 분리) + listTraces 전달.
   // placeholderData: keepPreviousData 채택 (UX §5.3 — 세그먼트 전환 시 스켈레톤 깜빡임 방지).
   const tracesQuery = useQuery({
@@ -62,14 +69,26 @@ export function Dashboard(): ReactNode {
         signal,
       );
     },
-    enabled: service !== null,
+    // [Phase K] (US-05, AC-05-1): 401 수신 시 enabled=false → 자동 재조회 차단 (무한루프 0).
+    enabled: service !== null && !auth401,
     staleTime: 2_000,
-    retry: 1,
+    // [Phase K] (US-05, AC-05-1): 401 은 토큰 재입력으로만 해소 → 자동 retry 금지 (재시도 0).
+    retry: (failureCount, err) => !(err instanceof ApiError && err.status === 401) && failureCount < 1,
     refetchOnWindowFocus: false,
-    refetchInterval: live ? 5_000 : false,
+    // [Phase K] (US-05, AC-05-1): 401 이면 live 여도 폴링 중단 (refetchInterval false).
+    refetchInterval: live && !auth401 ? 5_000 : false,
     refetchIntervalInBackground: false,
     placeholderData: keepPreviousData,
   });
+
+  // [Phase K] (US-05, AC-05-1): tracesQuery 에러가 401 로 바뀌면 auth401 ON + Live 강제 off (폴링 중단).
+  //   401 해소(토큰 재입력 후 사용자가 다시 진입/refetch)는 ErrorState '설정으로 이동' → /settings 흐름.
+  useEffect(() => {
+    if (tracesQuery.error instanceof ApiError && tracesQuery.error.status === 401) {
+      setAuth401(true);
+      if (live) setLive(false);
+    }
+  }, [tracesQuery.error, live, setLive]);
 
   // [R12] 🔴 회귀 가드 — LatencyScatter X축 도메인은 computeWindow 시간 윈도우 고정 유지 (diff 0).
   // 필터(status/q)는 since/until 에 무관여 — 점이 줄어도 축은 윈도우 그대로 (자동스케일 회귀 금지).
