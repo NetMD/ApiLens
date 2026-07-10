@@ -76,8 +76,9 @@ class DbPragmaTest {
              Statement st = con.createStatement()) {
             assertEquals("wal", queryString(st, "PRAGMA journal_mode"),
                     "journal_mode=WAL 미적용 — URL 파라미터 오타 의심 (V-06)");
-            assertEquals(5000, queryInt(st, "PRAGMA busy_timeout"),
-                    "busy_timeout=5000 미적용 (V-06)");
+            // [Phase R17] FR-02 — busy_timeout 5000 → 10000 (ms) 상향에 맞춰 V-06 봉인값 갱신.
+            assertEquals(10000, queryInt(st, "PRAGMA busy_timeout"),
+                    "busy_timeout=10000 미적용 (V-06)");
             assertEquals(1, queryInt(st, "PRAGMA synchronous"),
                     "synchronous=NORMAL(1) 미적용 (V-06)");
         }

@@ -1,7 +1,7 @@
 ---
 title: ApiLens Setup 가이드
 owner: maintainer
-last-reviewed: 2026-06-23
+last-reviewed: 2026-07-10
 ---
 
 # ApiLens Setup 가이드
@@ -102,6 +102,13 @@ server 기동 로그에 "authentication disabled" WARN 이 한 번 찍혀요 (�
   JVM 옵션 변경 없음). setup wizard / health probe / 정적 자산도 함께 면제돼요.
 
 - 신규로 추가되는 `/v1/**` API 는 자동으로 보호돼요 (기본 차단 구조).
+
+### API 문서(Swagger) 노출 주의
+
+`/swagger-ui` 와 `/v3/api-docs` 는 무인증으로 열려 있어요. **내부 운영망 배포(예: NAS agent → 맥 collector)**
+라면 신뢰망 전제라 추가 조치가 필요 없어요. 다만 ApiLens 를 **인터넷에 직접 노출**하는 배포라면, 리버스 프록시나
+인증 앞단에서 `/swagger-ui` · `/v3/api-docs` 경로를 차단하거나 인증을 걸어 주세요 (API 구조가 그대로 공개되지
+않도록).
 
 ## 트러블슈팅
 

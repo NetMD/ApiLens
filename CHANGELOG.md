@@ -13,14 +13,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - (candidate) `JdbcParamSerializer` 의 `java.time` 타입 확장 (LocalDate / LocalDateTime / LocalTime / ZonedDateTime).
 
-### Changed
-
-- (candidate) **거대 trace 의 ingest 잠금 독점 완화** — 한 trace 가 수만 개의 span 을 만들면 단일 트랜잭션의 INSERT 가 DB write 잠금을 오래 점유해 동시 적재가 `SQLITE_BUSY` 로 유실되던 문제를, span 배치를 청크로 나눠 커밋하는 방식으로 완화 검토. 근본 해소는 agent 계측량 제어(다음 agent 라운드).
-
 ### Security
 
 - (candidate) **공유 마스킹 엔진 ReDoS 근본 차단** — 신규 룰 저장뿐 아니라 이미 저장된 룰·ingest 마스킹 경로까지 linear-time 매칭(RE2/j 류)으로 보호. 엔진 변경이 agent 재빌드를 동반해 다음 agent 라운드로 묶음.
 - (candidate) JDBC PreparedStatement 파라미터의 이름 기반 마스킹 보강 — 현재 PAYLOAD IN 키가 parameterIndex 라 이름 기반 룰이 매칭되지 않는 한계 개선.
+
+## [0.3.3] - 2026-07-10
+
+> 거대 trace 적재 즉시완화(청크 커밋) + OpenAPI 문서 다듬기. **server 전용 — agent·common 모듈은 변경 없음** (v0.1~v0.3.2 agent 그대로 호환). 스키마 변경 0 (마이그레이션 미추가). breaking change 없음.
+
+### BREAKING CHANGES
+
+_이 release 에는 breaking change 가 없습니다._ server 전용 변경이며 DB 스키마·응답 계약·agent 호환성이 모두 그대로입니다.
+
+### Changed
+
+- **거대 trace 의 적재 write 잠금 독점 완화 (청크 커밋)** — 한 trace 가 수만 개의 span 을 만들면 단일 트랜잭션의 INSERT 가 SQLite write 잠금을 오래 붙잡아, 그 사이 들어온 다른 적재가 `SQLITE_BUSY` 로 유실되던 문제를 완화했습니다. 이제 한 trace 의 span 을 500개 단위 청크로 나눠 청크마다 짧은 트랜잭션으로 커밋합니다. 청크 경계마다 잠금이 풀려 조회·다른 적재가 끼어들 틈이 생기고, 물리적으로 잠금 보유 시간이 줄어듭니다. **이번 릴리스는 완화와 함께 유실 기준선(로그 파일 + `SQLITE_BUSY` 카운터)을 확보하는 라운드입니다** — 유실이 몇 % 줄었다는 정량 수치는 주장하지 않습니다. 근본 해소(agent 과잉 계측 축소)는 다음 agent 라운드입니다.
+- **SQLite·커넥션 풀 운영값 조정** — `busy_timeout` 5초 → 10초, HikariCP `maximum-pool-size` 를 4로 명시(SQLite 는 writer 가 하나라 write 는 어차피 직렬이며 WAL 로 조회는 막히지 않습니다), `wal_autocheckpoint` 를 1000 → 10000 pages(약 40MB, connection-init-sql 로 적용)로 넓혔습니다. 청크 커밋(근본 레버) 뒤의 보조 헤드룸이며 실측으로 튜닝할 수 있습니다.
+- **`SQLITE_BUSY` 발생·유실 카운터 + 로그 파일화** — 적재 경합으로 `SQLITE_BUSY` 를 만난 횟수와 그로 인해 버린 청크 수를 세어 WARN 로그로 남깁니다. 로그를 stdout 전용에서 `logs/apilens.log` 파일로도 남겨(기본 롤링), 완화 전·후 유실 기준선을 로그 grep 으로 비교할 수 있습니다. 카운터는 메모리에만 두므로 재시작하면 0 으로 돌아갑니다(스키마 변경 0).
+- **payload 재적재 멱등화** — 같은 span 이 다시 들어오면 payload 를 지우고 다시 넣어(delete-then-insert) 중복이 쌓이지 않습니다. 처음 저장되는 span 은 동작이 이전과 같고(순개선), 부분 적재 뒤 재수신 경로에서만 "중복 → 대체" 로 바뀝니다.
+- **payload 조회 API 문서 문구 보강** — payload 조회(`/v1/traces/{traceId}/spans/{spanId}/payloads`) 설명에 "본문은 저장 시 이미 마스킹이 1회 적용된 결과이며 재마스킹은 없다"는 뉘앙스를 더했습니다.
+
+### Added
+
+- **API 오류 응답 공통 스키마** — OpenAPI 문서에 공통 오류 응답(`ErrorResponse`, `{ "error": "..." }` 형태) 스키마를 한 곳에 정의해 노출합니다. 각 endpoint 의 오류 응답 형태를 문서에서 일관되게 확인할 수 있습니다.
+- **유지보수 API 6종 문서 설명** — `/v1/maintenance/*` 6개(cleanup·purge·optimize·status·pause·resume)에 동작 설명(`@Operation`)을 붙여 `/swagger-ui` 에서 각 동작의 부작용·주의사항을 바로 볼 수 있습니다.
+- **API 문서(Swagger) 노출 안내** — 내부 운영망(예: NAS agent → 맥 collector)이면 추가 조치가 필요 없고, ApiLens 를 인터넷에 직접 노출하는 배포라면 `/swagger-ui`·`/v3/api-docs` 를 리버스 프록시/인증 앞단에서 막으라는 안내를 `docs/setup.md` 에 추가했습니다.
+
+### Notes
+
+- **agent·common 모듈 무변경** — agent jar 재빌드가 필요 없습니다. collector(server) jar 만 0.3.3 으로 교체하고 재기동하면 됩니다.
+- **업그레이드/롤백** — 0.3.2 jar 와 DB 가 그대로 호환됩니다 (스키마 미변경). 0.3.2 로 롤백해도 데이터 영향 0.
+- **운영 관찰** — `logs/apilens.log` 의 `SQLITE_BUSY` 카운터/WARN 로그로 완화 전·후 유실 기준선을 비교할 수 있습니다.
 
 ## [0.3.2] - 2026-07-10
 

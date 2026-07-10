@@ -90,7 +90,7 @@ class OpenApiDocsIntegrationTest {
     private TestRestTemplate rest;
 
     /**
-     * T-INT-1 — 면제 + 스펙 자동생성 + 컨텍스트 로드 + build-info 배선(info.version=="0.3.2").
+     * T-INT-1 — 면제 + 스펙 자동생성 + 컨텍스트 로드 + build-info 배선(info.version=="0.3.3").
      */
     @Test
     void returns200AndOpenApiSpecOnDocsWithoutToken() throws Exception {
@@ -101,8 +101,8 @@ class OpenApiDocsIntegrationTest {
         assertTrue(root.hasNonNull("openapi"), "spec must contain an 'openapi' field");
         JsonNode info = root.get("info");
         assertNotNull(info, "spec must contain an 'info' block");
-        // 게이트 E — info.version 은 build-info 주입값. bump(0.3.1→0.3.2)가 문서까지 전파됨을 실측 봉인.
-        assertEquals("0.3.2", info.get("version").asText(), "info.version must track the Gradle build version");
+        // 게이트 E — info.version 은 build-info 주입값. bump(0.3.2→0.3.3)가 문서까지 전파됨을 실측 봉인.
+        assertEquals("0.3.3", info.get("version").asText(), "info.version must track the Gradle build version");
         assertEquals("ApiLens API", info.get("title").asText());
     }
 
@@ -139,5 +139,46 @@ class OpenApiDocsIntegrationTest {
         assertTrue(responses.has("202"), "ingest spec must document 202");
         assertTrue(responses.has("503"), "ingest spec must document 503");
         assertTrue(responses.has("400"), "ingest spec must document 400");
+    }
+
+    /**
+     * [Phase R17] T-INT-5 (FR-04) — 공통 오류 응답 표준 component 등록 봉인.
+     *   components.schemas.ErrorResponse 가 flat { error } 표준으로 최종 스펙에 존재해야 한다(EXT-010 단일 출처).
+     */
+    @Test
+    void registersSharedErrorResponseComponent() throws Exception {
+        ResponseEntity<String> res = rest.getForEntity("/v3/api-docs", String.class);
+        assertEquals(HttpStatus.OK, res.getStatusCode());
+
+        JsonNode errorSchema = MAPPER.readTree(res.getBody())
+                .path("components").path("schemas").path("ErrorResponse");
+        assertTrue(errorSchema.isObject() && !errorSchema.isEmpty(),
+                "components.schemas.ErrorResponse must exist (FR-04)");
+        assertTrue(errorSchema.path("properties").has("error"),
+                "ErrorResponse must expose flat 'error' property");
+    }
+
+    /**
+     * [Phase R17] T-INT-6 (FR-05) — maintenance 6종 @Operation summary 부여 봉인.
+     *   cleanup/purge/optimize/status/pause/resume 이 모두 비어 있지 않은 summary 를 노출해야 한다.
+     */
+    @Test
+    void documentsMaintenanceOperationsWithSummaries() throws Exception {
+        ResponseEntity<String> res = rest.getForEntity("/v3/api-docs", String.class);
+        assertEquals(HttpStatus.OK, res.getStatusCode());
+        JsonNode paths = MAPPER.readTree(res.getBody()).path("paths");
+
+        assertMaintenanceSummary(paths, "/v1/maintenance/cleanup", "post");
+        assertMaintenanceSummary(paths, "/v1/maintenance/purge", "post");
+        assertMaintenanceSummary(paths, "/v1/maintenance/optimize", "post");
+        assertMaintenanceSummary(paths, "/v1/maintenance/status", "get");
+        assertMaintenanceSummary(paths, "/v1/maintenance/pause", "post");
+        assertMaintenanceSummary(paths, "/v1/maintenance/resume", "post");
+    }
+
+    private static void assertMaintenanceSummary(JsonNode paths, String path, String method) {
+        JsonNode summary = paths.path(path).path(method).path("summary");
+        assertTrue(summary.isTextual() && !summary.asText().isBlank(),
+                path + " (" + method + ") must have a non-empty @Operation summary (FR-05)");
     }
 }

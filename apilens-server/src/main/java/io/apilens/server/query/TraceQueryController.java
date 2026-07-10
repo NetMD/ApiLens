@@ -76,7 +76,8 @@ public class TraceQueryController {
 
     // [Phase R16] FR-04 — 상위 핵심 @Operation. §4.1 P1-② 범위(#4)이나 §4.4 확정 문구 미명세 →
     //   dev 가 D3 상위 핵심 취지 하에 문구 보강(설계와 다르게 구현한 부분 §에 자진 신고).
-    @Operation(summary = "Payload 조회 (노드 클릭 시 lazy load)")
+    // [Phase R17] FR-07 (T-06) — 문구 보강(Δ-1 마스킹 뉘앙스 추가, docs/api.md '마스킹은 서버에서 적용됩니다' 근거).
+    @Operation(summary = "Payload 조회 (노드 클릭 시 lazy load) — body 는 이미 마스킹 적용된 결과(저장 시 1회 적용, 재마스킹 없음)")
     @GetMapping("/v1/traces/{traceId}/spans/{spanId}/payloads")
     public PayloadListResponse getPayloads(
             @PathVariable String traceId,

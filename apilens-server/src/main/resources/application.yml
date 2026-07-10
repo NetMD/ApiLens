@@ -26,9 +26,22 @@ spring:
   #   INCREMENTAL 전환(신규/기존 DB 공통)은 StartupDbInitializer 가 동일 connection 에서
   #   PRAGMA + VACUUM 1회 수행 (멱등 — Design §2-A2 결정 2 의 ApplicationRunner 축이 전담).
   # foreign_keys 는 OFF 유지 (확정 — Design §2-A2-FK): REPLACE cascade 의 payload 소실 부수효과 차단.
+  # [Phase R17] FR-02 — 거대 trace 적재 청크 커밋 즉시완화(server)의 보조 레버 파라미터 4종.
+  #   근본 레버는 IngestService 청크 커밋(FR-01)이고, 아래는 그 뒤의 보조 헤드룸이다(측정으로 튜닝 가능).
   datasource:
-    url: jdbc:sqlite:apilens.db?journal_mode=WAL&synchronous=NORMAL&busy_timeout=5000
+    # [Phase R17] FR-02 — busy_timeout 5000 → 10000 (ms, GT-4 URL PRAGMA 정상 작동 확인).
+    #   청크 커밋으로 개별 lock 이 짧아진 뒤 다중 writer 대기 헤드룸. lock 보유가 10s 를 넘기면 여전히 유실(완화지 제거 아님).
+    url: jdbc:sqlite:apilens.db?journal_mode=WAL&synchronous=NORMAL&busy_timeout=10000
     driver-class-name: org.sqlite.JDBC
+    # [Phase R17] FR-02 — HikariCP pool + wal_autocheckpoint (OQ-B / OQ-C).
+    hikari:
+      # OQ-B: SQLite 는 writer 1개라 write 는 어차피 직렬. read/write 분리 안 함 — WAL 이 다수 reader + 1 writer 를
+      #   지원하므로 커넥션만 충분하면 UI 조회(read)가 ingest write 뒤에서 막히지 않는다. 기본 10 → 4 (개수, connections).
+      maximum-pool-size: 4
+      # wal_autocheckpoint 는 URL 이 아니라 connection-init-sql 로 넣는다 — R12 auto_vacuum URL silent-drop 함정 회피(GT-3).
+      #   dev STEP 0 실측: statement 실행 시 read-back=10000, URL 미실행 기본=1000. 모든 pool 커넥션 생성 시 1회 실행.
+      #   기본 1000 → 10000 (pages ≈ 40MB) — 적재 버스트 중 체크포인트 빈도↓ 로 청크 커밋 lock 보유가 더 일정.
+      connection-init-sql: "PRAGMA wal_autocheckpoint=10000"
 
   jpa:
     database-platform: org.hibernate.community.dialect.SQLiteDialect
@@ -78,6 +91,10 @@ apilens:
     cleanup-cron: "0 0 4 * * *"
 
 logging:
+  # [Phase R17] FR-03 — stdout 전용 → 파일화. SQLITE_BUSY 유실 카운터의 WARN 이 여기 누적돼
+  #   유실률 기준선 비교처가 된다(로그 파일 grep). Spring Boot 기본 롤링(파일당 10MB, 이력 cap) 적용.
+  file:
+    name: logs/apilens.log
   level:
     root: INFO
     io.apilens: DEBUG

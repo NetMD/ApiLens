@@ -15,12 +15,18 @@
  */
 package io.apilens.server.web;
 
+import io.swagger.v3.oas.models.Components;
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.info.Info;
+import io.swagger.v3.oas.models.media.ObjectSchema;
+import io.swagger.v3.oas.models.media.StringSchema;
+import org.springdoc.core.customizers.OpenApiCustomizer;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.info.BuildProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+
+import java.util.List;
 
 /**
  * springdoc-openapi customization. Registers a single {@link OpenAPI} bean so that
@@ -50,5 +56,35 @@ public class OpenApiConfig {
                 .title("ApiLens API")
                 .version(version)
                 .description("ApiLens 호출 추적 서버의 REST API. 운영 서사(유지보수 503·마스킹·인증 전제)는 docs/api.md 병행."));
+    }
+
+    /**
+     * // [Phase R17] FR-04 — 공통 오류 응답 표준을 재사용 component 1개로 명문화(EXT-010 단일 출처).
+     * //   flat 표준 { "error": "<message>" }(docs/api.md '공통 오류 응답 표준') 그대로 노출. 중첩 { error:{code,message} } 안 씀.
+     * //   endpoint 별 인라인 @Schema 를 전수 손으로 교체하지 않고 재사용 component 1개만 등록한다.
+     *
+     * <p>OpenApiCustomizer 로 등록하는 이유(설계 §3.4 대비 정정): springdoc 2.7.0 은 어떤 operation 도
+     * {@code $ref} 로 참조하지 않는 커스텀 스키마를 OpenAPI 빈의 components 에 넣어도 최종 스펙에서
+     * pruning 한다(실측 — /v3/api-docs 에 미노출). OpenApiCustomizer 는 스캔·조립이 끝난 최종 OpenAPI
+     * 에 적용되므로 참조 여부와 무관하게 component 가 보존된다. 단일 출처(이 클래스) 원칙은 그대로 유지.
+     */
+    @Bean
+    OpenApiCustomizer errorResponseComponentCustomizer() {
+        return openApi -> {
+            StringSchema errorMessage = new StringSchema();
+            errorMessage.setExample("요청을 처리할 수 없습니다.");
+            ObjectSchema errorResponse = new ObjectSchema();
+            errorResponse.addProperty("error", errorMessage);
+            errorResponse.setDescription("ApiLens 공통 오류 응답 — flat 단일 표준(400/404/409/503). "
+                    + "컨텍스트 필드(traceId 등)가 추가로 붙을 수 있음.");
+            errorResponse.setRequired(List.of("error"));
+
+            Components components = openApi.getComponents();
+            if (components == null) {
+                components = new Components();
+                openApi.setComponents(components);
+            }
+            components.addSchemas("ErrorResponse", errorResponse);
+        };
     }
 }

@@ -16,6 +16,7 @@
 package io.apilens.server.retention;
 
 import io.apilens.server.ingest.IngestPauseState;
+import io.swagger.v3.oas.annotations.Operation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -69,6 +70,8 @@ public class MaintenanceController {
      * Apply the retention window now (manual "apply retention immediately" button).
      * Wraps {@link RetentionCleanupService#cleanup()} with before/after page measurement.
      */
+    // [Phase R17] FR-05 (M-1) — maintenance @Operation 6종 신설(GT-12: @Operation 전무 → 부여).
+    @Operation(summary = "보관 기간 즉시 적용 (행 DELETE) — 파일 삭제 0, freedBytes 는 삭제량보다 작을 수 있음(정상)")
     @PostMapping("/v1/maintenance/cleanup")
     public MaintenanceResult cleanup() {
         // 작업 전 page 수 측정 → cleanup → 작업 후 측정 (freedBytes 계산).
@@ -84,6 +87,8 @@ public class MaintenanceController {
      * Delete everything now (manual "clear everything" button).
      * Wraps {@link RetentionCleanupService#purgeAll()} with before/after page measurement.
      */
+    // [Phase R17] FR-05 (M-2) — maintenance @Operation 신설.
+    @Operation(summary = "전체 삭제 (되돌릴 수 없음) — 파일 보존, 행만 제거")
     @PostMapping("/v1/maintenance/purge")
     public MaintenanceResult purge() {
         long pageSize = readPageSize();
@@ -101,6 +106,8 @@ public class MaintenanceController {
      * // (수동 버튼). deletedTraces=0(삭제 없음). busy 동반(디스크 부족 거부 / SQLITE_BUSY|FULL 부분 실패).
      * // 사용자 명시 비협상 결정. CLAUDE.md '데이터 모델' (행 재구성·파일 삭제 금지 D-04) 인용.
      */
+    // [Phase R17] FR-05 (M-3) — maintenance @Operation 신설.
+    @Operation(summary = "online 전체 VACUUM (행 재구성) — 원본 크기만큼 임시 공간 필요, 부족 시 busy=true 부분 실패(예외 안 던짐)")
     @PostMapping("/v1/maintenance/optimize")
     public MaintenanceResult optimize() {
         long pageSize = readPageSize();
@@ -121,6 +128,8 @@ public class MaintenanceController {
      * // CLAUDE.md '데이터 모델' (in-memory 상태, 스키마 변경 0) 인용.
      * status() 도 isPaused() 를 호출 — 조회 시점 cap 경과면 자가 재개 echo(echo 일관성).
      */
+    // [Phase R17] FR-05 (M-4) — maintenance @Operation 신설.
+    @Operation(summary = "유지보수 상태 조회 — paused 여부·pausedAt echo (cap 경과 시 자가 재개 반영)")
     @GetMapping("/v1/maintenance/status")
     public MaintenanceStatusResponse status() {
         return new MaintenanceStatusResponse(pauseState.isPaused(), pauseState.pausedAt());
@@ -132,6 +141,8 @@ public class MaintenanceController {
      * <p>// [Phase R15] AC-A3-3 — set 모델 POST. 멱등(2회 호출도 true 유지, 최초 시각 보존).
      * // 사용자 명시 비협상 결정(D03). CLAUDE.md '데이터 모델' (in-memory, 재시작 false) 인용.
      */
+    // [Phase R17] FR-05 (M-5) — maintenance @Operation 신설.
+    @Operation(summary = "수신 일시정지 — 이후 적재는 503+Retry-After:60, 저장 0. max-pause cap(30분) 자동 재개. 멱등")
     @PostMapping("/v1/maintenance/pause")
     public MaintenanceStatusResponse pause() {
         pauseState.pause();
@@ -144,6 +155,8 @@ public class MaintenanceController {
      * <p>// [Phase R15] AC-A3-3 — set 모델 POST. 멱등(2회 호출도 false 유지). D05 수동 재개.
      * // 사용자 명시 비협상 결정(D03). CLAUDE.md '데이터 모델' (in-memory, 재시작 false) 인용.
      */
+    // [Phase R17] FR-05 (M-6) — maintenance @Operation 신설.
+    @Operation(summary = "수신 재개 — paused=false 복귀. 멱등")
     @PostMapping("/v1/maintenance/resume")
     public MaintenanceStatusResponse resume() {
         pauseState.resume();

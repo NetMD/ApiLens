@@ -23,25 +23,32 @@ import io.apilens.common.Span;
 import io.apilens.server.masking.MaskingEngineHolder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
+import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
 /**
  * Persists ingested spans + payloads, then derives and upserts the trace summary.
  *
- * <p>v0.1 simplification: the trace summary is computed from the spans in <em>this
- * batch</em>. Agents are expected to flush all spans of a finished trace at once.
- * Multi-batch traces (e.g. very long-running root) will have their summary
- * overwritten by the latest batch — acceptable for v0.1; v0.2 will recompute
- * from {@code spans} table on each ingest.
+ * <p>The trace summary is always recomputed from the {@code spans} table (not from
+ * the current batch), so a trace whose spans arrive across multiple batches keeps a
+ * correct summary. See {@code upsertTraceSummary}.
+ *
+ * <p>[Phase R17] FR-01 — 거대 trace 적재는 span 을 {@code SPAN_CHUNK_SIZE} 단위 청크로 나눠
+ * 청크마다 짧은 프로그래매틱 트랜잭션으로 커밋한다(write lock 보유 시간 단축). 청크 중간이
+ * SQLITE_BUSY 로 실패하면 앞 청크만 남는 부분 적재를 허용하고(모니터링 도구 — 통째 유실보다 나음),
+ * 호스트에는 예외를 던지지 않는다(host-throw-0). 요약은 청크 루프 밖에서 1회만 재집계한다.
  */
 @Service
 public class IngestService {
@@ -57,15 +64,36 @@ public class IngestService {
     // @ConfigurationPropertiesScan(ApiLensApplication.java:27)으로 bean 자동 등록 → 생성자 주입.
     private final IngestProperties ingestProperties;
 
+    // [Phase R17] FR-01 — 청크 단위 프로그래매틱 트랜잭션. 생성자 시그니처 불변(V-02):
+    //   이미 주입된 jdbc 의 DataSource 로 트랜잭션 관리자를 본문에서 구성한다(새 인자 0).
+    private final TransactionTemplate chunkTx;
+
+    // [Phase R17] FR-03 — SQLITE_BUSY 발생/유실 카운터(인메모리, host-throw-0). 생성자 인자 아님.
+    //   재시작 시 0 복귀는 정상(스키마 무변경 — DB 저장 안 함). 기준선은 로그 파일 누적으로 비교.
+    //   encountered = SQLITE_BUSY 예외를 catch 한 횟수(경합 이벤트), dropped = 유실된 청크 수(청크 ≈ 500 span).
+    private final AtomicLong sqliteBusyEncountered = new AtomicLong();
+    private final AtomicLong sqliteBusyDropped = new AtomicLong();
+
+    // [Phase R17] FR-01 — 청크 크기 상수(EXT-003 매직넘버 상수화). OQ-C 확정값(span 개수).
+    private static final int SPAN_CHUNK_SIZE = 500;
+
+    // [Phase R17] EXT-003 anchor — V-02 생성자 4-인자 불변(사용자 명시 비협상 결정).
+    //   협력자(트랜잭션 관리자·카운터)는 생성자 인자가 아니라 내부 필드/본문으로 얻는다.
+    //   R13 287a7e7 회귀 진원지(생성자 변경이 agent 통합테스트 컴파일 파손) 재발 차단.
+    //   CLAUDE.md 'Build 설정 lessons §1'(shadow jar relocate 함정) 인용.
     public IngestService(JdbcTemplate jdbc, MaskingEngineHolder maskingHolder, ObjectMapper mapper,
                          IngestProperties ingestProperties) {
         this.jdbc = jdbc;
         this.maskingHolder = maskingHolder;
         this.mapper = mapper;
         this.ingestProperties = ingestProperties;
+        // [Phase R17] FR-01 — jdbc.getDataSource() 로 트랜잭션 관리자 구성(생성자 인자 미추가 = V-02 봉인).
+        //   ingest 는 순수 JdbcTemplate(JPA 엔티티 미사용)이라 DataSourceTransactionManager 로 정합(GT-9).
+        this.chunkTx = new TransactionTemplate(
+                new DataSourceTransactionManager(jdbc.getDataSource()));
     }
 
-    @Transactional
+    // [Phase R17] FR-01 — @Transactional 제거: 상위 통짜 트랜잭션 대신 청크별 프로그래매틱 트랜잭션.
     public IngestResponse ingest(IngestRequest request) {
         validate(request);
         long receivedAt = System.currentTimeMillis();
@@ -80,17 +108,92 @@ public class IngestService {
         return new IngestResponse(request.spans().size(), byTrace.size());
     }
 
+    // [Phase R17] FR-01 — 청크 단위 프로그래매틱 트랜잭션. 한 trace 의 span 을 SPAN_CHUNK_SIZE 씩 나눠
+    //   각 청크(span INSERT OR REPLACE + payload delete-then-insert)를 짧은 트랜잭션으로 커밋한다.
+    //   청크 경계마다 write lock 이 풀려 UI 조회·다른 writer 가 끼어들 여지가 생긴다(거대 trace 완화 근본 레버).
     private void persistTrace(String traceId, List<Span> spans, long receivedAt) {
-        // [Phase R12] AC-A5-1 — FR-A5: 단건 INSERT 루프 → batchUpdate 전환 (writer 점유 축소).
-        // A5 비협상 (Design §0-3): SQL 문자열·컬럼·REPLACE 시맨틱(G-12) 무변경 — 호출 형태만 배치.
-        // upsertTraceSummary 의 spans SQL 재집계 구조는 절대 불변 (diff 0).
-        insertSpans(spans);
-        insertPayloads(spans);
-        upsertTraceSummary(traceId, spans, receivedAt);
+        boolean committedAny = false;
+        int total = spans.size();
+        for (int start = 0, idx = 0; start < total; start += SPAN_CHUNK_SIZE, idx++) {
+            List<Span> chunk = spans.subList(start, Math.min(start + SPAN_CHUNK_SIZE, total));
+            try {
+                chunkTx.executeWithoutResult(status -> {
+                    // [Phase R17] V-03/G-09 — insertSpans 의 INSERT OR REPLACE spans SQL 문자열·컬럼 diff 0.
+                    insertSpans(chunk);           // A5 비협상: SQL·REPLACE 시맨틱 무변경, 호출 인자만 청크로.
+                    deletePayloadsForChunk(chunk); // [Phase R17] OQ-A — payload 멱등 가드(재적재 중복 0).
+                    insertPayloads(chunk);        // [Phase R17] V-03/G-09 — INSERT INTO payloads SQL 문자열 diff 0.
+                });
+                committedAny = true;
+            } catch (DataAccessException e) {
+                // [Phase R17] FR-03/V-04 — 청크 write 실패는 host 로 던지지 않는다(host-throw-0).
+                boolean busy = isSqliteBusy(e);
+                if (busy) {
+                    sqliteBusyEncountered.incrementAndGet();
+                }
+                // 이 청크 + 남은 청크를 유실로 집계(지연 상한 위해 break — 지속 경합 시 남은 청크도 어차피 실패).
+                int remaining = (int) Math.ceil((double) (total - start) / SPAN_CHUNK_SIZE);
+                sqliteBusyDropped.addAndGet(remaining);
+                log.warn("SQLITE_BUSY drop: traceId={} chunkIdx={} droppedChunks={} busy={} cause={} encounteredTotal={} droppedTotal={}",
+                        traceId, idx, remaining, busy, e.getClass().getSimpleName(),
+                        sqliteBusyEncountered.get(), sqliteBusyDropped.get());
+                break; // 요청 지연을 ~1 busy_timeout 으로 제한(남은 청크 시도 안 함).
+            }
+        }
+        if (committedAny) {
+            try {
+                // [Phase R17] FR-01 — 요약은 청크 루프 밖 1회. upsertTraceSummary 는 spans 테이블을 재집계하므로
+                //   부분 적재라도 커밋된 span 만 반영한다(GT-10, G-10 SQL diff 0). 순서 역전 시 O(N²)+lock 점유로 목적 붕괴.
+                chunkTx.executeWithoutResult(status -> upsertTraceSummary(traceId, spans, receivedAt));
+            } catch (DataAccessException e) {
+                if (isSqliteBusy(e)) {
+                    sqliteBusyEncountered.incrementAndGet();
+                }
+                // 요약 실패는 span 유실 아님(이미 커밋) → dropped 증가 안 함. 다음 ingest 가 재집계로 자가치유.
+                log.warn("trace summary deferred (self-heal next ingest): traceId={} cause={}",
+                        traceId, e.getClass().getSimpleName());
+            }
+        }
         // [Phase H] AC-06-3 — D-02 경로 B (자동 등록). 사용자 명시 비협상 결정.
         // CLAUDE.md '아키텍처 핵심 원칙' (Agent 자체 장애가 호스트 앱에 영향 0) 인용.
         // R6 회귀 가드: try-catch(Throwable) 외곽 — 호스트 throw 0 비협상.
+        // [Phase R17] V-04 — 이제 auto-commit 문맥(상위 @Transactional 제거)에서 실행. catch(Throwable) 그대로 유지.
         upsertServiceRegistration(spans, receivedAt);
+    }
+
+    // [Phase R17] OQ-A — 청크 멱등 가드. 청크의 span_id 별 기존 payload 제거 후 재삽입 → 재적재 시 중복 0.
+    //   idx_payloads_span_id(GT-7)로 각 삭제가 인덱스 조회라 저렴. foreign_keys=OFF 라 cascade 부작용 없음.
+    //   IN(...) 이 아니라 batchUpdate(WHERE span_id = ?)라 SQLite 변수 한도(999)에 무의존(OQ-C).
+    private void deletePayloadsForChunk(List<Span> chunk) {
+        List<Object[]> ids = chunk.stream().map(s -> new Object[]{ s.spanId() }).toList();
+        jdbc.batchUpdate("DELETE FROM payloads WHERE span_id = ?", ids);
+    }
+
+    // [Phase R17] FR-03 — SQLITE_BUSY 감지. org.sqlite 타입 미사용(GT-1 runtimeOnly — import 하면 컴파일 파손).
+    //   java.sql.SQLException.getErrorCode(): SQLITE_BUSY=5, SQLITE_LOCKED=6 (dev STEP 0 실측 확인 errorCode==5).
+    //   코드가 0으로 오는 엣지에는 message 매칭으로 폴백 → 감지 무공백.
+    private static boolean isSqliteBusy(Throwable t) {
+        for (Throwable c = t; c != null && c != c.getCause(); c = c.getCause()) {
+            if (c instanceof SQLException se && (se.getErrorCode() == 5 || se.getErrorCode() == 6)) {
+                return true;
+            }
+            String m = c.getMessage();
+            if (m != null) {
+                String u = m.toUpperCase(Locale.ROOT);
+                if (u.contains("SQLITE_BUSY") || u.contains("DATABASE IS LOCKED") || u.contains("SQLITE_LOCKED")) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    // 테스트 관측용 package-private getter (생성자 인자 아님 — V-02 무관).
+    long sqliteBusyEncounteredCount() {
+        return sqliteBusyEncountered.get();
+    }
+
+    long sqliteBusyDroppedCount() {
+        return sqliteBusyDropped.get();
     }
 
     /**
