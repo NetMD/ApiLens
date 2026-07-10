@@ -16,6 +16,12 @@
 package io.apilens.server.ingest;
 
 import io.apilens.common.IngestRequest;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.headers.Header;
+import io.swagger.v3.oas.annotations.media.Content;
+import io.swagger.v3.oas.annotations.media.Schema;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -48,6 +54,19 @@ public class IngestController {
     //   (validate/mask/truncate/DB write 전부 skip). 사용자 명시 비협상 결정(D02).
     //   CLAUDE.md '아키텍처 핵심 원칙' (Agent 무변경 — server 만 503 으로 수신 멈춤) 인용.
     // [봉인#3] 503 = ResponseEntity 직접 반환(throw 아님 — @ExceptionHandler 400 매핑 회피).
+    // [Phase R16] FR-04(최우선) — ResponseEntity<?> 와일드카드라 자동 스키마가 부실 → 손 @ApiResponse 로
+    //   202/503/400 이종 응답을 명시(§4.2). 시그니처·[봉인#1]·[봉인#3] 불변, 애노테이션만 추가.
+    @Operation(summary = "Span 배치 수신 (agent → server ingest)")
+    @ApiResponses({
+            @ApiResponse(responseCode = "202", description = "정상 수신 — 저장된 span 수와 trace 수를 반환",
+                    content = @Content(schema = @Schema(implementation = IngestResponse.class))),
+            @ApiResponse(responseCode = "503", description = "유지보수 모드(수신 일시정지) 중 — 저장하지 않고 잠시 거절",
+                    headers = @Header(name = "Retry-After", description = "재시도 권장 대기(초)",
+                            schema = @Schema(type = "integer", example = "60")),
+                    content = @Content(schema = @Schema(example = "{\"error\":\"...\"}"))),
+            @ApiResponse(responseCode = "400", description = "요청 검증 실패 (필수 필드 누락 등)",
+                    content = @Content(schema = @Schema(example = "{\"error\":\"...\"}")))
+    })
     @PostMapping("/v1/spans")
     public ResponseEntity<?> ingest(@RequestBody IngestRequest request) {
         if (pauseState.isPaused()) {

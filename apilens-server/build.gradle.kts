@@ -14,6 +14,10 @@ dependencies {
     implementation(libs.spring.boot.starter.data.jpa)
     implementation(libs.spring.boot.starter.validation)
     implementation(libs.spring.boot.starter.actuator)
+    // [Phase R16] FR-01 — API 문서 자동화(springdoc-openapi + Swagger UI). server 전용 implementation scope.
+    //   CLAUDE.md 'Build 설정 lessons §1' 준수: agent 를 testImplementation 으로 끌어오지 않으므로
+    //   relocate 충돌 표면 0. springdoc 는 server classpath 에만 얹혀 agent shadowJar 로 유입되지 않는다.
+    implementation(libs.springdoc.openapi.starter.webmvc.ui)
 
     implementation(libs.flyway.core)
     runtimeOnly(libs.sqlite.jdbc)
@@ -26,6 +30,15 @@ dependencies {
     // jackson을 io.apilens.agent.shaded.jackson 으로 relocate함. 이 변형 클래스가
     // testRuntimeClasspath의 raw common 클래스보다 먼저 로드되면 NoSuchMethodError.
     // agent ↔ server end-to-end 통합 테스트는 apilens-agent 모듈에 둔다.
+}
+
+// ─── build-info 생성 (게이트 E — info.version 단일 출처) ────────────────────
+// [Phase R16] FR-06/게이트 E — META-INF/build-info.properties(build.version = Gradle version)를 생성.
+//   spring-boot-starter-actuator 가 이 파일에서 BuildProperties 빈을 자동 등록하고,
+//   OpenApiConfig 가 이를 주입받아 OpenAPI info.version 을 채운다(손코딩 "0.3.2" 금지 — stale 원천 제거).
+//   버전 리터럴의 유일 출처 = 루트 build.gradle.kts 의 version. bump 시 info.version 자동 추종.
+springBoot {
+    buildInfo()
 }
 
 // ─── agent jar 임베드 ──────────────────────────────────────────────────────

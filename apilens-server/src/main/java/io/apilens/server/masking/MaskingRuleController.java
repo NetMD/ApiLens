@@ -20,6 +20,7 @@ import io.apilens.server.masking.dto.MaskingRuleDto;
 import io.apilens.server.masking.dto.MaskingRuleListResponse;
 import io.apilens.server.masking.dto.PreviewRequest;
 import io.apilens.server.masking.dto.PreviewResponse;
+import io.swagger.v3.oas.annotations.Operation;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -51,11 +52,14 @@ public class MaskingRuleController {
         this.previewService = previewService;
     }
 
+    // [Phase R16] FR-04 — 상위 핵심 @Operation(§4.4 T-10 "마스킹 룰 관리" 묶음 → dev 가 endpoint 별 특화).
+    @Operation(summary = "마스킹 룰 목록 조회 (default + custom)")
     @GetMapping
     public MaskingRuleListResponse list() {
         return service.list();
     }
 
+    @Operation(summary = "마스킹 룰 생성 (custom)")
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     public MaskingRuleDto create(@RequestBody CreateMaskingRuleRequest request) {
@@ -66,6 +70,7 @@ public class MaskingRuleController {
      * 토글 — body 는 {@code { "enabled": boolean }} 단일 필드 (Design §2-B2 식별자 단일명).
      * enabled 외 필드 포함 시 400 — v0.2 는 토글만, 룰 내용 수정(PUT)은 범위 외 확정.
      */
+    @Operation(summary = "마스킹 룰 토글 (활성/비활성)")
     @PatchMapping("/{ruleId}")
     public MaskingRuleDto toggle(@PathVariable long ruleId, @RequestBody Map<String, Object> body) {
         if (body == null || !body.keySet().equals(Set.of("enabled"))
@@ -79,6 +84,7 @@ public class MaskingRuleController {
      * // [Phase R12] AC-B2-2 — CLAUDE.md '데이터 모델' verbatim: "default는 비활성만 가능,
      * // 삭제 불가" (사용자 명시 비협상 결정) — default 는 409 (E-02 확정).
      */
+    @Operation(summary = "마스킹 룰 삭제 (custom만 — default는 409)")
     @DeleteMapping("/{ruleId}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void delete(@PathVariable long ruleId) {
@@ -90,6 +96,7 @@ public class MaskingRuleController {
      * // 상태 반영). 사용자 명시 비협상 결정. CLAUDE.md 'UI 디자인 철학' (마스킹 라이브 프리뷰) 인용.
      * // 서버 DB 의존 0 (ruleStates 가 화면 상태의 전체 스냅샷) — DB/holder 무변경.
      */
+    @Operation(summary = "마스킹 라이브 프리뷰 (저장 전 화면 상태 반영)")
     @PostMapping("/preview")
     public PreviewResponse preview(@RequestBody PreviewRequest request) {
         return previewService.preview(request);

@@ -11,7 +11,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- (candidate) **API 문서 자동화 (OpenAPI / Swagger UI)** — 손으로 쓰는 마크다운 API 문서가 코드와 어긋나는 문제를 근본 해소하기 위해 springdoc-openapi 로 컨트롤러에서 스펙을 생성하고 `/swagger-ui` 인터랙티브 문서를 단일 jar 에 임베드 검토 (server 전용 의존성 — agent 무관). 운영 서사(503 부작용·마스킹 의미 등)는 별도 산문 문서로 병행.
 - (candidate) `JdbcParamSerializer` 의 `java.time` 타입 확장 (LocalDate / LocalDateTime / LocalTime / ZonedDateTime).
 
 ### Changed
@@ -22,6 +21,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - (candidate) **공유 마스킹 엔진 ReDoS 근본 차단** — 신규 룰 저장뿐 아니라 이미 저장된 룰·ingest 마스킹 경로까지 linear-time 매칭(RE2/j 류)으로 보호. 엔진 변경이 agent 재빌드를 동반해 다음 agent 라운드로 묶음.
 - (candidate) JDBC PreparedStatement 파라미터의 이름 기반 마스킹 보강 — 현재 PAYLOAD IN 키가 parameterIndex 라 이름 기반 룰이 매칭되지 않는 한계 개선.
+
+## [0.3.2] - 2026-07-10
+
+> API 문서 자동화 (OpenAPI / Swagger UI). server 와 UI 버전 라벨만 바뀌고 **agent·common 모듈은 변경 없음** (v0.1~v0.3.1 agent 그대로 호환). 스키마 변경 0 (마이그레이션 미추가).
+
+### Added
+
+- **API 문서 자동화 (OpenAPI / Swagger UI)** — 손으로 쓰던 마크다운 API 문서가 코드와 어긋나는 문제를 근본 해소하기 위해, springdoc-openapi 로 컨트롤러에서 스펙을 자동 생성하고 인터랙티브 문서를 단일 jar 에 임베드했습니다. server 를 띄운 뒤 `/swagger-ui` (인터랙티브 문서) 또는 `/v3/api-docs` (OpenAPI JSON) 를 열면 최신 요청·응답 스키마·상태 코드를 그대로 확인·시험 호출할 수 있습니다. server 전용 의존성이라 **agent 는 무관** (재빌드 불필요).
+- **API 문서 경로는 인증 없이 열립니다** — API Key 를 설정한 기동 상태에서도 `/swagger-ui` · `/v3/api-docs` 는 토큰 없이 접근할 수 있습니다 (의도된 면제, 기존 `/v1/**` 관리·조회 API 보호는 그대로 유지). 문서 경로를 위한 신규 필터·인터셉터 추가는 없습니다 (기존 인증 화이트리스트의 default-deny 역방향 기본값으로 자동 면제).
+- **문서 버전이 빌드 버전을 자동 추종** — OpenAPI `info.version` 을 손으로 적지 않고 빌드 버전(build-info)에서 주입해, 버전을 올릴 때 문서 버전이 어긋나는 stale 을 원천 차단했습니다.
+
+### Changed
+
+- **`docs/api.md` 를 운영 서사 보조 문서로 축소** — 필드 단위 요청/응답 계약은 자동 스펙(`/swagger-ui`) 단일 진실 출처로 일원화하고, 손 문서에는 자동 스펙이 담기 어려운 운영 서사(유지보수 503 부작용·마스킹 적용 시점·인증 헤더 전제·디스크 회수 한계·프리뷰 신뢰 도구)만 남겼습니다. 코드와 손 문서가 어긋나는 stale 을 줄입니다.
+- **버전 0.3.1 → 0.3.2** (server jar / UI `package.json` / UI 표시 라벨).
+
+### Notes
+
+- **agent·common 모듈 무변경** — agent jar 재빌드가 필요 없습니다. jar 만 0.3.2 로 교체하고 재기동하면 됩니다.
+- **업그레이드/롤백** — 0.3.1 jar 와 DB 가 그대로 호환됩니다 (스키마 미변경). 0.3.1 로 롤백해도 데이터 영향 0.
 
 ## [0.3.1] - 2026-06-23
 

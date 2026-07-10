@@ -1,0 +1,143 @@
+/*
+ * Copyright 2026 ApiLens Contributors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     https://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package io.apilens.server.openapi;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.web.client.TestRestTemplate;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
+
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+/**
+ * Full-context integration test for the OpenAPI/Swagger docs surface.
+ *
+ * <p>This is the first {@code @SpringBootTest} in the server module (the sole blind spot
+ * called out by the design): every other controller test uses standaloneSetup and never
+ * exercises the real filter chain, servlet normalization, or springdoc handler registration.
+ * Only a full context proves that a running server exempts swagger and that springdoc actually
+ * registers its handlers.
+ *
+ * <p>// [Phase R16] 비협상 AC(D1) verbatim: "swagger 인증 면제 유지(무인증 접근)".
+ * // 사용자 명시 비협상 결정. CLAUDE.md '절대 변경하지 말아야 할 결정 사항'(신뢰망 전제) 인용.
+ * // API Key 를 설정한 상태(apilens.auth.api-key=test-swagger-key)로 띄워야 "면제" 가 의미를 가진다 —
+ * // 무인증 폴백이면 전부 통과라 면제 검증이 무의미. T-INT-3(보호 경로 401) 이 T-INT-1/2 의 200 을
+ * // "인증 비활성" 이 아닌 "의도된 면제" 로 못 박는다.
+ */
+@SpringBootTest(
+        webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
+        properties = {"apilens.auth.api-key=test-swagger-key"}
+)
+class OpenApiDocsIntegrationTest {
+
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+
+    // application.yml 의 상대경로 jdbc:sqlite:apilens.db 가 작업 디렉토리를 오염시키므로,
+    // temp 파일 SQLite 로 override (AgentToServerIntegrationTest 의 temp-file + Flyway 패턴 미러).
+    private static final Path TEMP_DB;
+
+    static {
+        try {
+            TEMP_DB = Files.createTempFile("apilens-openapi-it-", ".db");
+            Files.deleteIfExists(TEMP_DB); // sqlite/Flyway 가 새 파일로 생성하도록 비워둔다
+        } catch (IOException e) {
+            throw new ExceptionInInitializerError(e);
+        }
+    }
+
+    @DynamicPropertySource
+    static void overrideDatasource(DynamicPropertyRegistry registry) {
+        registry.add("spring.datasource.url",
+                () -> "jdbc:sqlite:" + TEMP_DB.toAbsolutePath()
+                        + "?journal_mode=WAL&synchronous=NORMAL&busy_timeout=5000");
+    }
+
+    @AfterAll
+    static void deleteTempDb() throws IOException {
+        String base = TEMP_DB.toAbsolutePath().toString();
+        Files.deleteIfExists(TEMP_DB);
+        Files.deleteIfExists(Path.of(base + "-wal"));
+        Files.deleteIfExists(Path.of(base + "-shm"));
+    }
+
+    @Autowired
+    private TestRestTemplate rest;
+
+    /**
+     * T-INT-1 — 면제 + 스펙 자동생성 + 컨텍스트 로드 + build-info 배선(info.version=="0.3.2").
+     */
+    @Test
+    void returns200AndOpenApiSpecOnDocsWithoutToken() throws Exception {
+        ResponseEntity<String> res = rest.getForEntity("/v3/api-docs", String.class);
+
+        assertEquals(HttpStatus.OK, res.getStatusCode(), "/v3/api-docs must be exempt (200) even with API key set");
+        JsonNode root = MAPPER.readTree(res.getBody());
+        assertTrue(root.hasNonNull("openapi"), "spec must contain an 'openapi' field");
+        JsonNode info = root.get("info");
+        assertNotNull(info, "spec must contain an 'info' block");
+        // 게이트 E — info.version 은 build-info 주입값. bump(0.3.1→0.3.2)가 문서까지 전파됨을 실측 봉인.
+        assertEquals("0.3.2", info.get("version").asText(), "info.version must track the Gradle build version");
+        assertEquals("ApiLens API", info.get("title").asText());
+    }
+
+    /**
+     * T-INT-2 — UI 임베드 + 면제 + SPA forward 미간섭(springdoc canonical 진입 = /swagger-ui/index.html).
+     */
+    @Test
+    void returns200OnSwaggerUiWithoutToken() {
+        ResponseEntity<String> res = rest.getForEntity("/swagger-ui/index.html", String.class);
+        assertEquals(HttpStatus.OK, res.getStatusCode(), "swagger-ui index must be exempt (200)");
+    }
+
+    /**
+     * T-INT-3 (핵심) — 필터 실활성 sanity. 이 경로가 401 이어야 T-INT-1/2 의 200 이
+     * "인증 비활성" 이 아닌 "의도된 면제" 임이 증명된다.
+     */
+    @Test
+    void returns401OnProtectedPathWithoutToken() {
+        ResponseEntity<String> res = rest.getForEntity("/v1/traces", String.class);
+        assertEquals(HttpStatus.UNAUTHORIZED, res.getStatusCode(),
+                "/v1/traces without token must be 401 — proves the filter is active");
+    }
+
+    /**
+     * T-INT-4 — 손 @ApiResponse 반영(202/503/400) + 23 경로 스캔 확인(/v1/spans 존재).
+     */
+    @Test
+    void exposesIngestResponseCodesInSpec() throws Exception {
+        ResponseEntity<String> res = rest.getForEntity("/v3/api-docs", String.class);
+        assertEquals(HttpStatus.OK, res.getStatusCode());
+
+        JsonNode responses = MAPPER.readTree(res.getBody())
+                .path("paths").path("/v1/spans").path("post").path("responses");
+        assertTrue(responses.has("202"), "ingest spec must document 202");
+        assertTrue(responses.has("503"), "ingest spec must document 503");
+        assertTrue(responses.has("400"), "ingest spec must document 400");
+    }
+}

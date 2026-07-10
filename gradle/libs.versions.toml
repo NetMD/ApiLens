@@ -9,6 +9,9 @@ hibernateCommunity = "6.5.3.Final"
 jackson = "2.18.2"
 jupiter = "5.11.4"
 mockito = "5.14.2"
+# [Phase R16] FR-01/게이트 B — springdoc-openapi 버전 SSOT (카탈로그가 유일 출처, 인라인 magic version 금지).
+# Spring Boot 3.4.x 정렬 릴리스 = 2.7.0. dev/QA 가 `./gw build` 로 3.4.1 호환 실증 후 확정(게이트 B).
+springdoc = "2.7.0"
 
 [libraries]
 # Spring Boot
@@ -18,6 +21,10 @@ spring-boot-starter-validation = { module = "org.springframework.boot:spring-boo
 spring-boot-starter-test = { module = "org.springframework.boot:spring-boot-starter-test", version.ref = "springBoot" }
 spring-boot-starter-actuator = { module = "org.springframework.boot:spring-boot-starter-actuator", version.ref = "springBoot" }
 spring-boot-starter-jdbc = { module = "org.springframework.boot:spring-boot-starter-jdbc", version.ref = "springBoot" }
+
+# API 문서 자동화 (server 전용 — agent shadowJar/relocate 경로 유입 0)
+# [Phase R16] FR-01 — 신규 식별자 단일명(별칭 참조: libs.springdoc.openapi.starter.webmvc.ui).
+springdoc-openapi-starter-webmvc-ui = { module = "org.springdoc:springdoc-openapi-starter-webmvc-ui", version.ref = "springdoc" }
 
 # Persistence
 flyway-core = { module = "org.flywaydb:flyway-core", version.ref = "flyway" }
