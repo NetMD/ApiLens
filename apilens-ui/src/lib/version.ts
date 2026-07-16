@@ -4,4 +4,5 @@
 // 회귀 가드 grep (설계 §9.3): grep -rn "v0\.[0-9]" apilens-ui/src --include='*.tsx' → 0 hit
 // (version.ts 는 .ts — 유일 허용 거주지. 사용처: BrandNav / Setup.tsx wizard 헤더)
 // [Phase K] (NFR-06): v0.2 → v0.3 — v0.3 릴리스 UI 표시 라벨 일관성 (package.json 0.3.0 동기화 보강). 사용자 명시 결정 (R14 v0.3 라운드).
-export const APP_VERSION = 'v0.3';
+// [Phase O / R18] (FR-06): v0.3 → v0.4 — v0.4.0 릴리스 UI 표시 라벨 (package.json 0.4.0 동기). R18 dev-frontend 가 package.json 만 bump 하고 이 SSOT 를 누락 → 릴리스 전 사용자 지적으로 회수.
+export const APP_VERSION = 'v0.4';

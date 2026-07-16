@@ -19,6 +19,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.apilens.common.IngestRequest;
 import io.apilens.common.Payload;
+import io.apilens.common.RegexTimeoutException;
 import io.apilens.common.Span;
 import io.apilens.server.masking.MaskingEngineHolder;
 import org.slf4j.Logger;
@@ -76,6 +77,11 @@ public class IngestService {
 
     // [Phase R17] FR-01 — 청크 크기 상수(EXT-003 매직넘버 상수화). OQ-C 확정값(span 개수).
     private static final int SPAN_CHUNK_SIZE = 500;
+
+    // [Phase R18] AC-02-1/NFR-04 — ReDoS deadline 초과 시 degrade 본문(상수 전체마스킹).
+    //   사용자 명시 비협상 결정: 부분결과·원문 저장 금지(PII) → body 전체를 고정 상수로 대체 후 비throw.
+    //   CLAUDE.md '아키텍처 핵심 원칙'(마스킹은 공유 엔진, 결과 일관성) 인용.
+    private static final String REDOS_DEGRADE_BODY = "***";
 
     // [Phase R17] EXT-003 anchor — V-02 생성자 4-인자 불변(사용자 명시 비협상 결정).
     //   협력자(트랜잭션 관리자·카운터)는 생성자 인자가 아니라 내부 필드/본문으로 얻는다.
@@ -283,7 +289,17 @@ public class IngestService {
             }
             for (Payload payload : span.payloads()) {
                 // NFR-06 비협상: mask → guard 순서 (마스킹 회피 차단). mask 결과를 측정·절단한다.
-                String maskedBody = maskingHolder.current().mask(payload.body(), payload.contentType());
+                // [Phase R18] AC-02-1/NFR-04 — ReDoS deadline 초과(RegexTimeoutException)는 청크 tx 람다 안
+                //   이 catch 로 흡수 → body 전체를 상수 "***" 로 degrade(부분결과·원문 저장 금지). 비throw 라
+                //   람다가 정상 완료돼 청크는 commit(롤백 0). 사용자 명시 비협상 결정.
+                String maskedBody;
+                try {
+                    maskedBody = maskingHolder.current().mask(payload.body(), payload.contentType());
+                } catch (RegexTimeoutException e) {
+                    maskedBody = REDOS_DEGRADE_BODY;
+                    log.warn("ReDoS deadline exceeded; payload degraded to full mask: spanId={} contentType={}",
+                            span.spanId(), payload.contentType());
+                }
                 // [Phase R13] AC-A1-1/AC-A1-2/AC-A1-5 — D-03 server-side truncate 가드.
                 // 한도 초과 시 잘라 저장 + truncated=1. agent 가 정상 흐름에서 먼저 자르므로 보통 idle(안전망).
                 PayloadGuard.Result guarded = PayloadGuard.guard(maskedBody, ingestProperties.maxPayloadBytes());

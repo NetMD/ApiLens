@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-다음 release 후보가 누적되는 영역입니다.
+다음 release 후보가 누적되는 영역입니다. 아래 항목은 아직 구현 전인 후보이며, 이번 라운드(v0.4.0)에서 구현된 변경은 아래 `[0.4.0]` 블록으로 옮겼습니다.
 
 ### Added
 
@@ -15,8 +15,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- (candidate) **공유 마스킹 엔진 ReDoS 근본 차단** — 신규 룰 저장뿐 아니라 이미 저장된 룰·ingest 마스킹 경로까지 linear-time 매칭(RE2/j 류)으로 보호. 엔진 변경이 agent 재빌드를 동반해 다음 agent 라운드로 묶음.
+- (candidate) **공유 마스킹 엔진 ReDoS 근본 차단(linear-time 엔진)** — 실행 deadline 에 더해, 정규식 매칭 자체를 backtracking 없는 linear-time 엔진(RE2/j 류)으로 바꾸는 근본 방어는 별도 후보로 남습니다.
 - (candidate) JDBC PreparedStatement 파라미터의 이름 기반 마스킹 보강 — 현재 PAYLOAD IN 키가 parameterIndex 라 이름 기반 룰이 매칭되지 않는 한계 개선.
+
+## [0.4.0] - 2026-07-16
+
+> v0.1 이후 **첫 agent·common 모듈 변경 라운드**. (1) agent 계측량 제어 opt-in 옵션(`apilens.instrument.exclude-packages`) + (2) 공유 마스킹 엔진 ReDoS 실행 deadline 3경로 방어(R14 P0 갭 종결) + (3) CI relocate 검증 FAIL 게이트 승급. **server API·DB 스키마 무변경(하위호환)**. 다만 v0.1 이후 처음으로 agent jar 산출물이 바뀌므로, 운영망(NAS 등)에 **새 agent jar 재배포 + JVM 재시작이 필요**합니다.
+
+### BREAKING CHANGES
+
+_이 release 에는 하위호환을 깨는 변경이 없습니다._ 관리·조회 API 계약, `POST /v1/spans` 적재 계약, DB 스키마가 모두 그대로이고, 새 계측 옵션은 기본값이 "제외 없음(현재 계측 유지)"인 opt-in 이라 켜지 않으면 동작이 이전과 완전히 같습니다. 구 agent jar 가 새 옵션을 만나도 조용히 무시할 뿐 깨지지 않습니다(안전 폴백).
+
+- **운영 영향 (하위호환이지만 조치 필요)** — v0.1 이후 처음으로 **agent jar 산출물 자체가 바뀝니다**(계측 옵션 추가 + 공유 마스킹 엔진 `apilens-common` 승격에 따른 agent 재빌드 + agent 버전 0.4.0 정렬). 이번 변경(새 계측 옵션·버전 라벨)을 반영하려면 운영망(NAS `vams-prod` 등)에 **새 agent jar 를 다시 배포하고 대상 앱 JVM 을 재시작**해야 합니다. 재배포하지 않아도 구 agent 는 기존대로 동작하지만(무파손), 새 계측 제외 옵션은 새 jar 에서만 유효합니다.
+
+### Added
+
+- **agent 계측 제외 패키지 옵션 (`apilens.instrument.exclude-packages`)** — 운영자가 잡음이 많은 leaf 패키지(예: 특정 batch/repository)를 계측에서 뺄 수 있습니다. 콤마로 패키지 prefix 를 나열하면 그 클래스는 weaving 대상에서 제외돼 span·payload 가 생성되지 않습니다(weaving 시점 결정 — 런타임 비용 0). 기본값은 제외 없음(현재 계측 그대로)이라 켜지 않으면 동작이 이전과 완전히 같습니다. 설치 명령 생성기에는 노출하지 않는 고급 opt-in 으로, NAS 등 운영망 JVM 의 `-D` 로 직접 지정합니다. 실제 저장 부담·대시보드 잡음이 얼마나 줄었는지는 본인 운영망에서 적용 전·후로 측정해 확인하세요(문서가 정량 수치를 단정하지 않습니다).
+
+### Changed
+
+- **agent 버전 0.4.0 정렬** — agent 가 v0.1 이후 처음 변경되는 라운드라, 단일 jar 제품 버전(0.4.0)에 맞춰 agent 버전(`AgentMain.AGENT_VERSION` `"0.1.0"` → `"0.4.0"`)을 올렸습니다. 이번 변경을 반영하려면 NAS 등 운영망에 agent jar 를 다시 배포하고 JVM 을 재시작해야 합니다(구 jar 가 남아 있으면 새 옵션은 조용히 무시되지만, 기본값이 현재 계측 유지라 동작이 깨지지는 않습니다).
+- **CI relocate 검증 FAIL 게이트 승급** — agent shadow jar 의 의존성 relocate(사용자 앱과 클래스 충돌 방지)가 깨지면 CI 가 경고만 내던 것을 **빌드 실패(FAIL)** 로 올리고, `javap -v` 로 public API 표면에 raw(비-relocate) 패키지 노출이 0 인지 직접 검증하는 step 을 추가했습니다. 첫 agent 변경 라운드에 맞춰 relocate 회귀를 CI 에서 자동 차단합니다(로컬 실측 raw 0 / shaded 1254).
+
+### Security
+
+- **공유 마스킹 엔진 ReDoS 실행 deadline (3경로 방어)** — 인증 없이 들어온 임의 payload 와 사용자 저장 정규식 룰이 만나 발생할 수 있는 catastrophic backtracking(정규식 폭주)을 실행 시점에 시간 상한으로 막습니다. 마스킹 1회 처리에 기본 1초의 누적 예산을 두고, 초과하면 적재 경로는 해당 payload 를 통째로 마스킹(`***`)한 보수적 형태로 저장한 뒤 계속 진행하며(부분 평문 노출 0), 라이브 프리뷰는 400 으로 응답합니다. 룰 저장 시점의 복잡도 검사(기존)와 함께 저장·프리뷰·적재 세 경로를 공유 엔진 위에서 방어합니다. 이 방어 클래스(`DeadlineCharSequence`·`RegexTimeoutException`)가 `apilens-common` 공유 엔진으로 승격되면서 agent 재빌드가 동반됩니다. 이로써 v0.3.0 이후 남아 있던 **무인증 ingest·프리뷰 경로 ReDoS 미가드 P0 갭을 종결**했습니다.
+
+### Notes
+
+- **agent 재배포 필요** — 위 "운영 영향" 참고. v0.1 이후 첫 agent 산출물 변경이라, 새 계측 옵션·버전 라벨을 반영하려면 새 agent jar 재배포 + JVM 재시작이 필요합니다. 미재배포 시 구 agent 로 기존 동작 유지(안전 폴백).
+- **server 업그레이드/롤백** — collector(server) jar 를 0.4.0 으로 교체하고 재기동하면 됩니다. **DB 스키마 변경 0** — 0.3.3 DB 와 그대로 호환되고, 0.3.3 으로 롤백해도 데이터 영향이 없습니다(단, 롤백 시 구 agent jar 도 함께 되돌리는 것을 권장).
+- **정량 수치 미주장** — 계측 제외로 저장 부담·잡음이 얼마나 줄었는지, ReDoS 방어가 유실을 얼마나 막았는지의 정량 수치는 단정하지 않습니다. 본인 운영망에서 적용 전·후로 측정해 확인하세요.
+
+### 미구현 (이번 라운드 평가 후 사유 명문)
+
+- **계측 include 필터** — 지정 패키지만 계측하는 대응 레버. 운영자의 축소 레버는 "빼기(exclude)"라 이번엔 exclude 만 구현. include 는 후보로 이관.
+- **계측 2차 레버** — 최소 duration 필터(짧은 span drop)·INTERNAL/payload-off 토글. 이번 라운드 범위는 패키지 exclude 필터 하나로 한정.
+- **agent 버전 빌드 타임 주입** — 현재 agent 버전은 소스 리터럴이라 수동 bump. 빌드 시 자동 주입(server build-info 접근 불가라 별도 리소스 생성 방식 필요)은 후보로 이관.
+- **직렬화 방어 게이트 2종(ResourceRegion·MultipartFile MixIn / FAIL_ON_EMPTY_BEANS)** — 코드 실측 결과 기존 pre-skip / host-throw-0 방어로 이미 목적이 달성돼 중복·marginal 로 판정, 미구현.
 
 ## [0.3.3] - 2026-07-10
 

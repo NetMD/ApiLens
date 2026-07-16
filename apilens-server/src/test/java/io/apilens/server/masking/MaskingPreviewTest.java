@@ -17,12 +17,15 @@ package io.apilens.server.masking;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.apilens.common.MaskingEngine;
+import io.apilens.common.RegexTimeoutException;
 import io.apilens.server.masking.dto.PreviewRequest;
 import io.apilens.server.masking.dto.PreviewResponse;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.mockito.MockedConstruction;
+import org.mockito.Mockito;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.sqlite.SQLiteDataSource;
 
@@ -153,6 +156,28 @@ class MaskingPreviewTest {
         IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
                 () -> previewService.preview(new PreviewRequest(over, null, null)));
         assertEquals("sample exceeds 65536 bytes", e.getMessage());
+    }
+
+    // ─── [Phase R18] AC-02-2 — 프리뷰 ReDoS deadline 초과 → 400 매핑 ─────────
+
+    /**
+     * 프리뷰 mask() 가 {@link RegexTimeoutException} 을 던지면 IllegalArgumentException 으로 매핑돼
+     * (MaskingRuleController.handleBadRequest 가 400 으로 변환) 고정 문구가 반환된다. 룰저장 400 과 동형.
+     *
+     * <p>결정적: mockConstruction 으로 preview() 내부의 {@code new MaskingEngine(rules, mapper)} 를
+     * 가로채 mask() 를 확정 throw 로 만든다(실제 backtracking 폭발 의존 0 — CI flaky 회피).
+     */
+    @Test
+    void mapsReDoSTimeoutToBadRequest() {
+        try (MockedConstruction<MaskingEngine> mocked = Mockito.mockConstruction(MaskingEngine.class,
+                (mock, ctx) -> Mockito.when(mock.mask(Mockito.any(), Mockito.any()))
+                        .thenThrow(RegexTimeoutException.INSTANCE))) {
+
+            IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                    () -> previewService.preview(new PreviewRequest(
+                            "{\"note\":\"evil-redos-input\"}", "application/json", null)));
+            assertEquals("preview timed out: pattern too complex for this sample", e.getMessage());
+        }
     }
 
     // ─── 부작용 0: holder/DB 무변경 (요청 스코프 임시 엔진 — EXT-008 허용 위치 2/2) ──

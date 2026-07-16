@@ -21,6 +21,7 @@ import net.bytebuddy.matcher.ElementMatcher;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Method;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -388,6 +389,70 @@ class SpringMatchersTest {
             i++;
         }
         return src.substring(braceOpen, Math.min(i, src.length()));
+    }
+
+    // ─── [Phase R18] AC-01-1/AC-01-2 — userExcludedTypes opt-in 계측 필터 (사용자 비협상 NFR-05) ───
+    //
+    // 정방향 동사(skips/keeps/matches) — default 빈 목록 = 아무것도 매치 안 함(현 계측 유지)가 사용자 결정.
+
+    /** UT-EXC-M01: 빈 목록 → none() (아무 타입도 매치 안 함 = default 현 계측 유지, NFR-05 비협상). */
+    @Test
+    void userExcludedTypesEmptyListMatchesNothing() {
+        ElementMatcher<TypeDescription> matcher = SpringMatchers.userExcludedTypes(List.of());
+
+        assertFalse(matcher.matches(typeNamed("com.acme.Foo")),
+                "빈 exclude 목록은 아무것도 매치하지 않아야 함 — default weaving 불변(NFR-05)");
+        assertFalse(matcher.matches(typeNamed("com.example.checkout.OrderController")));
+    }
+
+    /** UT-EXC-M02: null 목록도 안전하게 none() — 방어적. */
+    @Test
+    void userExcludedTypesNullListMatchesNothing() {
+        ElementMatcher<TypeDescription> matcher = SpringMatchers.userExcludedTypes(null);
+
+        assertFalse(matcher.matches(typeNamed("com.acme.Foo")));
+    }
+
+    /** UT-EXC-M03: 단일 prefix → prefix 로 시작하는 타입만 매치(비매치 타입은 계속 계측). */
+    @Test
+    void userExcludedTypesSinglePrefixMatchesOnlyThatPrefix() {
+        ElementMatcher<TypeDescription> matcher = SpringMatchers.userExcludedTypes(List.of("com.acme"));
+
+        assertTrue(matcher.matches(typeNamed("com.acme.Foo")), "exclude prefix 로 시작 → 매치(제외)");
+        assertFalse(matcher.matches(typeNamed("com.other.Bar")), "다른 패키지 → 미매치(계속 계측)");
+    }
+
+    /**
+     * UT-EXC-M04: prefix 시맨틱 명시 — "com.acme" 는 경계가 아닌 순수 prefix 라
+     * "com.acme2.X" 도 매치한다(docs/agent-options.md 가이드에 명문).
+     */
+    @Test
+    void userExcludedTypesUsesPurePrefixSemantics() {
+        ElementMatcher<TypeDescription> matcher = SpringMatchers.userExcludedTypes(List.of("com.acme"));
+
+        assertTrue(matcher.matches(typeNamed("com.acme2.X")),
+                "순수 prefix — com.acme 는 com.acme2 도 매치(운영자는 잎 계층에만 쓸 것)");
+    }
+
+    /** UT-EXC-M05: 다중 prefix → 어느 하나로 시작해도 매치(OR 합성). */
+    @Test
+    void userExcludedTypesMultiplePrefixesMatchAny() {
+        ElementMatcher<TypeDescription> matcher =
+                SpringMatchers.userExcludedTypes(List.of("com.acme.noisy", "com.acme.batch"));
+
+        assertTrue(matcher.matches(typeNamed("com.acme.noisy.Repo")));
+        assertTrue(matcher.matches(typeNamed("com.acme.batch.Job")));
+        assertFalse(matcher.matches(typeNamed("com.acme.core.Service")), "미열거 패키지는 계속 계측");
+    }
+
+    /** UT-EXC-M06: 빈/공백 항목은 매처에서도 무시(파싱 방어와 이중 안전). */
+    @Test
+    void userExcludedTypesSkipsBlankEntries() {
+        // 빈/공백만 있는 목록 → none() 과 동치(아무것도 매치 안 함)
+        ElementMatcher<TypeDescription> matcher = SpringMatchers.userExcludedTypes(List.of("", "  "));
+
+        assertFalse(matcher.matches(typeNamed("com.acme.Foo")),
+                "공백 prefix 는 무시 — 전 타입 매치 같은 사고 방지");
     }
 
     /** Synthesise a TypeDescription with a specific name — enough for nameStartsWith matchers. */

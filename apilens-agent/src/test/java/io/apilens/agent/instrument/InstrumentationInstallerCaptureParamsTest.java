@@ -136,6 +136,7 @@ class InstrumentationInstallerCaptureParamsTest {
                 AgentConfig.DEFAULT_PAYLOAD_MAX_BYTES,
                 false,                                // debug
                 false,                                // captureResultSet
-                captureParams);
+                captureParams,
+                List.of());                           // [Phase R18] excludePackages — default 제외 없음
     }
 }

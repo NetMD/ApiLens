@@ -20,9 +20,11 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.function.LongSupplier;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class MaskingEngineTest {
@@ -182,5 +184,61 @@ class MaskingEngineTest {
 
         // FULL mask is "***"; verify no replacement-string interpretation surprises
         assertEquals("a *** b", engine.mask("a VALUE b", "text/plain"));
+    }
+
+    // ─── [Phase R18] AC-06-1 — ReDoS 실행 deadline (EXT-006 결정적 시간소스 주입) ─────
+
+    /** default deadline 상수 고정(1000ms). 매직넘버 회귀 가드. */
+    @Test
+    void defaultMaskDeadlineMillisIsOneSecond() {
+        assertEquals(1000L, MaskingEngine.DEFAULT_MASK_DEADLINE_MILLIS);
+    }
+
+    /** 3-arg 오버로드는 deadlineMillis <= 0 을 misconfig fail-fast(IllegalArgumentException) 한다. */
+    @Test
+    void threeArgConstructorRejectsNonPositiveDeadline() {
+        assertThrows(IllegalArgumentException.class,
+                () -> new MaskingEngine(List.of(), mapper, 0L));
+        assertThrows(IllegalArgumentException.class,
+                () -> new MaskingEngine(List.of(), mapper, -1L));
+    }
+
+    /**
+     * deadline 초과 → mask() 가 {@link RegexTimeoutException} 을 전파(엔진 내부 degrade 안 함).
+     * 시간소스 주입으로 결정적: 첫 호출(mask 진입, deadline 계산)=0, 이후(charAt 체크)=예산 초과값.
+     */
+    @Test
+    void maskThrowsRegexTimeoutWhenDeadlineExceeded() {
+        MaskingRule rule = new MaskingRule(
+                "a", MaskingRuleType.REGEX, "a+", MaskingStrategy.FULL, true);
+        LongSupplier jumpsPastDeadline = new LongSupplier() {
+            private boolean first = true;
+
+            @Override
+            public long getAsLong() {
+                if (first) {
+                    first = false;
+                    return 0L;                 // mask 진입: deadlineNanos = 0 + 1s
+                }
+                return 2_000_000_000L;         // charAt 체크: 2s > 1s → 초과
+            }
+        };
+        // 4-arg package-private 테스트 생성자(같은 패키지 io.apilens.common 이라 접근 가능).
+        MaskingEngine engine = new MaskingEngine(List.of(rule), mapper, 1000L, jumpsPastDeadline);
+
+        String longBody = "a".repeat(2000); // charAt 1024 회 초과 → deadline 체크 발동
+        assertThrows(RegexTimeoutException.class, () -> engine.mask(longBody, "text/plain"));
+    }
+
+    /** deadline 미도달 정상 입력 → throw 0 + 마스킹 출력 정상(시간소스가 항상 예산 이하). */
+    @Test
+    void maskDoesNotThrowAndMasksNormallyWithinDeadline() {
+        MaskingRule rule = new MaskingRule(
+                "a", MaskingRuleType.REGEX, "a+", MaskingStrategy.FULL, true);
+        LongSupplier alwaysWithinDeadline = () -> 0L; // deadlineNanos=1s, 체크 nano=0 → 미초과
+        MaskingEngine engine = new MaskingEngine(List.of(rule), mapper, 1000L, alwaysWithinDeadline);
+
+        assertEquals("***", engine.mask("a".repeat(2000), "text/plain"),
+                "deadline 미도달 → 정상 마스킹(전체 a+ 런 → FULL '***')");
     }
 }

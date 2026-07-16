@@ -21,6 +21,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -38,7 +39,8 @@ class AgentConfigTest {
             AgentConfig.PROP_QUEUE_CAPACITY, AgentConfig.PROP_PAYLOAD_MAX_BYTES,
             AgentConfig.PROP_DEBUG,
             AgentConfig.PROP_CAPTURE_RESULT_SET,
-            AgentConfig.PROP_CAPTURE_PARAMS
+            AgentConfig.PROP_CAPTURE_PARAMS,
+            AgentConfig.PROP_EXCLUDE_PACKAGES
     };
 
     private final AgentLogger silent = new AgentLogger(false);
@@ -278,5 +280,94 @@ class AgentConfigTest {
         assertFalse(disabled.enabled());
         assertFalse(disabled.captureParams(),
                 "disabled 상태에서는 advice 자체가 weaving 되지 않으므로 false 가 일관적");
+    }
+
+    // ─── [Phase R18] AC-01-1/AC-01-2 — 계측 exclude 패키지 필터 opt-in (사용자 비협상 NFR-05) ─────
+    //
+    // 정방향 동사(returns/keeps/parses) — default = 현 계측 유지(제외 없음)가 사용자 결정 자체.
+    // 반대 방향(rejects/throws) lock-in 0.
+
+    /** UT-EXC-01: 미설정 → excludePackages = List.of() (제외 없음 = default 현 계측, NFR-05 비협상). */
+    @Test
+    void excludePackagesDefaultsToEmptyWhenUnset() {
+        System.setProperty(AgentConfig.PROP_SERVICE_NAME, "svc");
+
+        AgentConfig config = AgentConfig.fromSystemProperties(silent);
+
+        assertTrue(config.enabled());
+        assertTrue(config.excludePackages().isEmpty(),
+                "미설정 시 제외 없음(현 계측 유지) — default 변경 권한 0(NFR-05 비협상)");
+    }
+
+    /** UT-EXC-02: 빈 문자열 → List.of() (빈 항목 제거). */
+    @Test
+    void excludePackagesEmptyStringParsesToEmpty() {
+        System.setProperty(AgentConfig.PROP_SERVICE_NAME, "svc");
+        System.setProperty(AgentConfig.PROP_EXCLUDE_PACKAGES, "");
+
+        assertTrue(AgentConfig.fromSystemProperties(silent).excludePackages().isEmpty());
+    }
+
+    /** UT-EXC-03: 공백만 → trim 후 빈 → List.of(). */
+    @Test
+    void excludePackagesWhitespaceOnlyParsesToEmpty() {
+        System.setProperty(AgentConfig.PROP_SERVICE_NAME, "svc");
+        System.setProperty(AgentConfig.PROP_EXCLUDE_PACKAGES, "   ");
+
+        assertTrue(AgentConfig.fromSystemProperties(silent).excludePackages().isEmpty());
+    }
+
+    /** UT-EXC-04: 단일 prefix → 정확히 1개. */
+    @Test
+    void excludePackagesSinglePrefixParsed() {
+        System.setProperty(AgentConfig.PROP_SERVICE_NAME, "svc");
+        System.setProperty(AgentConfig.PROP_EXCLUDE_PACKAGES, "com.acme");
+
+        assertEquals(List.of("com.acme"),
+                AgentConfig.fromSystemProperties(silent).excludePackages());
+    }
+
+    /** UT-EXC-05: 콤마 2개 → 순서 보존 2개. */
+    @Test
+    void excludePackagesTwoPrefixesParsed() {
+        System.setProperty(AgentConfig.PROP_SERVICE_NAME, "svc");
+        System.setProperty(AgentConfig.PROP_EXCLUDE_PACKAGES, "com.acme,com.beta");
+
+        assertEquals(List.of("com.acme", "com.beta"),
+                AgentConfig.fromSystemProperties(silent).excludePackages());
+    }
+
+    /** UT-EXC-06: 공백·후행 콤마 혼입 → trim + 빈 항목 제거 후 2개. */
+    @Test
+    void excludePackagesTrimsAndDropsBlankEntries() {
+        System.setProperty(AgentConfig.PROP_SERVICE_NAME, "svc");
+        System.setProperty(AgentConfig.PROP_EXCLUDE_PACKAGES, "com.acme, com.beta ,");
+
+        assertEquals(List.of("com.acme", "com.beta"),
+                AgentConfig.fromSystemProperties(silent).excludePackages());
+    }
+
+    /** UT-EXC-07: 콤마만("...") → 모두 빈 → List.of(). */
+    @Test
+    void excludePackagesAllBlankParsesToEmpty() {
+        System.setProperty(AgentConfig.PROP_SERVICE_NAME, "svc");
+        System.setProperty(AgentConfig.PROP_EXCLUDE_PACKAGES, ",,,");
+
+        assertTrue(AgentConfig.fromSystemProperties(silent).excludePackages().isEmpty());
+    }
+
+    /** UT-EXC-08: PROP 상수 문자열이 문서화된 정확값인지 자기증명(docs/agent-options.md cross-link). */
+    @Test
+    void excludePackagesPropertyNameMatchesDocumentedValue() {
+        assertEquals("apilens.instrument.exclude-packages", AgentConfig.PROP_EXCLUDE_PACKAGES);
+    }
+
+    /** UT-EXC-09: disabled() factory 도 excludePackages=List.of() 로 일관(제외 대상 없음). */
+    @Test
+    void disabledFactoryHasEmptyExcludePackages() {
+        AgentConfig disabled = AgentConfig.disabled("test reason", false);
+
+        assertTrue(disabled.excludePackages().isEmpty(),
+                "disabled 상태에선 weaving 자체가 0 이므로 빈 목록이 일관적");
     }
 }

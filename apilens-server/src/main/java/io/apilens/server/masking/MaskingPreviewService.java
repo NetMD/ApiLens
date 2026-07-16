@@ -20,6 +20,7 @@ import io.apilens.common.MaskingEngine;
 import io.apilens.common.MaskingRule;
 import io.apilens.common.MaskingRuleType;
 import io.apilens.common.MaskingStrategy;
+import io.apilens.common.RegexTimeoutException;
 import io.apilens.server.masking.dto.MaskingRuleDto;
 import io.apilens.server.masking.dto.PreviewRequest;
 import io.apilens.server.masking.dto.PreviewResponse;
@@ -87,7 +88,13 @@ public class MaskingPreviewService {
 
         // 요청 스코프 임시 인스턴스 — holder 비변경 (DB·전역 상태 부작용 0, T-B3 단언)
         MaskingEngine engine = new MaskingEngine(rules, mapper); // allow: preview 임시 인스턴스 (EXT-008 허용 위치 2/2)
-        return new PreviewResponse(sample, engine.mask(sample, contentType), contentType);
+        // [Phase R18] AC-02-2 — 프리뷰 mask() 의 ReDoS deadline 초과는 400 으로 매핑(룰저장 400 과 동형).
+        //   MaskingRuleController.handleBadRequest 가 { "error": ... } 400 으로 변환. 신규 UX 0.
+        try {
+            return new PreviewResponse(sample, engine.mask(sample, contentType), contentType);
+        } catch (RegexTimeoutException e) {
+            throw new IllegalArgumentException("preview timed out: pattern too complex for this sample");
+        }
     }
 
     /**

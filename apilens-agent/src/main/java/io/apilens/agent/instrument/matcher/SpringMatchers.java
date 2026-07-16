@@ -21,6 +21,8 @@ import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.matcher.ElementMatcher;
 import net.bytebuddy.matcher.ElementMatchers;
 
+import java.util.List;
+
 /**
  * String-based matchers so the agent doesn't pull Spring as a compile-time dep.
  * (Agent must be lightweight and version-agnostic.)
@@ -261,6 +263,34 @@ public final class SpringMatchers {
                 .or(ElementMatchers.nameStartsWith("java."))
                 .or(ElementMatchers.nameStartsWith("javax."))
                 .or(ElementMatchers.nameStartsWith("jakarta."));
+    }
+
+    /**
+     * [Phase R18] AC-01-1/AC-01-2 — 운영자 opt-in 계측 exclude 필터. 사용자 명시 비협상 결정
+     * (NFR-05: default = 현 계측 유지). {@code prefixes} 로 시작하는 타입은 advice weaving 대상에서
+     * 제외된다(런타임 비용 0 — 제외 타입은 advice bytecode 자체가 합성되지 않음).
+     *
+     * <p>문자열 기반 {@code nameStartsWith} 로만 판정 — Spring 컴파일 의존을 agent 로 끌어오지 않는다
+     * (CLAUDE.md '아키텍처 핵심 원칙': Agent 는 가볍게, 사용자 앱과 클래스 충돌 절대 금지).
+     *
+     * <p>빈/ null 목록 → {@link ElementMatchers#none()} (아무것도 매치 안 함). 따라서
+     * {@code ignoredTypes().or(userExcludedTypes(List.of()))} 는 {@code ignoredTypes()} 와
+     * byte-identical 하게 동작한다(default weaving 불변).
+     *
+     * <p>prefix 시맨틱: {@code "com.acme"} 는 {@code com.acme.Foo} 뿐 아니라 {@code com.acme2.Bar}
+     * 도 매치한다(경계 아닌 순수 prefix). 운영자는 잎(leaf) 계층 패키지에만 쓰고, 하위 계층을 계속
+     * 계측하려면 그 조상 패키지는 exclude 하지 말 것(docs/agent-options.md 가이드).
+     */
+    public static ElementMatcher.Junction<TypeDescription> userExcludedTypes(List<String> prefixes) {
+        ElementMatcher.Junction<TypeDescription> m = ElementMatchers.none();
+        if (prefixes != null) {
+            for (String p : prefixes) {
+                if (p != null && !p.isBlank()) {
+                    m = m.or(ElementMatchers.nameStartsWith(p)); // 문자열 기반 — Spring 의존 0
+                }
+            }
+        }
+        return m;
     }
 
     private static ElementMatcher.Junction<NamedElement> named(String name) {

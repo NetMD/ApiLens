@@ -90,7 +90,7 @@ class OpenApiDocsIntegrationTest {
     private TestRestTemplate rest;
 
     /**
-     * T-INT-1 — 면제 + 스펙 자동생성 + 컨텍스트 로드 + build-info 배선(info.version=="0.3.3").
+     * T-INT-1 — 면제 + 스펙 자동생성 + 컨텍스트 로드 + build-info 배선(info.version=="0.4.0").
      */
     @Test
     void returns200AndOpenApiSpecOnDocsWithoutToken() throws Exception {
@@ -101,8 +101,8 @@ class OpenApiDocsIntegrationTest {
         assertTrue(root.hasNonNull("openapi"), "spec must contain an 'openapi' field");
         JsonNode info = root.get("info");
         assertNotNull(info, "spec must contain an 'info' block");
-        // 게이트 E — info.version 은 build-info 주입값. bump(0.3.2→0.3.3)가 문서까지 전파됨을 실측 봉인.
-        assertEquals("0.3.3", info.get("version").asText(), "info.version must track the Gradle build version");
+        // 게이트 E — info.version 은 build-info 주입값. [Phase R18] bump(0.3.3→0.4.0)가 문서까지 전파됨을 실측 봉인.
+        assertEquals("0.4.0", info.get("version").asText(), "info.version must track the Gradle build version");
         assertEquals("ApiLens API", info.get("title").asText());
     }
 

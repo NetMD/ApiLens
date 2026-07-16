@@ -121,14 +121,6 @@ class RegexComplexityGuardTest {
         assertEquals("a".repeat(40) + "!", RegexComplexityGuard.REDOS_PROBE);
     }
 
-    /** [Phase K] DeadlineCharSequence — 정확 deadline 은 엄격 초과(>)가 아니라 통과(Design §8.1 경계). */
-    @Test
-    void passesWhenExactlyAtDeadline() {
-        // deadline 을 충분히 미래로 두면 짧은 패턴은 항상 통과 — 엄격 초과 의미 확인.
-        long future = System.nanoTime() + 10_000_000_000L; // +10s
-        DeadlineCharSequence guarded = new DeadlineCharSequence("aaaa", future);
-        // charAt 1024회 미만이라 nanoTime 체크 자체가 안 일어나도 정상 위임 확인.
-        assertEquals('a', guarded.charAt(0));
-        assertEquals(4, guarded.length());
-    }
+    // [Phase R18] DeadlineCharSequence 경계(정확 deadline 통과 등) 단위 테스트는 승격에 따라
+    //   apilens-common 의 DeadlineCharSequenceTest 로 이동(EXT-006 시간소스 주입 결정적 테스트 신설).
 }

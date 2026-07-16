@@ -19,6 +19,8 @@ import io.apilens.agent.util.AgentLogger;
 
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Agent runtime configuration parsed from JVM system properties (-D...).
@@ -42,6 +44,11 @@ import java.net.URISyntaxException;
  * @param captureParams        when true, capture PreparedStatement setter parameters into PAYLOAD IN.
  *                             Phase E3 (사용자 비협상 D-03): default {@code true} — kill switch for
  *                             operators worried about hot-path overhead is {@code -Dapilens.jdbc.capture-params=false}.
+ * @param excludePackages      weaving-time instrumentation exclude list — comma-separated package
+ *                             prefixes. Phase R18 (사용자 비협상 NFR-05): default {@code List.of()}
+ *                             (= 제외 없음 = 현 계측 그대로, opt-in). Types whose name starts with any
+ *                             listed prefix are never advice-woven (runtime cost zero — the advice
+ *                             bytecode is simply not synthesised).
  */
 public record AgentConfig(
         boolean enabled,
@@ -55,7 +62,8 @@ public record AgentConfig(
         int payloadMaxBytes,
         boolean debug,
         boolean captureResultSet,
-        boolean captureParams
+        boolean captureParams,
+        List<String> excludePackages
 ) {
 
     public static final String PROP_SERVER = "apilens.server";
@@ -75,6 +83,15 @@ public record AgentConfig(
      * review-arch FAIL condition.
      */
     public static final String PROP_CAPTURE_PARAMS = "apilens.jdbc.capture-params";
+    /**
+     * [Phase R18] AC-01-1 — 계측량 제어 opt-in 패키지 exclude 필터. 사용자 명시 비협상 결정
+     * (NFR-05: default = 현 계측 유지). 값 = 콤마 구분 패키지 prefix 목록. 미설정/빈 값이면
+     * 빈 목록(= 제외 없음 = weaving byte-identical). weaving 시점에만 쓰여 런타임 비용 0 —
+     * {@link io.apilens.agent.instrument.matcher.SpringMatchers#userExcludedTypes(List)} 의
+     * {@code .ignore(...)} 합성으로만 소비된다(static 필드 불요, advice 런타임 미참조).
+     * CLAUDE.md 'v0.1 범위'(계측 레버) · '아키텍처 핵심 원칙'(Agent 는 가볍게) 인용.
+     */
+    public static final String PROP_EXCLUDE_PACKAGES = "apilens.instrument.exclude-packages";
 
     public static final String DEFAULT_SERVER = "http://localhost:8765";
     public static final double DEFAULT_SAMPLING_RATE = 1.0;
@@ -87,8 +104,10 @@ public record AgentConfig(
         // captureParams=false in disabled state — advice classes never get to weave,
         // so the runtime value is irrelevant; we pick false to stay consistent with
         // captureResultSet (also opt-in / off when the agent itself is off).
+        // excludePackages=List.of() — [Phase R18] disabled 상태에선 어차피 weaving 0 이므로
+        // 빈 목록이 일관적(제외 대상 없음).
         return new AgentConfig(false, reason, null, null,
-                0.0, 0, 0, 0, 0, debug, false, false);
+                0.0, 0, 0, 0, 0, debug, false, false, List.of());
     }
 
     /**
@@ -131,9 +150,31 @@ public record AgentConfig(
         boolean captureResultSet = parseBoolean(PROP_CAPTURE_RESULT_SET, false, logger);
         // 사용자 비협상 D-03: default=true. 두 번째 인자 변경 시 review-arch FAIL.
         boolean captureParams = parseBoolean(PROP_CAPTURE_PARAMS, true, logger);
+        // [Phase R18] AC-01-1/AC-01-2 — 사용자 명시 비협상(NFR-05): 미설정/빈 값 → List.of()
+        //   (= 제외 없음 = 현 계측 그대로). 침묵 회귀 0.
+        List<String> excludePackages = parseCommaList(System.getProperty(PROP_EXCLUDE_PACKAGES));
 
         return new AgentConfig(true, null, serverUrl, serviceName,
-                sampling, batchMax, flushInterval, queueCap, payloadMax, debug, captureResultSet, captureParams);
+                sampling, batchMax, flushInterval, queueCap, payloadMax, debug, captureResultSet,
+                captureParams, excludePackages);
+    }
+
+    /**
+     * [Phase R18] AC-01-1 — 콤마 구분 목록을 trim + 빈 항목 제거 후 immutable 리스트로 파싱한다.
+     * null / 빈 문자열 / 공백만 / 후행 콤마 / 전부 빈 항목은 모두 {@code List.of()} 로 귀결(안전 폴백).
+     */
+    private static List<String> parseCommaList(String raw) {
+        if (raw == null) {
+            return List.of();
+        }
+        List<String> out = new ArrayList<>();
+        for (String part : raw.split(",")) {
+            String trimmed = part.trim();
+            if (!trimmed.isEmpty()) {
+                out.add(trimmed);
+            }
+        }
+        return List.copyOf(out);
     }
 
     private static String trimToNull(String value) {

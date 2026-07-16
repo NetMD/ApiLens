@@ -27,6 +27,8 @@ Thumbs.db
 node_modules/
 dist/
 *.log
+# 런타임 로그 디렉토리 (Logback 롤링 .gz 아카이브 포함 — *.log 로 안 걸리는 apilens.log.*.gz 혼입 차단)
+logs/
 .npm/
 .vite/
 

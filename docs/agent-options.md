@@ -1,7 +1,7 @@
 <!--
 title: ApiLens Agent 옵션
 owner: maintainer
-last-reviewed: 2026-06-23
+last-reviewed: 2026-07-16
 -->
 
 # ApiLens Agent 옵션
@@ -23,7 +23,7 @@ java -javaagent:/path/to/apilens-agent.jar \
 
 ## 옵션 표
 
-실제 agent가 인식하는 시스템 프로퍼티는 다음 11개다.
+실제 agent가 인식하는 시스템 프로퍼티는 다음 12개다.
 
 | 옵션                                | 기본값                  | 타입    | 필수 | 설명                                                                |
 | ----------------------------------- | ----------------------- | ------- | ---- | ------------------------------------------------------------------- |
@@ -38,6 +38,7 @@ java -javaagent:/path/to/apilens-agent.jar \
 | `apilens.debug`                     | `false`                 | boolean |      | `true` 시 stderr에 SQL 템플릿 등 상세 로그 누적 — 운영 비권장       |
 | `apilens.jdbc.capture-result-set`   | `false`                 | boolean |      | **opt-in** — true 시 JDBC SELECT 결과(row)를 payload_out에 캡처. 위험 항목 참고 |
 | `apilens.jdbc.capture-params`       | `true`                  | boolean |      | **default ON** — PreparedStatement 표준 12종 setter + addBatch 호출에서 파라미터 값을 PAYLOAD IN에 직렬화. 운영망 hot-path 오버헤드 회피용 escape hatch로 `false` 토글 가능. 비활성 시 advice 자체가 weaving 되지 않아 런타임 비용 0. 자세한 동작은 아래 항목 참고 |
+| `apilens.instrument.exclude-packages` | `(없음)`               | String(콤마 목록) |  | **opt-in** — 계측에서 제외할 패키지 prefix 목록(콤마 구분). 미설정/빈 값이면 제외 없음(현 계측 그대로). 지정한 prefix 로 시작하는 클래스는 weaving 대상에서 빠져 span·payload 생성이 없다(weaving 시점 결정, 런타임 비용 0). 자세한 동작·가이드는 아래 항목 참고 |
 
 ## 검증 / 안전 동작 (모두 silent + agent disabled — 호스트 앱은 정상 시작)
 
@@ -195,6 +196,49 @@ PAYLOAD IN 본문의 키는 **JDBC parameterIndex 의 decimal string** 입니다
 이 제약은 capture-params default ON 결정의 결과이며 구현 버그 아닙니다. 단
 인지 없이 설치하는 운영자에게 위험할 수 있으므로 본 문단 명시.
 
+## `apilens.instrument.exclude-packages` (opt-in)
+
+기본 비어 있음(제외 없음). 운영자가 **계측 자체에서 빼고 싶은 패키지 prefix** 를 콤마로
+나열하면, 그 prefix 로 시작하는 클래스는 advice weaving 대상에서 제외됩니다.
+
+```bash
+-Dapilens.instrument.exclude-packages=com.acme.noisy,com.acme.batch
+```
+
+위 예시는 `com.acme.noisy.*` / `com.acme.batch.*` 로 시작하는 클래스를 계측에서 뺍니다.
+
+### 동작
+
+- **weaving 시점에 결정 — 런타임 비용 0.** 제외된 클래스는 advice bytecode 가 아예
+  합성되지 않으므로, 그 클래스의 메서드가 아무리 자주 호출돼도 span·payload 생성이
+  일어나지 않고 마스킹·전송 경로도 타지 않습니다. 즉 "런타임에 필터링"이 아니라
+  "처음부터 안 짜여" 있습니다.
+- **prefix 시맨틱(경계 아님).** `com.acme` 는 `com.acme.Foo` 뿐 아니라 `com.acme2.Bar`
+  도 매치합니다(순수 문자열 prefix). 좁게 지정하려면 `com.acme.` 처럼 끝에 점을 붙여
+  경계를 명확히 하세요.
+- **미설정/빈 값/공백/후행 콤마 → 제외 없음(현 계측 그대로).** 안전 폴백이므로 오타로
+  빈 값이 들어가도 계측이 조용히 꺼지지 않습니다.
+
+### exclude 대상 선정 가이드 (조상 패키지 제외 주의)
+
+- **잎(leaf) 계층에만 쓰세요.** 잡음이 많은 특정 repository/batch 패키지처럼, 빠져도
+  흐름 해석에 지장이 없는 말단 계층이 대상입니다.
+- **하위 계층을 계속 보고 싶으면 그 조상 패키지를 exclude 하지 마세요.** 예를 들어
+  Controller 를 exclude 하면서 Service/Repository 는 계속 계측하면, root Controller
+  노드가 그래프에서 빠져 흐름이 끊겨 보입니다(고아 노드 자체로 무결성이 깨지진 않지만
+  — 가장 가까운 계측된 조상이 부모가 됩니다 — UX 상 흐름 파악이 어려워집니다).
+
+### 효과와 한계
+
+- 이 옵션의 목적은 **불필요한 계측을 줄여** 대시보드 잡음과 저장 부담(span·payload
+  생성, 적재 시 write lock 보유)을 낮추는 것입니다. 제외한 패키지만큼 그 물리적 부하가
+  발생하지 않습니다.
+- 실제로 얼마나 줄었는지(용량·유실률 변화)는 **본인 운영망에서 적용 전·후를 측정**해
+  확인하세요. 트래픽·계측 대상 분포에 따라 달라지므로 문서가 정량 수치를 단정하지
+  않습니다.
+- setup wizard(설치 명령 생성기)에는 노출하지 않는 **고급 opt-in** 입니다. NAS 등
+  운영망 JVM 의 `-D` 로 직접 지정하세요.
+
 ## Security 권고
 
 본 절은 운영망에 ApiLens agent 를 적용할 때의 보안 권고를 단일 위치에서 안내합니다.
@@ -239,13 +283,13 @@ agent 가 payload 를 server 로 송신할 때 server 의 마스킹 엔진 (`api
 
 본 표로 운영자가 자기 환경을 정확히 1개로 매핑할 수 있습니다. 매핑 불가능 시 (예: "운영망인데 PII 의심 + 고부하" 동시) → **보안 우선 row 채택** (운영망 PII 의심).
 
-| 환경 | `apilens.jdbc.capture-params` | `apilens.jdbc.capture-result-set` | `apilens.sampling.rate` | `apilens.payload.max-bytes` |
-|---|---|---|---|---|
-| 개발 (local) | `true` (default) | `true` (디버깅용 opt-in) | `1.0` | `65536` (default) |
-| 스테이징 | `true` (default) | `false` (default, 검증 후 활성 가능) | `1.0` | `65536` |
-| 운영망 일반 | `true` (default) | `false` | `1.0` (저트래픽 가정) | `65536` |
-| 운영망 PII 의심 | **`false` (escape hatch)** | `false` | `1.0` | `65536` |
-| 고부하 hot-path | **`false` (오버헤드 0)** | `false` | `0.1` 또는 그 이하 | `16384` (축소) |
+| 환경 | `apilens.jdbc.capture-params` | `apilens.jdbc.capture-result-set` | `apilens.sampling.rate` | `apilens.payload.max-bytes` | `apilens.instrument.exclude-packages` |
+|---|---|---|---|---|---|
+| 개발 (local) | `true` (default) | `true` (디버깅용 opt-in) | `1.0` | `65536` (default) | `(없음)` |
+| 스테이징 | `true` (default) | `false` (default, 검증 후 활성 가능) | `1.0` | `65536` | `(없음)` |
+| 운영망 일반 | `true` (default) | `false` | `1.0` (저트래픽 가정) | `65536` | `(없음)` |
+| 운영망 PII 의심 | **`false` (escape hatch)** | `false` | `1.0` | `65536` | `(없음)` |
+| 고부하 hot-path | **`false` (오버헤드 0)** | `false` | `0.1` 또는 그 이하 | `16384` (축소) | 잡음 leaf 패키지 예: `com.acme.batch,com.acme.noisy` |
 
 > NAS 디스크 절약을 위한 데이터 보존 기간(retention)은 agent 옵션이 아니라 **서버측 설정**입니다.
 > 서버 설정 페이지에서 보존 정책을 조정하세요.
@@ -289,3 +333,6 @@ agent 가 payload 를 server 로 송신할 때 server 의 마스킹 엔진 (`api
 - exponential backoff + persistent retry queue
 - TLS 인증서 옵션 (`apilens.server.ca-cert`, …)
 - agent 자체 health endpoint
+- 계측 include 필터(`exclude-packages` 의 대응 — 지정 패키지만 계측). 현재는 축소 레버로 exclude 만 제공
+- 계측 2차 레버: 최소 duration 필터(짧은 span drop) · INTERNAL/payload-off 토글
+- 계측 옵션 UI 설정 페이지 노출(현재는 JVM `-D` 전용 고급 opt-in)

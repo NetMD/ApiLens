@@ -49,7 +49,10 @@ import java.util.UUID;
  */
 public final class AgentMain {
 
-    public static final String AGENT_VERSION = "0.1.0";
+    // [Phase R18] FR-03/게이트 2 — 단일 jar 제품이라 제품 버전(build.gradle.kts:13)에 정렬.
+    //   0.1→0.4 점프는 정직(agent v0.1~v0.3 무변경, v0.4.0 이 agent 첫 변경 라운드).
+    //   손코딩 리터럴은 빌드 타임 주입(EXT-010 (B) 이상형) 미충족 surface — backlog(CHANGELOG).
+    public static final String AGENT_VERSION = "0.4.0";
 
     private AgentMain() {
     }

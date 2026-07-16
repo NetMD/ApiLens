@@ -15,6 +15,9 @@
  */
 package io.apilens.server.masking;
 
+import io.apilens.common.DeadlineCharSequence;
+import io.apilens.common.RegexTimeoutException;
+
 import java.util.regex.Pattern;
 
 /**
@@ -29,7 +32,12 @@ import java.util.regex.Pattern;
  * <p>★중기안 한계 (NFR-B1, P0 비협상 — Design §3.4)★: 이 가드는 <b>신규 룰 저장 경로만</b> 보호한다.
  * (1) 이미 저장된 룰, (2) 무인증 ingest(R14-D04)로 들어온 임의 payload 가 IngestService 의 mask() 를
  * 치는 실행 경로는 보호하지 못한다. 즉 "무인증 ingest × 기저장/우회 룰" 조합은 막지 못한다 —
- * 근본 해소는 엔진 deadline(장기안 = R15)에서만 가능하다.
+ * 근본 해소는 엔진 deadline(장기안)에서만 가능하다.
+ *
+ * <p>// [Phase R18] 위 장기안이 이번 라운드에 반영됨: {@link io.apilens.common.MaskingEngine} 의
+ * // 실행 deadline(mask() 1회 누적 예산, 기본 1000ms)이 ingest·프리뷰 실행 경로를 보호한다. 본 가드는
+ * // <b>저장 시점 probe(별개 경로, 무변경)</b>로 그대로 남고, 승격된 {@link io.apilens.common.DeadlineCharSequence}·
+ * // {@link io.apilens.common.RegexTimeoutException}(apilens-common)을 세 경로가 공유한다.
  */
 final class RegexComplexityGuard {
 

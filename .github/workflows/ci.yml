@@ -81,10 +81,52 @@ jobs:
             exit 1
           fi
           # relocated 패키지 (io/apilens/agent/shaded/bytebuddy/) 존재 확인 (G-20 인용)
+          # [Phase R18] V-1 — WARN → FAIL 승급: 미산출 = 빌드 불완전(relocate 미발생) → 즉시 실패.
           if ! grep -q '^io/apilens/agent/shaded/bytebuddy/' /tmp/agent-jar-entries.txt; then
-            echo "WARN: relocated bytebuddy entries not found — shadow jar build may be incomplete."
+            echo "ERROR: relocated bytebuddy entries not found — shadow jar relocate did not happen (V-1 FAIL)."
+            exit 1
           fi
           echo "OK: shadow jar relocate clean."
+        continue-on-error: ${{ matrix.smoke }}
+
+      # [Phase R18] V-1 (FR-05 C-3) — javap -v 로 우리 클래스의 public API 에 raw(비-relocate)
+      #   jackson/bytebuddy 참조가 0 임을 봉인. jar 엔트리 grep(위 step)은 raw '클래스 파일'만 잡지만,
+      #   이 step 은 우리 코드(io.apilens.agent.* / io.apilens.common.*, shaded 제외)의 constant pool·
+      #   시그니처가 raw 패키지를 참조하지 않음(= relocate 누락 0)까지 검증한다. build script 단언 금지,
+      #   javap 직접 검증(NFR-01 · CLAUDE.md Build lessons §1).
+      - name: Verify agent shadow jar javap relocate clean (V-1, no raw jackson/bytebuddy in our API)
+        run: |
+          mapfile -t AGENT_JARS < <(find apilens-agent/build/libs -name 'apilens-agent*.jar' -not -name '*sources*' -not -name '*plain*' | sort)
+          if [ ${#AGENT_JARS[@]} -ne 1 ]; then
+            echo "ERROR: agent shadow jar 매칭 개수 비정상 (${#AGENT_JARS[@]}) — 정확히 1개여야 합니다."
+            exit 1
+          fi
+          AGENT_JAR=${AGENT_JARS[0]}
+          WORK=$(mktemp -d)
+          unzip -q "$AGENT_JAR" -d "$WORK"
+          DISASM="$WORK/_apilens_disasm.txt"
+          : > "$DISASM"
+          # 우리 클래스만: io/apilens/agent/** (shaded 하위 제외) + io/apilens/common/** 의 .class 를 javap -v -p.
+          while IFS= read -r f; do
+            name=${f#"$WORK/"}; name=${name%.class}; name=${name//\//.}
+            javap -v -p -classpath "$WORK" "$name" >> "$DISASM" 2>/dev/null || true
+          done < <(
+            find "$WORK/io/apilens/agent" -type d -name shaded -prune -o -name '*.class' -print
+            [ -d "$WORK/io/apilens/common" ] && find "$WORK/io/apilens/common" -name '*.class' -print
+          )
+          # (1) 우리 클래스가 raw jackson/bytebuddy 를 참조하면 relocate 누락 → FAIL.
+          #     shaded 는 io.apilens.agent.shaded.{jackson,bytebuddy} 라 이 패턴에 안 걸림(false-positive 0).
+          if grep -Eq 'com[./]fasterxml[./]jackson|net[./]bytebuddy' "$DISASM"; then
+            echo "ERROR: our classes reference RAW jackson/bytebuddy (relocate leak) — V-1 FAIL:"
+            grep -En 'com[./]fasterxml[./]jackson|net[./]bytebuddy' "$DISASM" | head -20
+            exit 1
+          fi
+          # (2) relocate 가 실제로 발생했다는 증거 — shaded 참조 ≥ 1 (미발견 = shadowJar relocate 미동작).
+          if ! grep -q 'io[./]apilens[./]agent[./]shaded[./]' "$DISASM"; then
+            echo "ERROR: no relocated (io.apilens.agent.shaded.*) references found — relocate did not happen (V-1 FAIL)."
+            exit 1
+          fi
+          echo "OK: javap relocate clean — 0 raw jackson/bytebuddy in our API, shaded refs present."
         continue-on-error: ${{ matrix.smoke }}
 
       - name: Dependencies diff (regression guard)

@@ -127,7 +127,12 @@ public final class InstrumentationInstaller {
             }
 
             builder = builder
-                    .ignore(SpringMatchers.ignoredTypes())
+                    // [Phase R18] AC-01-1/AC-01-2 — 운영자 opt-in 계측 exclude 필터 합성. 사용자 명시
+                    //   비협상 결정(NFR-05: default 빈 목록 → userExcludedTypes(List.of())=none() →
+                    //   ignoredTypes().or(none())=ignoredTypes() byte-identical). weaving 시점 결정,
+                    //   런타임 비용 0 — static 필드 불요(advice 런타임 미참조). CLAUDE.md 'Agent 는 가볍게' 인용.
+                    .ignore(SpringMatchers.ignoredTypes()
+                            .or(SpringMatchers.userExcludedTypes(config.excludePackages())))
                     // 1) Controllers — root SERVER span
                     .type(SpringMatchers.annotatedWithController())
                     .transform((b, t, cl, m, pd) -> b.visit(
