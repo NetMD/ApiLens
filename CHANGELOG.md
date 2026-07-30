@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-다음 release 후보가 누적되는 영역입니다. 아래 항목은 아직 구현 전인 후보이며, 이번 라운드(v0.4.0)에서 구현된 변경은 아래 `[0.4.0]` 블록으로 옮겼습니다.
+다음 release 후보가 누적되는 영역입니다. 아래 항목은 아직 구현 전인 후보이며, 이번 라운드(v0.5.0)에서 구현된 변경은 아래 `[0.5.0]` 블록으로 옮겼습니다.
 
 ### Added
 
@@ -18,9 +18,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - (candidate) **공유 마스킹 엔진 ReDoS 근본 차단(linear-time 엔진)** — 실행 deadline 에 더해, 정규식 매칭 자체를 backtracking 없는 linear-time 엔진(RE2/j 류)으로 바꾸는 근본 방어는 별도 후보로 남습니다.
 - (candidate) JDBC PreparedStatement 파라미터의 이름 기반 마스킹 보강 — 현재 PAYLOAD IN 키가 parameterIndex 라 이름 기반 룰이 매칭되지 않는 한계 개선.
 
+## [0.5.0] - 2026-07-30
+
+> **server + UI 라운드. agent 소스는 한 줄도 바뀌지 않았습니다.** (1) Services 화면에 **agent 버전 컬럼** 추가(스키마 V4) + (2) **계측 분석 화면** 신설 — 어느 클래스가 기록을 많이 만드는지 세 가지 잣대로 보여 주고, 빼기 전에 결과를 미리 계산해 줍니다. **agent jar 재배포가 필요 없습니다** — 기존 agent 를 그대로 두고 collector 만 올리면 됩니다.
+
+### BREAKING CHANGES
+
+_이 release 에는 하위호환을 깨는 변경이 없습니다._ `POST /v1/spans` 적재 계약과 기존 조회 API 응답이 그대로이고, `GET /v1/services` 에 추가된 `agentVersion` 은 필드가 늘어난 것뿐이라 기존 소비자에 영향이 없습니다. 스키마 변경은 컬럼 하나를 더하는 것뿐이며 기존 행은 그 값이 비어 있는 상태로 정상 동작합니다.
+
+⚠️ 다만 **DB 마이그레이션은 되돌릴 수 없습니다.** 0.5.0 으로 한 번 올린 DB 파일을 0.4.0 collector 로 다시 열지 마세요. 올리기 전 DB 파일 백업을 권합니다.
+
+### Added
+
+- **Services 화면 agent 버전 컬럼** — 각 서비스가 어떤 버전의 agent 를 쓰는지 목록에서 바로 보입니다. 값은 agent 가 시작할 때 보내는 첫 기록에서 가져오며, **한 번 받은 값은 계속 유지**됩니다.
+  - ⚠️ **이미 돌고 있는 서비스는 재시작 전까지 `—` 로 보입니다.** 지난 값을 거슬러 채우지 않습니다 — agent 를 재시작해야 그때 도착하는 첫 기록으로 채워집니다.
+- **계측 분석 화면** (Services 목록의 `계측 분석` 버튼) — 서비스별로 다음을 보여 줍니다.
+  - **세 가지 잣대의 순위**: 기록 수 · 본문 건수 · 본문 용량. **잣대마다 순위가 다릅니다** — 기록 수로는 뒤쪽인데 용량으로는 앞쪽인 클래스가 실제로 존재하므로, 한 가지만 보고 정하면 큰 덩어리를 놓칩니다.
+  - **빼기 전 예상 결과**: 선택한 클래스를 계측에서 뺐을 때 얼마나 줄어드는지, 그리고 **흐름이 얼마나 조각나는지**를 함께 계산합니다.
+  - **조각남 경고**: 조각난 흐름의 비율이 높아지면 경고가 뜹니다. 진행을 막지는 않고 확인 절차가 한 단계 추가됩니다.
+  - **뺄 수 있는지 여부 표시**: 화면에 보이는 이름으로 실제로 제외가 되는지를 `가능 / 불가 / 확인 필요` 로 나눠 보여 줍니다. MyBatis mapper 처럼 이름이 달라 제외가 안 되는 계층이 있습니다.
+- 분석용 조회 API 2종 — `POST /v1/instrument/analysis`, `POST /v1/instrument/simulation`. 둘 다 읽기 전용이며 기존 인증 정책이 그대로 적용됩니다.
+
+### Changed
+
+- `GET /v1/services` 응답에 `agentVersion` 필드 추가(값이 없으면 `null`).
+- Services 표가 좁은 화면에서 잘리지 않도록 가로 스크롤로 바뀌었습니다. **컬럼을 숨기지 않습니다** — 값이 비어 있는 것 자체가 정보이기 때문입니다.
+- `docs/agent-options.md` 에 **계측 제외 옵션의 한계**를 명문화했습니다(MyBatis mapper 는 화면 이름으로 제외 불가 / 조상을 빼면 말단이 새 시작점이 되어 흐름이 조각남).
+
+### Fixed
+
+- 서비스 목록 조회에서 마지막 기록 시각이 특정 조건에 드물게 오류를 일으키던 문제를 고쳤습니다.
+
+### Notes
+
+- **agent 버전은 0.4.0 그대로입니다.** 제품 버전(0.5.0)과 다른 것은 어긋남이 아니라 **의도한 결정**입니다 — 이번 라운드는 agent 소스를 바꾸지 않았으므로 agent 가 보고하는 버전도 그대로 두었습니다.
+- 분석·예상 계산은 **요청할 때만** 실행됩니다(자동 새로고침 없음). 한 번에 하나씩만 돌며, 오래 걸리면 스스로 멈추고 구간을 좁히라고 안내합니다.
+
 ## [0.4.0] - 2026-07-16
 
-> v0.1 이후 **첫 agent·common 모듈 변경 라운드**. (1) agent 계측량 제어 opt-in 옵션(`apilens.instrument.exclude-packages`) + (2) 공유 마스킹 엔진 ReDoS 실행 deadline 3경로 방어(R14 P0 갭 종결) + (3) CI relocate 검증 FAIL 게이트 승급. **server API·DB 스키마 무변경(하위호환)**. 다만 v0.1 이후 처음으로 agent jar 산출물이 바뀌므로, 운영망(NAS 등)에 **새 agent jar 재배포 + JVM 재시작이 필요**합니다.
+> v0.1 이후 **첫 agent·common 모듈 변경 라운드**. (1) agent 계측량 제어 opt-in 옵션(`apilens.instrument.exclude-packages`) + (2) 공유 마스킹 엔진 ReDoS 실행 deadline 3경로 방어(이전 릴리스에 남아 있던 무인증 적재·미리보기 경로의 취약 구멍 종결) + (3) CI relocate 검증 FAIL 게이트 승급. **server API·DB 스키마 무변경(하위호환)**. 다만 v0.1 이후 처음으로 agent jar 산출물이 바뀌므로, 운영망(NAS 등)에 **새 agent jar 재배포 + JVM 재시작이 필요**합니다.
 
 ### BREAKING CHANGES
 

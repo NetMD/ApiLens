@@ -36,7 +36,8 @@ import java.util.Optional;
 
 /**
  * JdbcTemplate-backed read repository for the query endpoints. Reads are not
- * transactional — SQLite snapshot semantics are sufficient for v0.1.
+ * transactional — SQLite snapshot semantics are sufficient here (a read sees a
+ * consistent snapshot of the database as of the moment the statement started).
  */
 @Repository
 public class TraceQueryRepository {
@@ -206,6 +207,9 @@ public class TraceQueryRepository {
      * // "최근 24시간 trace 수" (필드명·응답 구조 무변경). WHERE 없는 전수 COUNT 패턴 자체가
      * // 소멸 — 매 호출 O(전체 N) → O(24h 윈도우 내 행), A4 인덱스 covering.
      * // 윈도우 경계: start_time >= now − 24h (경계값 포함 — Design §7.1).
+     *
+     * <p>// [Phase R19] AC-01-6 — agent_version 1컬럼 추가 노출. 집계 함수가 아닌 컬럼이라 GROUP BY 에도
+     * // 함께 넣는다. ServiceInfo 조립점은 이 메서드 1곳뿐이라(저장소 전체 유일) 동형 노출이 구조로 보장된다.
      */
     public List<ServiceInfo> findServicesWithHealth(long now) {
         return jdbc.query(
@@ -215,21 +219,28 @@ public class TraceQueryRepository {
                             s.registered_at                     AS registered_at,
                             s.last_seen_at                      AS last_seen_at,
                             s.source                            AS source,
+                            s.agent_version                     AS agent_version,
                             COALESCE(COUNT(t.trace_id), 0)      AS trace_count
                         FROM services s
                         LEFT JOIN traces t ON s.service_name = t.service_name
                                           AND t.start_time >= ?
-                        GROUP BY s.service_name, s.registered_at, s.last_seen_at, s.source
+                        GROUP BY s.service_name, s.registered_at, s.last_seen_at, s.source, s.agent_version
                         ORDER BY s.service_name ASC
                         """,
                 (rs, rowNum) -> {
                     String name = rs.getString("service_name");
                     long registeredAt = rs.getLong("registered_at");
-                    Long lastSeenAt = (Long) rs.getObject("last_seen_at");
+                    // [Phase R19] NULL 은 그대로 null 로 두되, 캐스트 대신 숫자 읽기로 받는다.
+                    //   sqlite-jdbc 는 작은 정수를 Integer 로 돌려줄 수 있어 (Long) 캐스트가
+                    //   ClassCastException 이 된다(실측). epoch millis 는 늘 커서 운영에서는 안 터지지만,
+                    //   터지면 서비스 목록 전체가 500 이 되는 자리라 방어해 둔다. 의미·null 판정 불변.
+                    Long lastSeenAt = rs.getObject("last_seen_at") == null ? null : rs.getLong("last_seen_at");
                     String source = rs.getString("source");
                     long traceCount = rs.getLong("trace_count");
                     String health = computeHealthStatus(lastSeenAt, now);
-                    return new ServiceInfo(name, registeredAt, lastSeenAt, source, traceCount, health);
+                    // agent 를 아직 재시작하지 않았으면 NULL — 화면이 '—' 로 표시한다(값 없음의 유일한 뜻).
+                    String agentVersion = rs.getString("agent_version");
+                    return new ServiceInfo(name, registeredAt, lastSeenAt, source, traceCount, health, agentVersion);
                 },
                 now - SERVICE_TRACE_COUNT_WINDOW_MS
         );

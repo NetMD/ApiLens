@@ -10,8 +10,15 @@
 // /setup 안에 머무는 동안의 ?step 은 그대로 둔다 (Setup.tsx setStep 이 직접 관리) →
 // 새로고침 일관성(R3) 은 보존되고, route 를 넘는 순간에만 step 이 사라진다.
 
-/** /setup 내부 전용 — route 경계를 넘어 전파되면 안 되는 ephemeral 키들. */
-const ROUTE_LOCAL_PARAMS = ['step'] as const;
+// [Phase R19] AC-08-3 — 'analyze' 추가 (계측 분석 화면). 사용자 명시 비협상 결정 (D-6 신규 라우트 금지).
+// CLAUDE.md '절대 변경하지 말아야 할 결정 사항' 4번(UI 는 npm 빌드 산출물을 static 으로 임베드) —
+// 경로를 늘리면 server 쪽 SPA 전달 목록도 함께 늘어나 두 곳이 어긋날 자리가 생긴다.
+//   /services?analyze={서비스이름} 은 Services 화면 안의 목록 ↔ 계측 분석 전환 상태다
+//   (신규 route 아님 — App.tsx / WebMvcConfig diff 0). ?step 과 정확히 같은 성격이라
+//   같은 목록에 넣어 route 를 넘는 순간 자동으로 떨어뜨린다. 이 한 줄이 빠지면 분석
+//   파라미터가 대시보드·설정 URL 로 샌다 (SH-06 보존 로직이 그대로 끌고 감).
+/** route 경계를 넘어 전파되면 안 되는 ephemeral 키들 (/setup 의 step · /services 의 analyze). */
+const ROUTE_LOCAL_PARAMS = ['step', 'analyze'] as const;
 
 /** route-local 키를 제거한 새 URLSearchParams 복사본 (원본 불변). */
 export function withoutRouteLocalParams(params: URLSearchParams): URLSearchParams {

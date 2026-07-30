@@ -12,7 +12,11 @@ allprojects {
     // [Phase R18] FR-03/게이트 2 — 0.3.3 → 0.4.0 (minor: agent 계측 exclude 필터 opt-in + 공유 ReDoS
     //   실행 deadline 승격. agent 첫 변경 라운드라 AGENT_VERSION 도 0.4.0 정렬 — AgentMain.java:52).
     //   이 한 곳이 버전 리터럴의 유일 출처 — build-info 를 통해 OpenAPI info.version 까지 자동 전파(게이트 E).
-    version = "0.4.0"
+    // [Phase R19] FR-01/FR-02 — 0.4.0 → 0.5.0 (minor: services.agent_version 컬럼 + 계측 분석 화면).
+    //   ⚠️ agent 는 이번에 변경하지 않는다 — AgentMain.AGENT_VERSION 은 0.4.0 유지가 정답이고
+    //   그 자리에 사유 주석을 다는 것조차 하지 않는다(agent 소스 diff 0 비협상). 제품 0.5.0 ≠ agent 0.4.0
+    //   이 의도라는 사실은 CHANGELOG.md 가 적는다.
+    version = "0.5.0"
 }
 
 subprojects {

@@ -56,6 +56,18 @@ export interface ServiceInfo {
   traceCount: number;
   /** server-side 계산 (D-03 비협상 single source `now`). */
   healthStatus: HealthStatus;
+  /**
+   * [Phase R19] AC-01-4 — agent 가 마지막으로 시작할 때 보고한 버전 (services.agent_version).
+   *
+   * 값이 없으면(null) "이 서비스가 v0.5.0 collector 로 바뀐 뒤 아직 agent 를 다시 시작하지 않았다"
+   * 는 뜻 하나뿐이다 (DEFAULT 없음 — 값 없음과 기본값이 섞이지 않게). 화면은 `—` 로 그린다.
+   * 선택 필드(`?`)가 아니라 **필수 필드**다 — 응답에 항상 존재하는 필드라 계약이 그렇다.
+   *
+   * [S-64] BE↔FE 식별자 타입 1:1 대조: BE `ServiceInfo` record 7번째 필드 `String agentVersion`
+   *   (NULL 허용, V4 `services.agent_version TEXT`) → `string | null` (Jackson null 직렬화).
+   *   버전 비교는 문자열 비교 금지 — lib/agentVersion.ts 의 자리별 숫자 비교를 쓴다.
+   */
+  agentVersion: string | null;
 }
 
 /** GET /v1/services 응답 body. */
@@ -271,6 +283,148 @@ export interface PreviewResponse {
   sample: string;
   masked: string;
   contentType: string;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// [Phase R19] 계측 분석 계약 (설계 §4.2 응답 JSON 예시 1:1).
+//
+// 두 endpoint 모두 **읽기 전용 POST** 다 (DB 를 한 줄도 쓰지 않는다):
+//   POST /v1/instrument/analysis   — 서비스 하나의 계측 순위 집계 (온디맨드 · 시간 구간 필수)
+//   POST /v1/instrument/simulation — 고른 대상을 뺐을 때의 예상 결과 (용량은 감산 · trace 는 재계산)
+// 신규 /v1/** 는 화이트리스트에 추가되지 않는다 → 역방향 default-deny 로 토큰 필수.
+// 호출은 반드시 api/client.ts 의 postJson 경유 (buildHeaders 가 Authorization 첨부).
+//
+// 단위 도메인 (설계 §4.4 · BL-19 — 100배 오류 차단):
+//   - 비율(rootRatio · singleSpanTraceRatio) = **0.0~1.0 실수**. 화면에 % 로 보일 때만 100을 곱한다.
+//   - 시간 = 밀리초(epoch). 요청의 windowHours 만 시간(hour) 정수.
+//   - payload 크기 = 바이트 정수. 표시 변환은 lib/format.ts formatBytes 1곳.
+//
+// [S-64] BE↔FE 식별자 타입 1:1 대조:
+//   spanCount/payloadCount/payloadBytes/totalSpans/totalTraces/remainingSpans/resultTraces = long → number
+//   spanRank/payloadCountRank/payloadBytesRank = Integer(nullable, 고정 합계 행은 null) → number | null
+//   rootRatio/avgSpansPerTrace/singleSpanTraceRatio = double → number
+//   className/excludeTarget = String → string / string | null
+//   fromMs/toMs/queriedAtMs = long(epoch millis) → number
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 제외 가능성 3분류 (설계 §7.2). ★불확실(`UNKNOWN`)을 `EXCLUDABLE` 로 반올림하지 않는다 (비협상).
+ *   - EXCLUDABLE     : 뺄 수 있어요
+ *   - NOT_EXCLUDABLE : 뺄 수 없어요 (계측이 걸리는 이름이 화면 이름과 다름)
+ *   - UNKNOWN        : 확인 안 됨 (안전 방향 — 가능으로 단정하지 않는다)
+ */
+export type ExcludeStatus = 'EXCLUDABLE' | 'NOT_EXCLUDABLE' | 'UNKNOWN';
+
+/**
+ * 불가·불확실 사유 코드. 서버는 코드만 보내고 화면 문구는 FE 가 매핑한다 (설계 §4.4 식별자 정정 1건)
+ * — 문구 하나 고치는 데 서버 릴리스가 필요해지지 않게, 그리고 문구 단일 거주지를 UX 문구표로 유지하려고.
+ */
+export type ExcludeReasonCode = 'NO_CLASS_NAME' | 'PROXY_INSTRUMENTED' | 'UNVERIFIED_PATH';
+
+/** 두 응답 공통 — 집계 구간과 조회 시각 (화면이 구간·조회 시각을 정직하게 적기 위한 값). */
+export interface InstrumentWindow {
+  fromMs: number;
+  toMs: number;
+  queriedAtMs: number;
+}
+
+/** 순위 응답의 구간 총계 = **바꾸기 전** 값. 부작용을 "지금 → 빼고 나면" 으로 보이려면 기준값이 필요하다. */
+export interface InstrumentSummary {
+  totalSpans: number;
+  totalTraces: number;
+  avgSpansPerTrace: number;
+  /** 0.0~1.0 실수. 화면 표시 시점에만 100을 곱한다. */
+  singleSpanTraceRatio: number;
+}
+
+/** 순위 응답 items[] 요소 — 클래스 1개(또는 이름이 하나뿐인 계측을 묶은 고정 합계 행). */
+export interface InstrumentClassStat {
+  /** 빈 문자열이면 **고정 합계 행** (operation_name 에 `#` 가 없는 span 묶음). 순위 경쟁 대상 아님. */
+  className: string;
+  spanCount: number;
+  payloadCount: number;
+  payloadBytes: number;
+  /** 그 축에서의 순위(1부터) — **전체 클래스 집합 기준**. 고정 합계 행은 null. */
+  spanRank: number | null;
+  payloadCountRank: number | null;
+  payloadBytesRank: number | null;
+  /** 0.0~1.0 실수. */
+  rootRatio: number;
+  backgroundWorker: boolean;
+  excludeStatus: ExcludeStatus;
+  /** EXCLUDABLE 이면 null. */
+  excludeReasonCode: ExcludeReasonCode | null;
+  /**
+   * EXCLUDABLE 일 때만 값이 있고 그 값은 className 과 같다.
+   *
+   * ⚠️ v0.5 화면은 이 필드를 **의도적으로 소비하지 않는다** — 옵션 생성기·복사 버튼이 이번 라운드에
+   * 보류라서(D-11) 옵션 값으로 쓸 자리가 아직 없다. 필드를 나눠 둔 이유는 "표시용 이름을 그대로
+   * 옵션 값으로 쓰는 코드 경로가 존재하지 않는다" 를 계약으로 강제하기 위해서다(설계 §7.2).
+   * v0.6.0 옵션 생성기가 오면 className 이 아니라 이 값을 쓴다.
+   */
+  excludeTarget: string | null;
+}
+
+/** POST /v1/instrument/analysis 요청 — windowHours 는 1 / 6 / 24 중 하나(화이트리스트, 그 외 400). */
+export interface AnalysisRequest {
+  serviceName: string;
+  windowHours: number;
+}
+
+/** POST /v1/instrument/analysis 응답. items 정렬은 세 축 상위 N 의 합집합 + 고정 합계 행. */
+export interface AnalysisResponse {
+  window: InstrumentWindow;
+  summary: InstrumentSummary;
+  /** 구간 안 전체 클래스 수 (items 길이가 아니다). */
+  totalClasses: number;
+  /** 목록이 상한에 걸려 잘렸는가. */
+  truncated: boolean;
+  items: InstrumentClassStat[];
+}
+
+/**
+ * POST /v1/instrument/simulation 요청.
+ *
+ * ⚠️ fromMs/toMs 는 **순위 응답의 window 값을 그대로 되돌려 보낸다.** 서버가 창을 다시 계산하면
+ * 그 사이 시간이 흘러 두 결과의 기준 구간이 어긋난다.
+ * ⚠️ targets 는 **언제나 클래스 이름 목록**이다. 패키지 단위를 보내지 않는다 — 패키지 선택은
+ * 화면에서 "같은 패키지 클래스를 한 번에 체크하는 단축키" 일 뿐이다(패키지 평균 계산 경로 차단).
+ */
+export interface SimulationRequest {
+  serviceName: string;
+  fromMs: number;
+  toMs: number;
+  targets: string[];
+}
+
+/** 절감 축 — 직접 귀속분만 (자식 span 은 별도 계측이라 부모를 빼도 남는다). */
+export interface SimulationSavings {
+  spanDelta: number;
+  payloadCountDelta: number;
+  payloadBytesDelta: number;
+}
+
+/** 부작용 축 — 조상을 빼면 말단이 새 시작점이 되므로 trace 수는 오히려 늘어날 수 있다. */
+export interface SimulationImpact {
+  remainingSpans: number;
+  resultTraces: number;
+  avgSpansPerTrace: number;
+  /** 0.0~1.0 실수. 경고 임계 비교는 이 도메인에서만 한다. */
+  singleSpanTraceRatio: number;
+}
+
+/**
+ * POST /v1/instrument/simulation 응답.
+ *
+ * ★ savings 와 impact 는 **언제나 한 응답에 함께 온다.** 절감만 담긴 응답을 만드는 서버 코드 경로가
+ * 없다 — 절감 숫자만 보여주고 부작용을 숨기는 화면이 구조로 불가능해진다.
+ */
+export interface SimulationResponse {
+  window: InstrumentWindow;
+  savings: SimulationSavings;
+  impact: SimulationImpact;
+  /** 깊이 상한 때문에 못 센 경로가 있는가. */
+  depthCapped: boolean;
 }
 
 /** 공통 4xx/5xx 응답 본문 형태. */

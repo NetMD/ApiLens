@@ -32,6 +32,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -50,6 +51,13 @@ import java.util.stream.Collectors;
  * 청크마다 짧은 프로그래매틱 트랜잭션으로 커밋한다(write lock 보유 시간 단축). 청크 중간이
  * SQLITE_BUSY 로 실패하면 앞 청크만 남는 부분 적재를 허용하고(모니터링 도구 — 통째 유실보다 나음),
  * 호스트에는 예외를 던지지 않는다(host-throw-0). 요약은 청크 루프 밖에서 1회만 재집계한다.
+ *
+ * <p>[Phase R19] 서비스 등록 경로(클래스 javadoc 보완 — 그동안 누락돼 있던 문단):
+ * 적재의 마지막 단계에서 {@code upsertServiceRegistration} 이 {@code services} 테이블을
+ * trace 단위로 UPSERT 한다(자동 등록 = D-02 경로 B). 이 호출은 청크 트랜잭션 <b>밖</b>의
+ * auto-commit 문맥에 있고 {@code catch(Throwable)} 로 감싸여 있어, 실패해도 이미 커밋된
+ * span/payload/traces 에 영향이 없고 호스트로 예외가 새지 않는다. R19 부터는 같은 문에서
+ * agent 가 시작할 때 보고한 버전({@code services.agent_version})도 함께 갱신한다.
  */
 @Service
 public class IngestService {
@@ -82,6 +90,16 @@ public class IngestService {
     //   사용자 명시 비협상 결정: 부분결과·원문 저장 금지(PII) → body 전체를 고정 상수로 대체 후 비throw.
     //   CLAUDE.md '아키텍처 핵심 원칙'(마스킹은 공유 엔진, 결과 일관성) 인용.
     private static final String REDOS_DEGRADE_BODY = "***";
+
+    // [Phase R19] AC-01-4/AC-01-5 — agent 시작 알림(hello) span 을 알아보는 두 문자열.
+    //   agent 와 server 사이의 암묵 계약이며 원본 좌표는 다음과 같다:
+    //     - operationName : apilens-agent/src/main/java/io/apilens/agent/AgentMain.java:141
+    //     - attribute key : apilens-agent/src/main/java/io/apilens/agent/AgentMain.java:147
+    //   ⚠️ apilens-common 에 공유 상수를 만들지 않는다 — common 을 건드리면 agent shadow jar 내용이
+    //   바뀌어 "agent 소스·산출물 무변경" 증명이 흐려진다(S-2 비협상). 공유 상수화는 agent 를 여는
+    //   라운드로 이연. CLAUDE.md 'Build 설정 lessons §1'(shadow jar relocate 함정) 인용.
+    private static final String AGENT_HELLO_OPERATION = "agent.startup";
+    private static final String AGENT_VERSION_ATTRIBUTE = "apilens.agent.version";
 
     // [Phase R17] EXT-003 anchor — V-02 생성자 4-인자 불변(사용자 명시 비협상 결정).
     //   협력자(트랜잭션 관리자·카운터)는 생성자 인자가 아니라 내부 필드/본문으로 얻는다.
@@ -203,7 +221,14 @@ public class IngestService {
     }
 
     /**
-     * Auto-register services seen in this batch (D-02 path B).
+     * Auto-register the services seen in this trace (D-02 path B).
+     *
+     * <p>⚠️ 이 메서드는 <b>배치가 아니라 한 trace 의 span 목록</b>을 받는다 — {@code ingest()} 가
+     * {@code groupingBy(Span::traceId)} 로 나눈 뒤 trace 마다 {@code persistTrace} 를 부르고,
+     * 그 마지막 줄이 이 호출이다([Phase R19] 상류 표현 정정 C-5). agent 의 시작 알림(hello)은
+     * 자기 trace 를 새로 만드는 span 1개짜리 독립 trace 이므로 한 호출에 들어오는 hello 는 보통
+     * 0개 또는 1개다. 그래도 서비스 이름 키 매칭과 승자 규칙(startTime 최댓값)은 그대로 구현한다 —
+     * batching·MSA 로 조건이 바뀌어도 서비스별 값이 뒤바뀌지 않게 하기 위해서다.
      *
      * <p>[Phase H] AC-06-3 — D-02 / R6 / R12. 사용자 명시 비협상 결정.
      * CLAUDE.md '아키텍처 핵심 원칙' (호스트 throw 0) 인용.
@@ -222,21 +247,35 @@ public class IngestService {
      * excluded.last_seen_at → source 와 registered_at 은 처음 INSERT 시점 값 유지.
      * wizard 로 먼저 등록된 service (source='wizard') 의 trace 가 도착해도
      * source='wizard' 유지.
+     *
+     * <p>[Phase R19] AC-01-4/AC-01-5 — hello span 이 있으면 {@code agent_version} 도 같은 문에서
+     * 갱신한다(서비스당 실행 문 수는 여전히 1). hello 가 없는 일반 trace 는 바인딩 값이 NULL 이라
+     * {@code COALESCE} 가 기존 값을 지켜 "마지막 확인 값" 이 영속된다.
      */
-    private void upsertServiceRegistration(List<Span> batchSpans, long receivedAt) {
+    private void upsertServiceRegistration(List<Span> traceSpans, long receivedAt) {
         try {
-            Set<String> distinctServices = batchSpans.stream()
+            // [Phase R19] AC-01-4 — hello 에서 버전 추출. 반드시 이 try 블록 **안**에 둔다:
+            //   밖에 두면 형 변환 오류 같은 예외가 ingest 핫패스로 새어 호스트 앱에 도달한다(NFR-05 위반).
+            Map<String, String> agentVersions = extractAgentVersions(traceSpans);
+
+            Set<String> distinctServices = traceSpans.stream()
                     .map(Span::serviceName)
                     .filter(s -> s != null && !s.isBlank())
                     .collect(Collectors.toSet());
             for (String name : distinctServices) {
+                // [Phase R19] GT-16 실행 게이트 통과 실측(sqlite-jdbc 3.47.1.0 / SQLite 3.47.1):
+                //   DO UPDATE SET 절의 한정자 없는 agent_version 은 "기존 행"의 값을 가리킨다
+                //   (버전 NULL 재적재 후에도 기존 값 유지 확인). 폴백안(services.agent_version 한정
+                //   참조)도 문법상 유효하나 설계 원안을 유지한다.
                 jdbc.update(
                         """
-                                INSERT INTO services (service_name, registered_at, last_seen_at, source)
-                                VALUES (?, ?, ?, 'auto')
-                                ON CONFLICT(service_name) DO UPDATE SET last_seen_at = excluded.last_seen_at
+                                INSERT INTO services (service_name, registered_at, last_seen_at, source, agent_version)
+                                VALUES (?, ?, ?, 'auto', ?)
+                                ON CONFLICT(service_name) DO UPDATE SET
+                                    last_seen_at  = excluded.last_seen_at,
+                                    agent_version = COALESCE(excluded.agent_version, agent_version)
                                 """,
-                        name, receivedAt, receivedAt
+                        name, receivedAt, receivedAt, agentVersions.get(name)
                 );
             }
         } catch (Throwable t) {
@@ -245,6 +284,49 @@ public class IngestService {
             log.warn("services UPSERT skipped due to {}: {}",
                     t.getClass().getSimpleName(), t.getMessage());
         }
+    }
+
+    /**
+     * Collect the agent version reported by hello spans, keyed by service name.
+     *
+     * <p>[Phase R19] AC-01-4 — 값은 자바 객체 상태({@code io.apilens.common.Span:51}
+     * {@code Map<String,Object> attributes})에서 꺼낸다. 저장된 {@code attributes_json} 을 다시
+     * 파싱하지 않는다 — agent 가 {@code Map.of(...)} 로 attribute 를 만들어 실행마다 키 순서가
+     * 섞이므로 문자열 위치·순서에 기대는 구현은 금지다.
+     *
+     * <p>같은 서비스에 hello 가 2건 이상이면 {@code startTime} 이 가장 큰 것이 이긴다(BL-03).
+     * attribute 부재 · 값 null · 공백 문자열은 그 hello 를 건너뛴다 → 기존 값이 그대로 유지된다.
+     */
+    private static Map<String, String> extractAgentVersions(List<Span> traceSpans) {
+        Map<String, String> versions = new HashMap<>();
+        Map<String, Long> winnerStartTime = new HashMap<>();
+        for (Span span : traceSpans) {
+            if (!AGENT_HELLO_OPERATION.equals(span.operationName())) {
+                continue;
+            }
+            String serviceName = span.serviceName();
+            if (serviceName == null || serviceName.isBlank()) {
+                continue;
+            }
+            Map<String, Object> attributes = span.attributes();
+            if (attributes == null) {
+                continue;
+            }
+            Object raw = attributes.get(AGENT_VERSION_ATTRIBUTE);
+            if (raw == null) {
+                continue;
+            }
+            String version = String.valueOf(raw).trim();
+            if (version.isEmpty()) {
+                continue;
+            }
+            Long best = winnerStartTime.get(serviceName);
+            if (best == null || span.startTime() >= best) {
+                versions.put(serviceName, version);
+                winnerStartTime.put(serviceName, span.startTime());
+            }
+        }
+        return versions;
     }
 
     /**

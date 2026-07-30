@@ -34,6 +34,10 @@ package io.apilens.server.query.dto;
  * @param traceCount    최근 24시간 trace 수 (start_time 기준 윈도우 — [Phase R12] AC-A3-3
  *                      의미 변경: "누적 전수" → "최근 24h". 필드명·타입 무변경, FR-A3)
  * @param healthStatus  서버 응답 시점 분기 — "active" / "stale" / "inactive" / "never"
+ * @param agentVersion  agent 가 마지막으로 시작할 때 보고한 버전 ([Phase R19] AC-01-6). 아직
+ *                      v0.5.0 collector 로 바꾼 뒤 재시작하지 않았으면 {@code null} — 이 null 은
+ *                      {@code lastSeenAt == null}("trace 미수신")과 의미가 겹치지 않는 별개의 축이다.
+ *                      필드를 맨 뒤에 더한 이유: 중간에 끼우면 positional 생성이 조용히 뒤바뀐다.
  */
 public record ServiceInfo(
         String name,
@@ -41,6 +45,7 @@ public record ServiceInfo(
         Long lastSeenAt,
         String source,
         long traceCount,
-        String healthStatus
+        String healthStatus,
+        String agentVersion
 ) {
 }

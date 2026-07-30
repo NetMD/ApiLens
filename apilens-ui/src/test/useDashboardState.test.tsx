@@ -41,6 +41,10 @@ function svc(name: string): ServiceInfo {
     source: 'wizard',
     traceCount: 0,
     healthStatus: 'active',
+    // [Phase R19] AC-01-4 — ServiceInfo 에 agent 버전 필수 필드가 추가돼 factory 도 함께 맞춘다.
+    // ⚠️ 이 파일은 tsconfig.app.json exclude 대상이라 필드를 빠뜨려도 `npm run build` 가 깨지지 않는다
+    //    (tsc -b · vitest · eslint 어느 것도 테스트 파일을 타입 검사하지 않음). 손으로 맞춰야 한다.
+    agentVersion: null,
   };
 }
 

@@ -90,7 +90,7 @@ class OpenApiDocsIntegrationTest {
     private TestRestTemplate rest;
 
     /**
-     * T-INT-1 — 면제 + 스펙 자동생성 + 컨텍스트 로드 + build-info 배선(info.version=="0.4.0").
+     * T-INT-1 — 면제 + 스펙 자동생성 + 컨텍스트 로드 + build-info 배선(info.version=="0.5.0").
      */
     @Test
     void returns200AndOpenApiSpecOnDocsWithoutToken() throws Exception {
@@ -101,8 +101,8 @@ class OpenApiDocsIntegrationTest {
         assertTrue(root.hasNonNull("openapi"), "spec must contain an 'openapi' field");
         JsonNode info = root.get("info");
         assertNotNull(info, "spec must contain an 'info' block");
-        // 게이트 E — info.version 은 build-info 주입값. [Phase R18] bump(0.3.3→0.4.0)가 문서까지 전파됨을 실측 봉인.
-        assertEquals("0.4.0", info.get("version").asText(), "info.version must track the Gradle build version");
+        // 게이트 E — info.version 은 build-info 주입값. [Phase R19] bump(0.4.0→0.5.0)가 문서까지 전파됨을 실측 봉인.
+        assertEquals("0.5.0", info.get("version").asText(), "info.version must track the Gradle build version");
         assertEquals("ApiLens API", info.get("title").asText());
     }
 
@@ -168,15 +168,30 @@ class OpenApiDocsIntegrationTest {
         assertEquals(HttpStatus.OK, res.getStatusCode());
         JsonNode paths = MAPPER.readTree(res.getBody()).path("paths");
 
-        assertMaintenanceSummary(paths, "/v1/maintenance/cleanup", "post");
-        assertMaintenanceSummary(paths, "/v1/maintenance/purge", "post");
-        assertMaintenanceSummary(paths, "/v1/maintenance/optimize", "post");
-        assertMaintenanceSummary(paths, "/v1/maintenance/status", "get");
-        assertMaintenanceSummary(paths, "/v1/maintenance/pause", "post");
-        assertMaintenanceSummary(paths, "/v1/maintenance/resume", "post");
+        assertOperationSummary(paths, "/v1/maintenance/cleanup", "post");
+        assertOperationSummary(paths, "/v1/maintenance/purge", "post");
+        assertOperationSummary(paths, "/v1/maintenance/optimize", "post");
+        assertOperationSummary(paths, "/v1/maintenance/status", "get");
+        assertOperationSummary(paths, "/v1/maintenance/pause", "post");
+        assertOperationSummary(paths, "/v1/maintenance/resume", "post");
     }
 
-    private static void assertMaintenanceSummary(JsonNode paths, String path, String method) {
+    /**
+     * [Phase R19] T-INT-7 — 신규 계측 분석 endpoint 2종이 스펙에 자동 노출되는지 봉인.
+     *   계약 표를 손으로 적지 않는 대신({@code docs/api.md} 신규 표 0건) springdoc 자동 도출에 맡겼으므로,
+     *   "자동 도출이 실제로 두 경로를 담는가" 가 이 라운드 문서 전략의 유일한 전제다.
+     */
+    @Test
+    void documentsInstrumentAnalysisOperationsWithSummaries() throws Exception {
+        ResponseEntity<String> res = rest.getForEntity("/v3/api-docs", String.class);
+        assertEquals(HttpStatus.OK, res.getStatusCode());
+        JsonNode paths = MAPPER.readTree(res.getBody()).path("paths");
+
+        assertOperationSummary(paths, "/v1/instrument/analysis", "post");
+        assertOperationSummary(paths, "/v1/instrument/simulation", "post");
+    }
+
+    private static void assertOperationSummary(JsonNode paths, String path, String method) {
         JsonNode summary = paths.path(path).path(method).path("summary");
         assertTrue(summary.isTextual() && !summary.asText().isBlank(),
                 path + " (" + method + ") must have a non-empty @Operation summary (FR-05)");

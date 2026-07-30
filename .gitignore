@@ -37,6 +37,8 @@ apilens.db
 apilens.db-journal
 apilens.db-wal
 apilens.db-shm
+# 스키마 올리기 전 DB 백업 (릴리스 절차상 남김 — 저장소에는 넣지 않는다)
+apilens.db.backup-*
 *.sqlite
 *.sqlite3
 

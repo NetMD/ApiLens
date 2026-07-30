@@ -75,6 +75,41 @@ export function formatBytes(bytes: number): string {
 }
 
 /**
+ * [Phase R19] FQCN → 단순 클래스 이름. `com.acme.batch.OrderSyncJob` → `OrderSyncJob`.
+ * 패키지가 없으면 원본 그대로. (shortenOperation 과 같은 갈래의 순수 함수 — 여기 모아 둔다.)
+ */
+export function classSimpleName(className: string): string {
+  const lastDot = className.lastIndexOf('.');
+  return lastDot === -1 ? className : className.substring(lastDot + 1);
+}
+
+/**
+ * [Phase R19] FQCN → 패키지 경로. `com.acme.batch.OrderSyncJob` → `com.acme.batch`.
+ * 패키지가 없으면 빈 문자열.
+ *
+ * 이 값은 화면 표시와 "[이 패키지 전체]" 단축 선택에만 쓴다 — **서버로 보내는 값이 아니다.**
+ * 서버로 가는 대상은 언제나 클래스 이름 목록이라 패키지 평균이 계산될 경로가 없다.
+ */
+export function classPackage(className: string): string {
+  const lastDot = className.lastIndexOf('.');
+  return lastDot === -1 ? '' : className.substring(0, lastDot);
+}
+
+/**
+ * [Phase R19] 0.0~1.0 비율 → 사람이 읽는 백분율 문자열 (BL-19 — 단위 변환 단일 지점).
+ *
+ * ⚠️ **100 을 곱하는 자리는 이 함수 하나뿐이다.** 임계 판정(0.50 / 0.80)은 언제나 실수
+ *    도메인에서 하고, 화면에 보일 때만 이 함수를 거친다. 다른 곳에서 손으로 `* 100` 을 쓰면
+ *    비교식이 100배 틀리는 회귀가 다시 열린다.
+ * - 음수 / NaN / Infinity → "0%" fallback
+ * - 소수점 없이 반올림 (예: 0.834 → "83%", 0.197 → "20%")
+ */
+export function formatRatioPercent(ratio: number): string {
+  if (!Number.isFinite(ratio) || ratio < 0) return '0%';
+  return `${Math.round(ratio * 100)}%`;
+}
+
+/**
  * body 길이가 max 초과 시 잘라낸 부분과 잘림 여부 반환.
  * UTF-16 length 기준 — 한글/이모지의 실제 byte와 다를 수 있으나, UI 가독성 차단이 목적.
  *

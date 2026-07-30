@@ -5,4 +5,8 @@
 // (version.ts 는 .ts — 유일 허용 거주지. 사용처: BrandNav / Setup.tsx wizard 헤더)
 // [Phase K] (NFR-06): v0.2 → v0.3 — v0.3 릴리스 UI 표시 라벨 일관성 (package.json 0.3.0 동기화 보강). 사용자 명시 결정 (R14 v0.3 라운드).
 // [Phase O / R18] (FR-06): v0.3 → v0.4 — v0.4.0 릴리스 UI 표시 라벨 (package.json 0.4.0 동기). R18 dev-frontend 가 package.json 만 bump 하고 이 SSOT 를 누락 → 릴리스 전 사용자 지적으로 회수.
-export const APP_VERSION = 'v0.4';
+// [Phase R19] (FR-06): v0.4 → v0.5 — v0.5.0 릴리스 UI 표시 라벨 (package.json 0.5.0 동기).
+//   R18 회귀(package.json 만 bump, 이 SSOT 누락)를 구조로 차단하려고 이번 라운드에
+//   src/test/version.test.ts 를 신설했다 — package.json version 의 앞 두 자리와 일치를 단언.
+//   표시 위치는 BrandNav 로고 옆(화면 왼쪽 위). major.minor 만 표기한다(patch 미표기가 기존 규약).
+export const APP_VERSION = 'v0.5';

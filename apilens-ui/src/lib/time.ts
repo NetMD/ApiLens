@@ -60,3 +60,26 @@ export function formatHms(epochMs: number): string {
   const pad = (n: number): string => n.toString().padStart(2, '0');
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
+
+const HOUR_MS = 60 * 60 * 1_000;
+
+/**
+ * [Phase R19] 계측 분석 구간 표기 (T-15).
+ *
+ * `2026-07-30 00:40 ~ 01:40 (약 1시간) · 01:40 조회` 형태.
+ * 정량 수치를 보여주는 화면은 **구간과 조회 시각을 반드시 함께** 적는다 — 언제 어느 구간을 잰
+ * 값인지 없으면 그 숫자가 일반화 단정으로 읽힌다.
+ *
+ * 세 값 모두 서버 응답의 window 값을 그대로 쓴다 (화면이 시각을 다시 계산하지 않는다).
+ */
+export function formatAnalysisWindow(fromMs: number, toMs: number, queriedAtMs: number): string {
+  const pad = (n: number): string => n.toString().padStart(2, '0');
+  const hm = (epochMs: number): string => {
+    const d = new Date(epochMs);
+    return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
+  const from = new Date(fromMs);
+  const date = `${from.getFullYear()}-${pad(from.getMonth() + 1)}-${pad(from.getDate())}`;
+  const hours = Math.round((toMs - fromMs) / HOUR_MS);
+  return `${date} ${hm(fromMs)} ~ ${hm(toMs)} (약 ${hours}시간) · ${hm(queriedAtMs)} 조회`;
+}
