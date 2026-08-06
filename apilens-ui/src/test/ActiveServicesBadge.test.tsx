@@ -24,7 +24,7 @@ function mockApi(paused: boolean): void {
     const url =
       typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
     if (url.includes('/v1/maintenance/status')) {
-      return Promise.resolve(jsonResponse({ paused, pausedAt: paused ? 1_730_000_000_000 : null }));
+      return Promise.resolve(jsonResponse({ paused, pausedAt: paused ? 1_730_000_000_000 : null, sqliteBusyEncountered: 0, sqliteBusyDropped: 0 }));
     }
     if (url.includes('/v1/services')) {
       return Promise.resolve(jsonResponse({ services: [] }));

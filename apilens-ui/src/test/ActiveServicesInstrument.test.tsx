@@ -53,7 +53,7 @@ function mockApi(): void {
     const url =
       typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
     if (url.includes('/v1/maintenance/status')) {
-      return Promise.resolve(jsonResponse({ paused: false, pausedAt: null }));
+      return Promise.resolve(jsonResponse({ paused: false, pausedAt: null, sqliteBusyEncountered: 0, sqliteBusyDropped: 0 }));
     }
     if (url.includes('/v1/services')) {
       return Promise.resolve(jsonResponse({ services: SERVICES }));
@@ -99,7 +99,10 @@ describe('Services 목록 — agent 버전 컬럼 + 계측 분석 전환', () =>
     mockApi();
     renderPage();
     expect(await screen.findByText('0.4.0')).toBeInTheDocument();
-    expect(screen.getByRole('columnheader', { name: 'agent 버전' })).toBeInTheDocument();
+    // [R21/AC-07-1] T-23 — "지금 버전" 이라고 단정하지 않는 컬럼 헤더 (버전 라벨 정직화).
+    expect(
+      screen.getByRole('columnheader', { name: 'agent 버전 (마지막 확인 시점)' }),
+    ).toBeInTheDocument();
   });
 
   it('displaysDashWhenAgentVersionMissing — 값이 없으면 — 로 보여 준다 (숨기지 않는다)', async () => {
@@ -114,8 +117,9 @@ describe('Services 목록 — agent 버전 컬럼 + 계측 분석 전환', () =>
     mockApi();
     renderPage();
     await screen.findByText('0.4.0');
+    // [R21/AC-07-1] T-23 — 첫 단락 정직화 문구 (확정 라벨이 본문에 그대로 실린다).
     expect(
-      screen.getByText(/agent 버전은 agent 가 마지막으로 시작할 때 보고한 값이에요/),
+      screen.getByText(/여기 보이는 값은 마지막 확인 시점의 버전이에요/),
     ).toBeInTheDocument();
     expect(screen.getByText(/왼쪽 위에 보이는 제품 버전과 다를 수 있어요/)).toBeInTheDocument();
   });

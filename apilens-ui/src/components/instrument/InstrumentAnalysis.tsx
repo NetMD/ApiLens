@@ -242,8 +242,9 @@ export function InstrumentAnalysis({ service, onBack }: Props): ReactNode {
             {service.name} 계측 분석
           </h1>
           <p className="text-xs text-stone-500">
-            {/* T-01 라벨 + T-02 값 (없으면 T-03) */}
-            agent 버전{' '}
+            {/* T-01 라벨 + T-02 값 (없으면 T-03).
+                [R21/AC-07-1] T-23 — "지금 버전" 단정을 피하는 라벨로 통일 (Services 표·설정 화면 동일). */}
+            agent 버전 (마지막 확인 시점){' '}
             {service.agentVersion === null ? (
               <span className="text-stone-300">—</span>
             ) : (

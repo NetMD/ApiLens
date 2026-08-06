@@ -16,6 +16,15 @@ describe('routeSearch', () => {
     expect(searchAcrossRoutes(new URLSearchParams('range=1h'))).toBe('range=1h');
   });
 
+  // [R21/AC-02] 'config' 도 route-local — 빠지면 설정 파라미터가 대시보드·설정 URL 로 샌다 (§2.4).
+  it('analyze 와 config 는 제거하고 보존 필터(service)는 유지한다', () => {
+    const params = new URLSearchParams('analyze=my-api&config=my-api&service=my-api');
+    const result = searchAcrossRoutes(params);
+    expect(result).not.toContain('analyze');
+    expect(result).not.toContain('config');
+    expect(result).toContain('service=my-api');
+  });
+
   it('빈 search 는 빈 문자열', () => {
     expect(searchAcrossRoutes(new URLSearchParams(''))).toBe('');
   });

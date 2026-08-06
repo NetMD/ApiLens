@@ -58,7 +58,7 @@ what value actually hit the database.* It has been dogfooded against a live prod
 | 🧹 디스크 최적화 | 데이터를 지우지 않고 SQLite `VACUUM` 으로 DB 파일의 빈 공간을 회수 — 설정 페이지 버튼 (수동) |
 | ⏸️ 유지보수 모드 | 서비스를 멈추지 않고 수신만 잠시 끊어, 정리·최적화를 잠금 경합 없이 수행 (최대 30분 후 자동 재개) |
 | 🎚️ 계측량 제어 | 잡음이 많은 패키지를 계측에서 빼는 JVM 옵션 (기본은 제외 없음 — 켜지 않으면 동작 동일) |
-| 📡 계측 설정 원격 적용 | 서비스별 "원하는 계측 설정"을 server 에 저장하면 **JVM 재시작 없이** 적용 (안전을 위해 **줄이는 방향만** — 기준은 JVM 시작 옵션 값). MyBatis mapper 도 화면 이름 그대로 개별 제외 가능. 설정은 API(curl) — 화면은 다음 버전 |
+| 📡 계측 설정 원격 적용 | 서비스별 "원하는 계측 설정"을 server 에 저장하면 **JVM 재시작 없이** 적용 (안전을 위해 **줄이는 방향만** — 기준은 JVM 시작 옵션 값). MyBatis mapper 도 화면 이름 그대로 개별 제외 가능. 설정은 Services 의 [계측 설정] 화면에서 — API(curl)로도 가능 |
 | 🚧 진입점 없는 흐름 차단 | 진입점(controller)이 아닌 곳에서 시작되려는 흐름을 만들지 않는 옵션 (**기본 꺼짐** — 켜면 배치 워커 흐름이 통째로 안 남는 대가) |
 | 🔍 계측 분석 | 어느 클래스가 기록을 많이 만드는지 **세 잣대**(기록 수·본문 건수·본문 용량)로 보여 주고, 빼기 전에 **줄어드는 양과 흐름이 조각나는 정도를 함께** 계산 |
 | 🏷️ agent 버전 표시 | 서비스 목록에서 각 서비스가 어떤 버전의 agent 로 도는지 확인 (agent 재시작 후 채워짐) |
@@ -297,6 +297,7 @@ curl -H "Authorization: Bearer $APILENS_TOKEN" http://localhost:8765/v1/traces
 - **JDBC 파라미터 키 이름 마스킹 한계** — 위 [PII 마스킹](#pii-마스킹--pii-masking) 경고 참조
 - **인증은 선택적, TLS 미내장** — API Key 인증을 켤 수 있습니다 (위 [인증](#인증--authentication-v03) 섹션). 다만 토큰은 평문(HTTP)으로 전송되고 agent 적재 경로(`/v1/spans`)는 무인증 면제이므로 **여전히 신뢰 네트워크 전제**입니다. 공용망 직접 노출 금지 — TLS 가 필요하면 리버스 프록시로 종단하세요. API 문서(`/swagger-ui`·`/v3/api-docs`)도 토큰 없이 열립니다
 - **weaving 계측 제외로 뺄 수 없는 계층이 있습니다** — MyBatis mapper 는 화면에 보이는 이름과 계측이 걸리는 이름이 달라, 화면 이름을 계측 제외 JVM 옵션에 적어도 제외되지 않습니다(경고도 뜨지 않습니다). 대신 **원격 계측 설정으로는 화면 이름 그대로 개별 제외할 수 있습니다(재시작 불요)** — 자세한 내용과 두 방식의 차이는 [Agent 옵션](./docs/agent-options.md) 참조
+- **원격 계측 설정은 줄이는 방향만, 영구 아님** — 원격 지시는 JVM 시작 옵션 값을 기준으로 줄이는 쪽(및 시작값 복귀)만 적용되고, 원격 값은 메모리에만 있어 재시작하면 시작 옵션 값으로 돌아갑니다. 특히 **개별 제외 목록을 원격으로 전부 비우는 지시는 전달되지 않습니다** — 빈 목록 저장은 "지시 없음"이 되어(철회와 같음) agent 에 이미 적용된 제외 목록은 그대로 남습니다. 걸린 제외를 풀려면 남길 항목만으로 저장하거나 JVM 을 재시작하세요(화면에도 같은 안내가 항상 표시됩니다)
 - **흐름의 위쪽을 빼면 아래가 조각납니다** — 계측 제외는 "그 클래스의 기록을 만들지 않는다"는 뜻이지 "그 아래 호출을 따라가지 않는다"는 뜻이 아닙니다. 조상을 빼면 그 아래 호출들이 각자 독립된 시작점이 되어 조각난 흐름이 쏟아질 수 있습니다. "진입점 없는 흐름 만들지 않기" 옵션(기본 꺼짐)으로 **완화**할 수 있지만 소멸은 아닙니다 — 옵션을 켜지 않으면 그대로이고, 켜면 배치 워커 흐름이 통째로 안 남는 대가가 있습니다. **빼기 전에 [계측 분석](#주요-기능--features) 화면에서 예상 결과를 먼저 확인하세요**
 - **대용량 단일 trace 의 적재 잠금 경합** — 한 trace 가 수만 개의 span 을 만드는 과잉 계측 환경에서는 대량 INSERT 가 SQLite write 잠금을 오래 점유해, 동시에 들어오는 다른 trace 가 일시적으로 거부(`SQLITE_BUSY`)될 수 있습니다. 지금은 세 가지로 대응합니다 — 적재를 청크로 나눠 커밋 · 계측량 제어 옵션으로 근본 축소 · 계측 분석 화면으로 무엇을 줄일지 판단. 다만 계측량이 과도하면 여전히 발생할 수 있습니다
 
@@ -306,9 +307,8 @@ curl -H "Authorization: Bearer $APILENS_TOKEN" http://localhost:8765/v1/traces
 
 순서와 범위는 바뀔 수 있습니다. 이미 나온 기능은 위 [주요 기능](#주요-기능--features) 표에 있고, 무엇이 언제 들어왔는지는 [CHANGELOG](./CHANGELOG.md) 를 보세요. Subject to change.
 
-- **계측 설정 화면** — 원격 계측 설정은 지금 API(curl)로만 조작합니다. 브라우저 화면에서 고르고 적용하는 UI 가 목표입니다
 - **멀티 서비스 분산 추적 (MSA)** — `traceparent` 전파 기반 cross-service trace 연결. 단일 서비스 추적 한계 해소
-- **화면 성능** — 대량 데이터에서 차트가 부드럽게 흐르도록 개선하고, 첫 로딩에 내려오는 파일을 나눠 가볍게
+- **화면 성능** — 대량 데이터에서 차트가 부드럽게 흐르도록 개선
 - **인증 보강** — TLS 종단·ingest 토큰·세션 기반 인증
 - **agent 보강 후보** — JDBC 파라미터 이름 기반 마스킹(컬럼 이름 추적), `@Async` 비동기 경로 ([CHANGELOG](./CHANGELOG.md) Unreleased 후보 참조)
 
@@ -322,7 +322,7 @@ curl -H "Authorization: Bearer $APILENS_TOKEN" http://localhost:8765/v1/traces
 - **[Span attribute 키](./docs/otel-attributes.md)** — OpenTelemetry semantic conventions 기반 span 속성 키. | Span attribute keys.
 - **[변경 이력](./CHANGELOG.md)** — 버전별 변경 사항. | Changelog.
 
-> API 문서는 향후 OpenAPI/Swagger UI 자동 생성으로 전환을 검토 중입니다 ([CHANGELOG](./CHANGELOG.md) Unreleased 참조). | A generated OpenAPI/Swagger UI is on the roadmap.
+> 필드 단위 API 계약은 server 를 띄운 뒤 `/swagger-ui` (자동 생성 스펙)가 단일 진실 출처입니다. | The generated OpenAPI spec at `/swagger-ui` is the source of truth for the API contract.
 
 ---
 

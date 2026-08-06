@@ -17,8 +17,10 @@
 //   (신규 route 아님 — App.tsx / WebMvcConfig diff 0). ?step 과 정확히 같은 성격이라
 //   같은 목록에 넣어 route 를 넘는 순간 자동으로 떨어뜨린다. 이 한 줄이 빠지면 분석
 //   파라미터가 대시보드·설정 URL 로 샌다 (SH-06 보존 로직이 그대로 끌고 감).
-/** route 경계를 넘어 전파되면 안 되는 ephemeral 키들 (/setup 의 step · /services 의 analyze). */
-const ROUTE_LOCAL_PARAMS = ['step', 'analyze'] as const;
+// [R21/AC-02] 'config' 추가 (원격 계측 설정 화면 — /services?config={서비스이름}, ?analyze= 완전
+//   동형의 경로 안 화면 전환). 빠지면 config 파라미터가 대시보드·설정 URL 로 샌다 (위와 동일 성격).
+/** route 경계를 넘어 전파되면 안 되는 ephemeral 키들 (/setup 의 step · /services 의 analyze·config). */
+const ROUTE_LOCAL_PARAMS = ['step', 'analyze', 'config'] as const;
 
 /** route-local 키를 제거한 새 URLSearchParams 복사본 (원본 불변). */
 export function withoutRouteLocalParams(params: URLSearchParams): URLSearchParams {

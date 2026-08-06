@@ -26,8 +26,9 @@ import org.springframework.transaction.annotation.Transactional;
  * <p>[Phase H] AC-06-5 — D-05 (services row 만 제거, traces/spans/payloads 보존).
  * 사용자 명시 비협상 결정. CLAUDE.md '아키텍처 핵심 원칙' 인용.
  *
- * <p>R12 회귀 가드: services 테이블만 touch. cascade 자체 미존재 (FK 없음) +
- * 명시적으로 traces / spans / payloads 미접근.
+ * <p>R12 회귀 가드 — [Phase R21] R21/AC-02-11 (R-U4) 갱신: services +
+ * service_instrument_configs 두 테이블 touch. traces / spans / payloads 는 여전히
+ * 미접근(D-05 불변). cascade 자체 미존재 (FK 없음).
  */
 @Service
 public class ServicesService {
@@ -48,5 +49,9 @@ public class ServicesService {
     @Transactional
     public void delete(String serviceName) {
         jdbc.update("DELETE FROM services WHERE service_name = ?", serviceName);
+        // [Phase R21] R21/AC-02-11 (R-U4) — 서비스 삭제 시 저장된 원격 계측 설정 지시도 함께 철회한다(같은 트랜잭션).
+        //   D-05(traces/spans/payloads 보존)는 불변 — 접촉 테이블은 services + service_instrument_configs 뿐.
+        //   agent 에 이미 적용된 값은 철회 의미론(전달 중단·비복귀)대로 되돌아가지 않는다.
+        jdbc.update("DELETE FROM service_instrument_configs WHERE service_name = ?", serviceName);
     }
 }

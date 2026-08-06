@@ -1,7 +1,7 @@
 ---
 title: ApiLens API 운영 서사
 owner: maintainer
-last-reviewed: 2026-08-04
+last-reviewed: 2026-08-06
 ---
 
 # ApiLens API
@@ -63,7 +63,7 @@ Java agent 가 span 배치를 보낼 때 쓰는 경로입니다 (UI 는 호출�
 
 서비스별 "원하는 계측 설정"을 server 에 저장해 두면, 그 서비스 agent 의 다음 적재 202 응답에 실려 전달되어
 **JVM 재시작 없이** 적용됩니다 (PUT 저장 / GET 조회 / DELETE 철회 — 정확한 스키마는 `/swagger-ui` 자동 스펙 참조).
-설정 화면은 아직 없으며 curl 로 설정합니다 — 항목·동작 원칙·안전 경계는
+설정은 화면(Services 표의 [계측 설정])에서 하거나 curl 로도 할 수 있습니다 — 항목·동작 원칙·안전 경계는
 [Agent 옵션 문서의 "원격 계측 설정" 절](./agent-options.md)이 단일 안내처입니다. 운영 관점 요점만 남깁니다:
 
 - **줄이는 방향만** — agent 는 JVM 시작 `-D` 값을 기준점으로, 그 이하로 줄이는 지시와 기준점으로 되돌리는 지시만

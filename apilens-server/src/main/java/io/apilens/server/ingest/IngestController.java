@@ -23,6 +23,8 @@ import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -38,6 +40,9 @@ import java.util.Map;
  */
 @RestController
 public class IngestController {
+
+    // [Phase R21] R21/AC-08-1 (R-02) — 무로그 catch 관측성용 로거(현행 slf4j 로거 부재라 신설).
+    private static final Logger log = LoggerFactory.getLogger(IngestController.class);
 
     private final IngestService service;
     // [Phase R15] AC-A2-1 — 수신 일시정지 상태 주입(controller 레이어 분기). 사용자 명시 비협상 결정(D02).
@@ -105,6 +110,9 @@ public class IngestController {
                     .map(config -> new IngestResponse(response.accepted(), response.traces(), config))
                     .orElse(response);
         } catch (Exception e) {
+            // [Phase R21] R21/AC-08-1 (R-02) — config 미탑재 폴백은 유지하되 debug 1줄로 관측 가능하게.
+            //   202 반환 동작 diff 0 (폴백 의미론 불변 — 다음 202 가 self-healing).
+            log.debug("instrument config attach skipped: {}", e.toString());
             return response;
         }
     }

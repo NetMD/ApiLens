@@ -39,7 +39,7 @@ describe('MaintenanceModeBanner', () => {
   it('displaysBannerWithElapsedMinutesWhenPaused — paused=true 시 배너 + 경과시간 노출', async () => {
     const pausedAt = 1_730_000_000_000;
     vi.spyOn(Date, 'now').mockReturnValue(pausedAt + 180_000); // +3분
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse({ paused: true, pausedAt }));
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse({ paused: true, pausedAt, sqliteBusyEncountered: 0, sqliteBusyDropped: 0 }));
     renderBanner();
 
     expect(
@@ -50,7 +50,7 @@ describe('MaintenanceModeBanner', () => {
   });
 
   it('rendersNullWhenNotPaused — paused=false 시 배너 미렌더(미노출)', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse({ paused: false, pausedAt: null }));
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse({ paused: false, pausedAt: null, sqliteBusyEncountered: 0, sqliteBusyDropped: 0 }));
     renderBanner();
 
     // 데이터 도착(paused=false) 후에도 배너 없음.

@@ -19,6 +19,10 @@
 //     바꾼다 (App.tsx / BrandNav.tsx / WebMvcConfig.java diff 0).
 //   사용자 명시 비협상 결정 (D-6 라우트·메뉴 신설 금지 / D-13 차단하지 않는다).
 //   CLAUDE.md 'UI 디자인 철학' — 운영자는 "흐름과 끊긴 지점"이 궁금하다. 값 없음도 정보다.
+// [R21/AC-02] + 원격 계측 설정 화면 진입 — `?config={서비스이름}` (?analyze= 완전 동형).
+//   작업 셀 = [계측 분석] [계측 설정] [삭제] — 되돌릴 수 없는 [삭제] 는 오른쪽 끝 유지, 새 버튼은
+//   그 안쪽 (R19 배치 원칙 계승). 두 파라미터 동시 존재(수기 URL) 시 analyze 우선 — 기존 분기
+//   코드가 먼저 평가돼 자동 성립 (UX §2.4 — 기존 동작 보존, 회귀 0).
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { MouseEvent, ReactNode } from 'react';
 import { Link, useSearchParams } from 'react-router';
@@ -27,6 +31,7 @@ import { searchAcrossRoutes } from '../lib/routeSearch';
 import { deleteService, listServicesDetailed } from '../api/services';
 import type { HealthStatus, ServiceInfo } from '../types/api';
 import { InstrumentAnalysis } from '../components/instrument/InstrumentAnalysis';
+import { InstrumentConfigPanel } from '../components/instrument/InstrumentConfigPanel';
 import { STATUS_HEX_HEALTH, STATUS_LABEL_KO } from '../lib/colors';
 import { useSearchPreservingNavigate } from '../hooks/useSearchPreservingNavigate';
 import { useMaintenanceStatus } from '../hooks/useMaintenanceStatus';
@@ -67,20 +72,29 @@ export function ActiveServices(): ReactNode {
   // [Phase R19] 목록 ↔ 계측 분석 전환. 주소에 이름이 있으면 분석 화면을 그린다.
   // 값이 없으면 기존 목록 그대로 (신규 라우트 0 — 이 파라미터는 route 를 넘을 때 자동으로 떨어진다).
   const analyzeName = searchParams.get('analyze');
-  // 복귀 시 눌렀던 행의 [계측 분석] 버튼으로 포커스를 되돌리기 위한 등록부.
-  const analyzeButtonRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
+  // [R21/AC-02] 목록 ↔ 계측 설정 전환 — ?config= (analyze 동형). analyze 분기가 먼저 평가되므로
+  // 동시 존재 시 analyze 우선이 기존 코드 순서로 자동 성립 (UX §2.4).
+  const configName = searchParams.get('config');
+  // 복귀 시 눌렀던 행의 그 버튼으로 포커스를 되돌리기 위한 등록부.
+  // [R21] analyze 전용 → 키를 `{종류}:{이름}` 으로 확장해 [계측 설정] 버튼도 같은 등록부를 쓴다
+  // (설계 §2.1 dev 재량 — Map 신설 대신 키 확장: 상태 1개가 단순).
+  const actionButtonRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
   const [pendingFocus, setPendingFocus] = useState<string | null>(null);
 
-  const registerAnalyzeButton = useCallback((name: string, el: HTMLButtonElement | null): void => {
-    if (el === null) analyzeButtonRefs.current.delete(name);
-    else analyzeButtonRefs.current.set(name, el);
-  }, []);
+  const registerActionButton = useCallback(
+    (key: string, el: HTMLButtonElement | null): void => {
+      if (el === null) actionButtonRefs.current.delete(key);
+      else actionButtonRefs.current.set(key, el);
+    },
+    [],
+  );
 
   useEffect(() => {
-    if (pendingFocus === null || analyzeName !== null) return;
-    analyzeButtonRefs.current.get(pendingFocus)?.focus();
+    // 목록으로 돌아온 뒤(두 파라미터 모두 부재)에만 복원한다.
+    if (pendingFocus === null || analyzeName !== null || configName !== null) return;
+    actionButtonRefs.current.get(pendingFocus)?.focus();
     setPendingFocus(null);
-  }, [pendingFocus, analyzeName]);
+  }, [pendingFocus, analyzeName, configName]);
 
   // D-05 비협상: services row 만 제거, trace 데이터 보존.
   const deleteMutation = useMutation({
@@ -136,16 +150,20 @@ export function ActiveServices(): ReactNode {
           tabIndex={0}
           className="overflow-x-auto rounded-lg border border-stone-200"
         >
-          {/* [Phase R19] min-w 는 컬럼 6개 + 작업 버튼 2개가 눌릴 수 있는 최소 폭이다.
+          {/* [Phase R19] min-w 는 컬럼 6개 + 작업 버튼이 눌릴 수 있는 최소 폭이다.
               760px 로 잡았더니 좁은 창에서 가로 스크롤이 생기기 전에 컬럼만 압축돼
-              버튼에 닿지 못했다(릴리스 전 사용자 확인에서 발견). 값을 줄이지 말 것. */}
-          <table className="w-full min-w-[920px] text-left">
+              버튼에 닿지 못했다(릴리스 전 사용자 확인에서 발견). 값을 줄이지 말 것.
+              [R21/AC-02] 작업 버튼 2개 → 3개([계측 설정] 추가) + 버전 컬럼 헤더 연장
+              ("(마지막 확인 시점)") 분량으로 920 → 1000 **상향** (축소 금지 봉인 — NFR-06.
+              산정: [계측 설정] 버튼 ≈ 64px + gap 4px + 헤더 연장 여유. 좁은 창 동작은 V-07 육안). */}
+          <table className="w-full min-w-[1000px] text-left">
             <thead className="bg-stone-50">
               <tr className="text-xs font-medium text-stone-500">
                 <th className="px-4 py-2">상태</th>
                 <th className="px-4 py-2">Service</th>
-                {/* [Phase R19] T-01 — 서비스 정체성 정보끼리 붙인다 (Service 바로 오른쪽). */}
-                <th className="px-4 py-2">agent 버전</th>
+                {/* [Phase R19] T-01 — 서비스 정체성 정보끼리 붙인다 (Service 바로 오른쪽).
+                    [R21/AC-07-1] T-23 — "지금 버전" 이라고 단정하지 않는 라벨 (R-U3 확정 라벨). */}
+                <th className="px-4 py-2">agent 버전 (마지막 확인 시점)</th>
                 <th className="px-4 py-2">마지막 trace</th>
                 {/* Phase R12 (FR-A3, AC-A3-3): traceCount 의미 변경 "누적 전수" → "최근 24h" 동기 라벨 (설계 §1.2 footprint ①) */}
                 <th className="px-4 py-2 text-right">Trace 수 (24h)</th>
@@ -162,7 +180,8 @@ export function ActiveServices(): ReactNode {
                   onDeleteClick={(name) => setDeleteTarget(name)}
                   onRowClick={(name) => nav('/', { search: { service: name } })}
                   onAnalyzeClick={(name) => nav('/services', { search: { analyze: name } })}
-                  registerAnalyzeButton={registerAnalyzeButton}
+                  onConfigClick={(name) => nav('/services', { search: { config: name } })}
+                  registerActionButton={registerActionButton}
                 />
               ))}
             </tbody>
@@ -172,9 +191,11 @@ export function ActiveServices(): ReactNode {
             움직여서 정작 못 읽는다. 툴팁이 아닌 이유: 값이 왜 비었는지는 모든 운영자가 한 번은
             읽어야 하는 설명이라 마우스를 올려야 보이는 자리에 숨기면 안 된다. */}
         <div className="space-y-1 text-xs text-stone-500">
+          {/* [R21/AC-07-1] T-23 — 첫 단락 정직화 (확정 라벨 "마지막 확인 시점의 버전" 이 본문에
+              그대로 실린다). 둘째 단락("제품 버전과 다를 수 있어요")은 유지 (UX §4.1-A3). */}
           <p>
-            agent 버전은 agent 가 마지막으로 시작할 때 보고한 값이에요. 지금 도는 버전과 다를 수 있고,
-            값이 없으면(—) agent 를 다시 시작할 때 표시돼요.
+            여기 보이는 값은 마지막 확인 시점의 버전이에요 — 지금 도는 버전이라고 단정하지 않아요.
+            값이 비어 있으면(—) agent 를 다시 시작할 때 확인돼요.
           </p>
           <p>
             여기 보이는 버전은 각 서비스에 붙은 agent 의 버전이에요. 왼쪽 위에 보이는 제품 버전과 다를
@@ -219,7 +240,49 @@ export function ActiveServices(): ReactNode {
         service={target}
         onBack={() => {
           nav('/services'); // analyze 는 route-local 키라 자동으로 떨어진다.
-          setPendingFocus(name); // 눌렀던 행의 [계측 분석] 버튼으로 포커스 복원.
+          setPendingFocus(`analyze:${name}`); // 눌렀던 행의 [계측 분석] 버튼으로 포커스 복원.
+        }}
+      />
+    );
+  };
+
+  /** [R21/AC-02] 설정 화면 — renderAnalyze 전례 동형 (상태 D: 주소의 서비스가 목록에 없으면
+   *  돌아가는 길을 준다 — 폼 미표시). */
+  const renderConfig = (name: string): ReactNode => {
+    if (servicesQuery.isLoading) {
+      return <LoadingSkeleton variant="list" />;
+    }
+    if (servicesQuery.isError) {
+      return (
+        <ErrorState error={servicesQuery.error} onRetry={() => void servicesQuery.refetch()} />
+      );
+    }
+    const target = services.find((svc) => svc.name === name);
+    if (target === undefined) {
+      return (
+        <div
+          role="alert"
+          className="flex min-h-40 flex-col items-center justify-center gap-3 rounded-lg border border-stone-200 bg-stone-50 p-8 text-center"
+        >
+          {/* U-33 (기존 T-68 재사용) */}
+          <p className="text-sm text-stone-500">그 서비스를 찾을 수 없어요. 목록으로 돌아가 주세요.</p>
+          <button
+            type="button"
+            onClick={() => nav('/services')}
+            className="rounded border border-stone-200 bg-white px-3 py-1.5 text-sm text-stone-900 hover:bg-stone-50"
+          >
+            ← Services 목록
+          </button>
+        </div>
+      );
+    }
+    return (
+      <InstrumentConfigPanel
+        key={name} // 서비스 전환 시 폼 리셋 (설계 §2.2)
+        service={target}
+        onBack={() => {
+          nav('/services'); // config 는 route-local 키라 자동으로 떨어진다.
+          setPendingFocus(`config:${name}`); // 눌렀던 행의 [계측 설정] 버튼으로 포커스 복원.
         }}
       />
     );
@@ -234,7 +297,10 @@ export function ActiveServices(): ReactNode {
         {/* [Phase R19] 분석 화면도 목록과 같은 폭(max-w-5xl)을 쓴다 — 같은 경로 안 화면 전환이라 감각이 이어져야 한다. */}
         <div className="mx-auto max-w-5xl space-y-4">
           {analyzeName !== null ? (
+            // 동시 존재(수기 URL) 시 analyze 우선 — 기존 분기가 먼저 평가 (UX §2.4 회귀 0).
             renderAnalyze(analyzeName)
+          ) : configName !== null ? (
+            renderConfig(configName)
           ) : (
             <>
               <div className="flex items-center justify-between">
@@ -271,9 +337,11 @@ export function ActiveServices(): ReactNode {
         initialFocusRef={deleteCancelRef}
       >
         {deleteTarget !== null && (
+          // [R21/AC-02-11] T-11 — 계측 설정 동반 삭제 안내 (R-U4). 조건 없이 항상 이 문구 —
+          // "있으면" 조건부 표현이라 설정 없는 서비스에서도 거짓이 되지 않는다 (설정 유무 GET 추가 호출 0).
           <p>
             <code className="font-mono text-stone-900">{deleteTarget}</code> 을 삭제하시겠어요?
-            trace 데이터는 보존됩니다
+            trace 데이터는 보존돼요. 저장해 둔 계측 설정이 있으면 함께 지워져요.
           </p>
         )}
         <div className="mt-5 flex justify-end gap-2">
@@ -311,8 +379,10 @@ interface RowProps {
   onRowClick: (name: string) => void;
   /** [Phase R19] 계측 분석 화면으로 전환 (같은 경로 + ?analyze=). */
   onAnalyzeClick: (name: string) => void;
-  /** [Phase R19] 복귀 시 포커스 복원용 버튼 등록. */
-  registerAnalyzeButton: (name: string, el: HTMLButtonElement | null) => void;
+  /** [R21/AC-02] 계측 설정 화면으로 전환 (같은 경로 + ?config=). */
+  onConfigClick: (name: string) => void;
+  /** 복귀 시 포커스 복원용 버튼 등록 — 키 = `{종류}:{이름}` (analyze:/config:). */
+  registerActionButton: (key: string, el: HTMLButtonElement | null) => void;
 }
 function ServiceRow({
   svc,
@@ -320,7 +390,8 @@ function ServiceRow({
   onDeleteClick,
   onRowClick,
   onAnalyzeClick,
-  registerAnalyzeButton,
+  onConfigClick,
+  registerActionButton,
 }: RowProps): ReactNode {
   const handleRowClick = (): void => onRowClick(svc.name);
   const handleRowKey = (e: React.KeyboardEvent<HTMLTableRowElement>): void => {
@@ -338,6 +409,11 @@ function ServiceRow({
     // 눌렀을 때 행 클릭이 흡수해 대시보드로 튄다.
     e.stopPropagation();
     onAnalyzeClick(svc.name);
+  };
+  const handleConfig = (e: MouseEvent<HTMLButtonElement>): void => {
+    // [R21/AC-02] SH-19 전례 그대로 — stopPropagation 의무 (빠지면 행 클릭이 흡수해 대시보드로 튄다).
+    e.stopPropagation();
+    onConfigClick(svc.name);
   };
   return (
     <tr
@@ -372,20 +448,31 @@ function ServiceRow({
       <td className="px-4 py-3 text-right font-mono">
         {svc.traceCount.toLocaleString()}
       </td>
-      {/* [Phase R19] 작업 셀 — [계측 분석] [삭제] 순서. 되돌릴 수 없는 [삭제] 를 오른쪽 끝에 그대로
-          두고 새 액션을 그 왼쪽 안쪽에 둔다. 시각 급은 완전히 같게 한다(새 버튼에 색 강조 금지 —
-          색을 주면 [삭제] 보다 강해져서 되돌릴 수 없는 동작이 상대적으로 약해 보인다). */}
+      {/* [Phase R19] 작업 셀 — [계측 분석] [계측 설정] [삭제] 순서 (R21 확장). 되돌릴 수 없는
+          [삭제] 를 오른쪽 끝에 그대로 두고 새 액션을 그 안쪽에 둔다. 시각 급은 완전히 같게
+          한다(새 버튼에 색 강조 금지 — 색을 주면 [삭제] 보다 강해져서 되돌릴 수 없는 동작이
+          상대적으로 약해 보인다). */}
       <td className="px-4 py-3 text-right whitespace-nowrap">
         <span className="inline-flex items-center gap-1">
           {/* T-06 · T-07 · C-01 — 어떤 이유로도 비활성이 되지 않는다 (비활성 조건을 붙이지 않는다). */}
           <button
-            ref={(el) => registerAnalyzeButton(svc.name, el)}
+            ref={(el) => registerActionButton(`analyze:${svc.name}`, el)}
             type="button"
             onClick={handleAnalyze}
             aria-label={`${svc.name} 계측 분석`}
             className="shrink-0 rounded px-2 py-1 text-xs text-stone-500 hover:bg-stone-100 hover:text-stone-900"
           >
             계측 분석
+          </button>
+          {/* [R21/AC-02] U-24 — [계측 설정]. C-01 전례 동형: 어떤 이유로도 비활성이 되지 않는다. */}
+          <button
+            ref={(el) => registerActionButton(`config:${svc.name}`, el)}
+            type="button"
+            onClick={handleConfig}
+            aria-label={`${svc.name} 계측 설정`}
+            className="shrink-0 rounded px-2 py-1 text-xs text-stone-500 hover:bg-stone-100 hover:text-stone-900"
+          >
+            계측 설정
           </button>
           <button
             type="button"

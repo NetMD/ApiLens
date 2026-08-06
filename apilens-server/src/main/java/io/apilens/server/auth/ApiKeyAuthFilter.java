@@ -93,6 +93,9 @@ public class ApiKeyAuthFilter extends OncePerRequestFilter {
             return;
         }
         // 4. 불일치/누락 → 401 + {"error":...} 직접 쓰기 (BL-05, AC-01-1/01-4) — 체인 중단.
+        // [Phase R21] R21/AC-08-1 (L-5) — 401 거절 관측성. 메서드·경로만 기록한다(인증 판정 로직 diff 0).
+        //   토큰 값·Authorization 헤더 내용 로깅 금지(자격 증명 유출 방지 — 오타 토큰도 준자격 정보).
+        log.debug("auth rejected (401): {} {}", req.getMethod(), req.getRequestURI());
         writeUnauthorized(res);
     }
 

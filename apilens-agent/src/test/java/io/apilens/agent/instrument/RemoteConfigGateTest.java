@@ -41,6 +41,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * <p>security 검증 1순위 축 = captureResultSet(기동 false + 원격 true 지시 → 폐기): 이 축은 매처
  * 미등록 구조 보장이 없어 3분지가 유일 방어선이다.
+ *
+ * <p>[Phase R21] R21/AC-01-4 (R-04) — 대표 수락 기준: R20/AC-05-2(reduce-only 3분지 — 기준점 = JVM
+ * 기동 -D 값) · R20/AC-05-1(관대 파싱 — 실패 시 무적용·throw 0). src/test 주석만 추가 — agent
+ * src/main diff 0 봉인과 무충돌.
  */
 class RemoteConfigGateTest {
 

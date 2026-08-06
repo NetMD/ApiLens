@@ -60,7 +60,8 @@ export async function optimizeDatabase(): Promise<MaintenanceResult> {
 /**
  * [Phase R15] AC-A3-1 — GET /v1/maintenance/status — 현재 일시정지 상태 폴링(즉답, timeout 미지정 — 기본 동작).
  *
- * 응답 = MaintenanceStatusResponse ({ paused, pausedAt }). 인증 보호 경로(키 설정 시 토큰 자동 첨부 — client.ts buildHeaders).
+ * 응답 = MaintenanceStatusResponse ({ paused, pausedAt, sqliteBusyEncountered, sqliteBusyDropped })
+ * (R21/AC-06-1 — G-03 필드 열거 현행화). 인증 보호 경로(키 설정 시 토큰 자동 첨부 — client.ts buildHeaders).
  */
 export async function getMaintenanceStatus(signal?: AbortSignal): Promise<MaintenanceStatusResponse> {
   // exactOptionalPropertyTypes 정합 — signal 은 정의된 경우만 전달(listServices 동형).

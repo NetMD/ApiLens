@@ -1,7 +1,7 @@
 <!--
 title: ApiLens Agent 옵션
 owner: maintainer
-last-reviewed: 2026-08-04
+last-reviewed: 2026-08-06
 -->
 
 # ApiLens Agent 옵션
@@ -238,7 +238,9 @@ PAYLOAD IN 본문의 키는 **JDBC parameterIndex 의 decimal string** 입니다
   확인하세요. 트래픽·계측 대상 분포에 따라 달라지므로 문서가 정량 수치를 단정하지
   않습니다.
 - setup wizard(설치 명령 생성기)에는 노출하지 않는 **고급 opt-in** 입니다. NAS 등
-  운영망 JVM 의 `-D` 로 직접 지정하세요.
+  운영망 JVM 의 `-D` 로 직접 지정하세요. 원격 계측 설정 화면(Services 표의 [계측 설정])에
+  있는 옵션 문자열 생성기가 이 키를 포함한 `-D` 한 줄 조립을 도와줍니다 — 아래
+  [원격 계측 설정](#원격-계측-설정-재시작-없이-줄이는-방향만) 절 참조.
 
 ### 이 옵션으로 뺄 수 없는 계층이 있습니다
 
@@ -315,8 +317,8 @@ controller 계층)이 아니면 그 흐름 자체를 만들지 않습니다.**
 ## 원격 계측 설정 (재시작 없이, 줄이는 방향만)
 
 server 에 서비스별 "원하는 계측 설정"을 저장해 두면, agent 가 기록을 보낼 때의
-응답에 실려 전달되어 **JVM 재시작 없이** 적용됩니다. 설정 화면은 아직 없고 API 로
-설정합니다(curl).
+응답에 실려 전달되어 **JVM 재시작 없이** 적용됩니다. 화면(Services 표의 [계측 설정])에서
+설정하거나, 아래 API(curl)로도 설정할 수 있습니다.
 
 ```bash
 # 저장 (전체 교체 — 같은 요청을 몇 번 보내도 결과 동일)
@@ -417,6 +419,8 @@ PII 마스킹 한계는 위 `## ⚠️ PII 노출 경고` 절을 참조하세요
 
 agent 가 payload 를 server 로 송신할 때 server 의 마스킹 엔진 (`apilens-common` 공유 엔진) 을 반드시 통과합니다. agent 자체에서 DB 의 `payloads` 테이블에 직접 INSERT 하거나 마스킹을 우회하는 경로 0건. CI workflow 의 회귀 grep gate 가 본 단언을 자동 검증합니다.
 
+단, 에러 기록의 stack trace 본문(`exception.stacktrace` 속성)은 payload 가 아니라 span 속성이어서 **마스킹 엔진을 지나지 않습니다** — 예외 메시지에 민감 값을 담는 앱이라면 그 값이 가려지지 않은 채 저장될 수 있으니 이 점을 고려하세요.
+
 ## 운영망 deployment 권장 옵션 (5 환경)
 
 본 표로 운영자가 자기 환경을 정확히 1개로 매핑할 수 있습니다. 매핑 불가능 시 (예: "운영망인데 PII 의심 + 고부하" 동시) → **보안 우선 row 채택** (운영망 PII 의심).
@@ -473,4 +477,3 @@ agent 가 payload 를 server 로 송신할 때 server 의 마스킹 엔진 (`api
 - agent 자체 health endpoint
 - 계측 include 필터(`exclude-packages` 의 대응 — 지정 패키지만 계측). 현재는 축소 레버로 exclude 만 제공
 - 계측 2차 레버: 최소 duration 필터(짧은 span drop) · INTERNAL/payload-off 토글
-- 계측 옵션 UI 설정 페이지 노출(현재는 JVM `-D` 전용 고급 opt-in)

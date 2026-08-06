@@ -41,7 +41,7 @@ describe('useMaintenanceStatus', () => {
     const now = 1_730_000_300_000; // pausedAt + 5분(300_000ms)
     vi.spyOn(Date, 'now').mockReturnValue(now);
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      jsonResponse({ paused: true, pausedAt: 1_730_000_000_000 }),
+      jsonResponse({ paused: true, pausedAt: 1_730_000_000_000, sqliteBusyEncountered: 0, sqliteBusyDropped: 0 }),
     );
     const { wrapper } = makeWrapper();
     const { result } = renderHook(() => useMaintenanceStatus(), { wrapper });
@@ -71,11 +71,36 @@ describe('useMaintenanceStatus', () => {
   ])('computesElapsedMinutesAtBoundary — 경과 %ims → %i분', async (deltaMs, expectedMin) => {
     const pausedAt = 1_730_000_000_000;
     vi.spyOn(Date, 'now').mockReturnValue(pausedAt + deltaMs);
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse({ paused: true, pausedAt }));
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse({ paused: true, pausedAt, sqliteBusyEncountered: 0, sqliteBusyDropped: 0 }));
     const { wrapper } = makeWrapper();
     const { result } = renderHook(() => useMaintenanceStatus(), { wrapper });
 
     await waitFor(() => expect(result.current.paused).toBe(true));
     expect(result.current.elapsedMinutes).toBe(expectedMin);
+  });
+
+  // [R21/AC-03-4] MaintenanceStatusView 확장 2필드 — 뷰까지 넓혀야 화면에 닿는다 (BL-07/W-17).
+  it('exposesSqliteBusyCountersFromResponse — 카운터 2종을 뷰로 그대로 파생', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      jsonResponse({ paused: false, pausedAt: null, sqliteBusyEncountered: 7, sqliteBusyDropped: 2 }),
+    );
+    const { wrapper } = makeWrapper();
+    const { result } = renderHook(() => useMaintenanceStatus(), { wrapper });
+
+    await waitFor(() => expect(result.current.sqliteBusyEncountered).toBe(7));
+    expect(result.current.sqliteBusyDropped).toBe(2);
+  });
+
+  // [R21/AC-03-4, S-115] 구형 factory(2필드 응답)·로딩 중 undefined → `?? 0` 한 분기로 흡수.
+  it('exposesZeroCountersWhenFieldsAbsent — 카운터 필드 부재 응답도 0 폴백 (구형 응답 흡수)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      jsonResponse({ paused: false, pausedAt: null }),
+    );
+    const { wrapper } = makeWrapper();
+    const { result } = renderHook(() => useMaintenanceStatus(), { wrapper });
+
+    await waitFor(() => expect(result.current.paused).toBe(false));
+    expect(result.current.sqliteBusyEncountered).toBe(0);
+    expect(result.current.sqliteBusyDropped).toBe(0);
   });
 });

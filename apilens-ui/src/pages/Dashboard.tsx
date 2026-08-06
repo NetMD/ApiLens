@@ -7,11 +7,10 @@
 // 필터는 listTraces 쿼리 파라미터로 적용 → LatencyScatter 와 TraceList 가 동시 필터됨 (의도된
 // 동작 — "에러만 보기" 시 산점도도 에러만, UX §3.5).
 import type { ReactNode } from 'react';
-import { useEffect, useState } from 'react';
+import { Suspense, lazy, useEffect, useState } from 'react';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { ApiError } from '../api/client';
 import { Header } from '../components/Header';
-import { LatencyScatter } from '../components/LatencyScatter';
 import { ScatterLegend } from '../components/ScatterLegend';
 import { TraceList } from '../components/TraceList';
 import { TraceFilterBar } from '../components/TraceFilterBar';
@@ -24,6 +23,14 @@ import { listServices, listTraces } from '../api/traces';
 import { computeWindow } from '../lib/time';
 
 const TRACES_LIMIT = 100;
+
+// [R21/AC-04-3] 차트(recharts) 지연 마운트 — 공동 확정 (UX §10 + 설계 §9.2). 판단 사유:
+// 라우트 lazy 만으로는 recharts 가 Dashboard 청크 안에 남아 첫 화면(/) 로드가 recharts 파싱을
+// 포함하므로, 차트 분리가 첫 화면 이득을 완성한다 — 자리 표시 규격(차트 스켈레톤)이 이미 있어
+// 수용 비용이 낮다. ScatterLegend 는 recharts 무관이라 eager 유지 (GT-4).
+const LatencyScatter = lazy(() =>
+  import('../components/LatencyScatter').then((m) => ({ default: m.LatencyScatter })),
+);
 
 export function Dashboard(): ReactNode {
   const { service, range, live, status, q, setService, setRange, setLive, setStatus, setQ } =
@@ -192,7 +199,18 @@ export function Dashboard(): ReactNode {
     return (
       <div className="space-y-4">
         <div className="space-y-1.5">
-          <LatencyScatter traces={traces} since={windowSince} until={windowUntil} />
+          {/* R21/AC-04-3 — fallback 래퍼 h-80 = LatencyScatter 외곽(h-80)과 동일값. h-full 스켈레톤이
+              부모를 따라가므로 래퍼가 높이를 고정해야 교체 순간 layout shift 0 (UX §10 조건 —
+              맨몸 fallback 은 min-h-64=256px 라 64px shift 발생, 설계 §9.2 실측). */}
+          <Suspense
+            fallback={
+              <div className="h-80">
+                <LoadingSkeleton variant="chart" />
+              </div>
+            }
+          >
+            <LatencyScatter traces={traces} since={windowSince} until={windowUntil} />
+          </Suspense>
           <ScatterLegend />
         </div>
         {filterBar}

@@ -22,6 +22,7 @@ import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -37,8 +38,9 @@ import java.util.Optional;
 /**
  * {@code /v1/services/{serviceName}/instrument-config} — 서비스별 원격 계측 설정 API.
  *
- * <p>[Phase R20] R20/AC-03-2 — <b>설정 API 만, 화면 없음</b>(Q-U6, 사용자 명시 비협상 결정 —
- * 화면은 v0.6.1 이연). NAS 실물 검증은 curl(U-4).
+ * <p>[Phase R20] R20/AC-03-2 — API 우선 출발(Q-U6, 사용자 명시 비협상 결정 — 당시 NAS 실물 검증은 curl).
+ * [Phase R21] R21/AC-08-2 (G-07 현행화) — 이제 설정 화면(Services 표의 [계측 설정] 버튼,
+ * {@code /services?config=서비스명})과 API 양쪽에서 쓴다. curl 은 화면 없이도 동작하는 동등 경로로 유지.
  *
  * <p>[Phase R20] R20/AC-03-3 — 인증: {@code /v1/**} 하위라 {@code AuthWhitelist} <b>diff 0</b> 상태에서
  * default-deny 자동 보호(불변식 6 — 사용자 명시 비협상 결정. 키 설정 시 토큰 필수, 무키 시 무인증
@@ -111,5 +113,17 @@ public class ServiceInstrumentConfigController {
     @ResponseStatus(HttpStatus.BAD_REQUEST)
     public Map<String, String> handleValidation(IllegalArgumentException e) {
         return Map.of("error", e.getMessage());
+    }
+
+    /**
+     * [Phase R21] R21/AC-08-1 (I-3) — JSON 파싱 단계 400 도 기존 flat 표준 {@code { "error": ... }} 로
+     * (검증 400 은 위 {@link #handleValidation} 기존 그대로 — 무접촉). 컨트롤러 로컬 핸들러 —
+     * {@code @ControllerAdvice} 신설 금지(cross-cutting 신설 0 기준선).
+     */
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    public Map<String, String> handleUnreadableBody(HttpMessageNotReadableException e) {
+        // 고정 문구 — 파서 예외 메시지는 요청 본문 조각을 되울릴 수 있어 그대로 노출하지 않는다(정보 노출 최소화).
+        return Map.of("error", "요청 본문(JSON)을 읽을 수 없습니다.");
     }
 }

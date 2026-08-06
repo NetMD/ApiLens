@@ -33,7 +33,8 @@ export function DataManagementSection(): ReactNode {
   const queryClient = useQueryClient();
   const toast = useToast();
   // [Phase R15] AC-B2-1 — 현재 일시정지 상태(버튼 라벨·유도 텍스트 분기). 공유 queryKey ['maintenance','status'].
-  const { paused } = useMaintenanceStatus();
+  // [R21/AC-03-1] + 적재 상태 카운터 2종 (MaintenanceStatusView 확장 경유 — BL-07 뷰 병목 해소).
+  const { paused, sqliteBusyEncountered, sqliteBusyDropped } = useMaintenanceStatus();
 
   // ① cleanup 인라인 확인 단계 노출 여부 (가벼운 확인 — 같은 자리에서 [확인]/[취소]).
   const [confirmingCleanup, setConfirmingCleanup] = useState(false);
@@ -158,6 +159,49 @@ export function DataManagementSection(): ReactNode {
           디스크 용량이 부족할 때 여기서 직접 로그를 정리해 용량을 확보할 수 있어요. 삭제한 데이터는
           되돌릴 수 없어요.
         </p>
+
+        {/* [R21/AC-03-1] 적재 상태 — SQLITE_BUSY 카운터 2종 (읽기 전용 구획 — 컨트롤 0).
+            위치 = 소개 문단 아래·① 지난 데이터 정리 위 (UX §4.7 — 정리하러 온 운영자가
+            "지금 적재가 경합 중인가" 를 동작 전에 본다). 단위가 서로 다름을 라벨이 밝힌다 —
+            encountered 는 횟수, dropped 는 청크 수 (같은 "건" 으로 뭉개면 100배 오독 — T-15). */}
+        <div className="flex flex-col gap-2 border-t border-stone-200 pt-4">
+          {/* U-41 */}
+          <p className="text-sm font-medium text-stone-900">적재 상태</p>
+          <dl className="space-y-1">
+            <div className="flex items-baseline justify-between gap-4">
+              {/* T-15 */}
+              <dt className="text-xs text-stone-500">적재 중 잠금 경합 (SQLITE_BUSY)</dt>
+              {/* T-17 — 0 은 "(정상)" 병기 (결핍 어휘 금지 — 불변식 12). 값은 toLocaleString. */}
+              <dd className="font-mono text-sm text-stone-900">
+                {sqliteBusyEncountered === 0 ? (
+                  <>
+                    0회 <span className="font-sans text-xs text-stone-500">(정상)</span>
+                  </>
+                ) : (
+                  `${sqliteBusyEncountered.toLocaleString()}회`
+                )}
+              </dd>
+            </div>
+            <div className="flex items-baseline justify-between gap-4">
+              {/* T-15 */}
+              <dt className="text-xs text-stone-500">경합으로 저장하지 못한 청크</dt>
+              <dd className="font-mono text-sm text-stone-900">
+                {sqliteBusyDropped === 0 ? (
+                  <>
+                    0개 <span className="font-sans text-xs text-stone-500">(정상)</span>
+                  </>
+                ) : (
+                  `${sqliteBusyDropped.toLocaleString()}개`
+                )}
+              </dd>
+            </div>
+          </dl>
+          {/* T-16 — 리셋 안내 (1차 출처 = BE MaintenanceStatusResponse javadoc "재시작 시 0"). */}
+          <p className="text-xs text-stone-500">
+            서버 메모리에만 있는 숫자라 서버를 재시작하면 0부터 다시 세요 — 재시작 후 0 은
+            정상이에요. 청크 1개 ≈ 500 span 이에요.
+          </p>
+        </div>
 
         {/* ① 지난 데이터 정리 — cleanup 엔드포인트. 인라인 2단계 확인. */}
         <div className="flex flex-col gap-2 border-t border-stone-200 pt-4">

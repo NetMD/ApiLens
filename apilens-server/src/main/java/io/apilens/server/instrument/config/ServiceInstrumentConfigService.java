@@ -187,8 +187,12 @@ public class ServiceInstrumentConfigService {
 
     private static String joinGateExcludes(List<String> gateExcludes) {
         if (gateExcludes == null || gateExcludes.isEmpty()) {
-            // 빈 목록 지시와 "지시 없음"을 저장에서 구분하지 않는다 — agent 측에서 둘 다
-            // "게이트 exclude 목록 없음"과 동일 효과(기동값 = 빈 목록 = 최대 계측)라 정보 손실 0.
+            // 빈 목록 지시와 "지시 없음"을 저장에서 구분하지 않는다 — 저장·조회 왕복 관점 손실 0.
+            // [Phase R21] R21/AC-08-1 (사실 서술 정정 — 동작 diff 0): 단 202 는 부재 필드를 싣지 않으므로,
+            //   agent 가 이미 적용한 목록의 "전량 비우기" 지시는 이 정규화 때문에 agent 에 전달되지 않는다
+            //   — 철회(DELETE)와 같은 의미론(전달 중단·비복귀, JVM 재시작 전까지 유지). 화면의 상시 안내
+            //   문구가 이 사실을 사용자에게 설명한다. 원격 전량 복귀 경로가 실제로 필요해지면 이 정규화
+            //   (PUT echo 와 후속 GET 이 항상 같은 모양 계약)의 재개방이 필요하다 — backlog 분리 사안.
             return null;
         }
         return String.join(",", gateExcludes);

@@ -38,6 +38,10 @@ import static org.junit.jupiter.api.Assertions.assertSame;
  * <p>R20/AC-01-4 verbatim (비협상): "enterDbSpan 의 억제 판정은 IN_DB_SPAN set 이전에 수행(W-4 — 늦으면
  * 그 스레드의 이후 JDBC span 전부 SKIP 되는 영구 누수). 검증: ON 상태로 JDBC root 후보를 억제한 뒤,
  * 같은 스레드의 후속 SERVER trace 안 JDBC span 이 정상 기록된다."
+ *
+ * <p>[Phase R21] R21/AC-01-4 (R-04) — 대표 수락 기준: R20/AC-01-2(진입점 게이트 — SERVER root 비억제) ·
+ * R20/AC-01-4(enterDbSpan 억제 판정 순서 — 영구 누수 차단). src/test 주석만 추가 — agent src/main
+ * diff 0 봉인과 무충돌.
  */
 class AdviceSupportEntryRootGateTest {
 

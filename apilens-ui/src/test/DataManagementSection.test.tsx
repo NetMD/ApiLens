@@ -52,7 +52,7 @@ function mockApi(
 
     // [Phase R15] 수신 일시정지 상태 폴링 — DataManagementSection 이 useMaintenanceStatus 공유(기본 paused=false).
     if (url.includes('/v1/maintenance/status')) {
-      return Promise.resolve(jsonResponse({ paused: false, pausedAt: null }));
+      return Promise.resolve(jsonResponse({ paused: false, pausedAt: null, sqliteBusyEncountered: 0, sqliteBusyDropped: 0 }));
     }
 
     if (method === 'POST' && url.includes('/v1/maintenance/cleanup')) {
@@ -324,7 +324,7 @@ function mockToggleApi(paused: boolean, behavior: 'ok' | 'toggleFail' = 'ok'): T
     if (method === 'GET' && url.includes('/v1/maintenance/status')) {
       log.statusInvalidations += 1;
       return Promise.resolve(
-        jsonResponse({ paused, pausedAt: paused ? 1_730_000_000_000 : null }),
+        jsonResponse({ paused, pausedAt: paused ? 1_730_000_000_000 : null, sqliteBusyEncountered: 0, sqliteBusyDropped: 0 }),
       );
     }
     if (method === 'POST' && url.includes('/v1/maintenance/pause')) {
@@ -332,11 +332,11 @@ function mockToggleApi(paused: boolean, behavior: 'ok' | 'toggleFail' = 'ok'): T
       if (behavior === 'toggleFail') {
         return Promise.resolve(jsonResponse({ error: 'boom' }, 500));
       }
-      return Promise.resolve(jsonResponse({ paused: true, pausedAt: 1_730_000_000_000 }));
+      return Promise.resolve(jsonResponse({ paused: true, pausedAt: 1_730_000_000_000, sqliteBusyEncountered: 0, sqliteBusyDropped: 0 }));
     }
     if (method === 'POST' && url.includes('/v1/maintenance/resume')) {
       log.resumeCalls += 1;
-      return Promise.resolve(jsonResponse({ paused: false, pausedAt: null }));
+      return Promise.resolve(jsonResponse({ paused: false, pausedAt: null, sqliteBusyEncountered: 0, sqliteBusyDropped: 0 }));
     }
     return Promise.resolve(jsonResponse({ error: 'unexpected' }, 500));
   });
@@ -391,7 +391,7 @@ describe('DataManagementSection — 수신 일시정지/재개 토글 (R15)', ()
         typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
       const method = init?.method ?? 'GET';
       if (url.includes('/v1/maintenance/status')) {
-        return Promise.resolve(jsonResponse({ paused: false, pausedAt: null }));
+        return Promise.resolve(jsonResponse({ paused: false, pausedAt: null, sqliteBusyEncountered: 0, sqliteBusyDropped: 0 }));
       }
       if (method === 'POST' && url.includes('/v1/maintenance/cleanup')) {
         return new Promise<Response>((resolve) => {
@@ -425,5 +425,72 @@ describe('DataManagementSection — 수신 일시정지/재개 토글 (R15)', ()
     // 버튼은 disabled 아님(enabled 유지 — 미강제).
     expect(screen.getByRole('button', { name: '최적화' })).not.toBeDisabled();
     expect(screen.getByRole('button', { name: '전체 삭제' })).not.toBeDisabled();
+  });
+});
+
+// ── [R21/AC-03-1] 적재 상태 — SQLITE_BUSY 카운터 2종 (읽기 전용 구획, B-25) ──────────
+//
+// R21/AC-03-1 verbatim: "sqliteBusyEncountered·sqliteBusyDropped 가 Settings 데이터 관리
+// 섹션(DataManagementSection)에 노출된다. 카운터 0 도 정상값 — 결핍 어휘 금지(NFR-12)."
+// 정방향 동사(shows*/displays*) — 반대 방향 lock-in 동사 0건 (EXT-003 가드).
+describe('DataManagementSection — 적재 상태 카운터 (R21/AC-03-1)', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** status 응답의 카운터 2종만 바꿔 mock (다른 endpoint 는 비대상). */
+  function mockStatusWithCounters(encountered: number, dropped: number): void {
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url =
+        typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes('/v1/maintenance/status')) {
+        return Promise.resolve(
+          jsonResponse({
+            paused: false,
+            pausedAt: null,
+            sqliteBusyEncountered: encountered,
+            sqliteBusyDropped: dropped,
+          }),
+        );
+      }
+      return Promise.resolve(jsonResponse({ error: 'unexpected' }, 500));
+    });
+  }
+
+  it('showsZeroCountersWithNormalBadge — 0 은 "0회 (정상)" / "0개 (정상)" (B-25 / T-17)', async () => {
+    mockStatusWithCounters(0, 0);
+    renderSection();
+    expect(await screen.findByText('적재 상태')).toBeInTheDocument();
+    // T-15 — 단위가 다른 라벨 2종 (횟수 vs 청크).
+    expect(screen.getByText('적재 중 잠금 경합 (SQLITE_BUSY)')).toBeInTheDocument();
+    expect(screen.getByText('경합으로 저장하지 못한 청크')).toBeInTheDocument();
+    // T-17 — "(정상)" 병기 (결핍 어휘 금지 — 불변식 12).
+    const normals = await screen.findAllByText('(정상)');
+    expect(normals).toHaveLength(2);
+    // T-16 — 리셋 안내 상시.
+    expect(
+      screen.getByText(/서버를 재시작하면 0부터 다시 세요 — 재시작 후 0 은 정상이에요/),
+    ).toBeInTheDocument();
+  });
+
+  it('showsSingleCountWithoutNormalBadge — 1 은 "1회" (정상 병기 없음, B-25)', async () => {
+    mockStatusWithCounters(1, 0);
+    renderSection();
+    expect(await screen.findByText('1회')).toBeInTheDocument();
+  });
+
+  it('displaysThousandsSeparatedCount — 1234 → "1,234회" (toLocaleString, B-25)', async () => {
+    mockStatusWithCounters(1234, 0);
+    renderSection();
+    expect(await screen.findByText('1,234회')).toBeInTheDocument();
+  });
+
+  it('displaysDroppedChunkCountWithUnit — dropped 는 청크 단위 "N개" (T-15 단위 구분)', async () => {
+    mockStatusWithCounters(0, 3);
+    renderSection();
+    expect(await screen.findByText('3개')).toBeInTheDocument();
   });
 });

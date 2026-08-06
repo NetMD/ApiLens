@@ -1,4 +1,4 @@
-// ApiLens 서버 응답 타입 정의 — docs/api.md 박제 그대로.
+// ApiLens 서버 응답 타입 정의 — docs/api.md 계약을 그대로 고정.
 // any 사용 0건 (NFR-03). attributes는 unknown으로 안전 분기.
 
 /** trace 상태 — server 응답값 그대로. HTTP status code 아님. */
@@ -191,19 +191,25 @@ export interface MaintenanceResult {
 /**
  * [Phase R15] AC-A3-1/AC-A3-2 — GET/POST /v1/maintenance/{status,pause,resume} 공통 응답
  * (BE MaintenanceStatusResponse record 1:1).
- *   { "paused": true, "pausedAt": 1730000000000 }  // 일시정지 중
- *   { "paused": false, "pausedAt": null }          // 수신 중
+ *   { "paused": true, "pausedAt": 1730000000000, "sqliteBusyEncountered": 0, "sqliteBusyDropped": 0 }
+ *   { "paused": false, "pausedAt": null, "sqliteBusyEncountered": 3, "sqliteBusyDropped": 1 }
  * BE 가 paused=false 시 pausedAt=null 보장(echo 일관성). MaintenanceResult 와 별도 타입(이종 반환 회피).
  * 사용자 명시 비협상 결정(D03 in-memory 상태). CLAUDE.md '아키텍처 핵심 원칙' (수신 일시정지 단일 기능).
  *
  * [S-64] BE↔FE 식별자 타입 1:1 대조: BE MaintenanceStatusResponse record(io.apilens.server.retention)
- *   = `record MaintenanceStatusResponse(boolean paused, Long pausedAt)` (설계 §2.4 실측).
+ *   = `record MaintenanceStatusResponse(boolean paused, Long pausedAt, long sqliteBusyEncountered,
+ *      long sqliteBusyDropped)` (R21 설계 §2.6 실측 — R20 카운터 2필드 확장 반영, G-01).
  *   - paused : boolean → boolean
  *   - pausedAt : Long(박싱, null 가능, epoch millis) → number | null (Jackson null 직렬화).
+ *   - sqliteBusyEncountered : long(primitive — 항상 직렬화) → number. 적재 중 SQLITE_BUSY 를 만난 누적 횟수.
+ *   - sqliteBusyDropped : long(primitive) → number. 경합으로 유실된 누적 청크 수(청크 ≈ 500 span).
+ *   카운터 2종은 BE in-memory — 서버 재시작 시 0 복귀가 정상 (BE javadoc "재시작 시 0", T-16 출처).
  */
 export interface MaintenanceStatusResponse {
   paused: boolean;
   pausedAt: number | null; // epoch millis. BE Long → number | null.
+  sqliteBusyEncountered: number; // R21/AC-03-1 — long primitive 라 항상 직렬화, `?` 불요.
+  sqliteBusyDropped: number; // R21/AC-03-1 — 단위는 청크 수 (횟수 아님 — 100배 오독 주의, T-15).
 }
 
 /** 마스킹 룰 타입 — V1 rule_type 컬럼 값 그대로. */
@@ -357,10 +363,11 @@ export interface InstrumentClassStat {
   /**
    * EXCLUDABLE 일 때만 값이 있고 그 값은 className 과 같다.
    *
-   * ⚠️ v0.5 화면은 이 필드를 **의도적으로 소비하지 않는다** — 옵션 생성기·복사 버튼이 이번 라운드에
-   * 보류라서(D-11) 옵션 값으로 쓸 자리가 아직 없다. 필드를 나눠 둔 이유는 "표시용 이름을 그대로
-   * 옵션 값으로 쓰는 코드 경로가 존재하지 않는다" 를 계약으로 강제하기 위해서다(설계 §7.2).
-   * v0.6.0 옵션 생성기가 오면 className 이 아니라 이 값을 쓴다.
+   * [R21/AC-05-3 — G-02 현행화] `-D` 옵션 생성기(instrument-option-generator.ts)는 도입됐지만
+   * **생성기 입력은 전부 수기** (분석 값 소비 경로 없음 — UX §4.6-6) 라 이 필드를 소비하는 코드는
+   * 여전히 0이다. 필드를 나눠 둔 이유는 "표시용 이름을 그대로 옵션 값으로 쓰는 코드 경로가
+   * 존재하지 않는다" 를 계약으로 강제하기 위해서다. 향후 분석 결과에서 값을 흘리는 경로를 만들면
+   * 반드시 이 필드(excludeTarget)만 쓰고 className 경로는 만들지 않는다.
    */
   excludeTarget: string | null;
 }
@@ -427,6 +434,30 @@ export interface SimulationResponse {
   depthCapped: boolean;
 }
 
+/**
+ * [R21/AC-03-3] BE InstrumentConfigPayload record 1:1 — 202 편승(instrumentConfig)과
+ * 원격 계측 설정 GET/PUT body 의 공용 단일 타입.
+ *
+ * 공용 사유: BE 가 단일 record 를 양쪽에 공용(single DTO 동형 노출 — InstrumentConfigPayload.java)
+ * 하므로 FE 도 단일 타입이 1:1 이다 [S-116]. 전 필드 optional = `@JsonInclude(NON_NULL)` 생략과 1:1.
+ *
+ * [S-64] BE↔FE 식별자 타입 1:1 대조 (설계 §4.1 실측 — record 4필드 전부 박싱/참조형 = 부재 허용):
+ *   - captureParams / captureResultSet / requireEntryRoot : Boolean → boolean | 부재.
+ *     **필드 부재 = "지시 없음"** (전체 교체 PUT 에서 생략이 곧 의미 — W-3 데이터 정확성).
+ *     requireEntryRoot 는 방향 반전 — true 가 "줄이기" (AXIS_REDUCE_VALUE 단일 정의 참조).
+ *   - gateExcludes : List<String> → string[] | 부재. FQCN 그대로 저장·전송 (불변식 13).
+ *     서버가 빈 목록을 null 로 정규화하므로 GET/202 에는 빈 배열이 실리지 않는다 (설계 §4.2).
+ *
+ * FE 는 /v1/spans 를 호출하지 않으므로 202 편승 쪽 소비 코드는 0 — 타입만 (AC-03-3 "타입만,
+ * 화면 표시 의무 없음"). 설정 화면(GET/PUT)은 api/instrumentConfig.ts 가 소비.
+ */
+export interface InstrumentConfigPayload {
+  captureParams?: boolean;
+  captureResultSet?: boolean;
+  requireEntryRoot?: boolean;
+  gateExcludes?: string[];
+}
+
 /** 공통 4xx/5xx 응답 본문 형태. */
 export interface ApiErrorBody {
   error: string;
@@ -436,7 +467,7 @@ export interface ApiErrorBody {
 
 // ────────────────────────────────────────────────────────────────────────────
 // trace 상세 (F1엔 placeholder. 실제 사용은 F2에서.)
-// docs/api.md "GET /v1/traces/{traceId}" 응답 박제.
+// docs/api.md "GET /v1/traces/{traceId}" 응답 계약을 그대로 고정.
 // ────────────────────────────────────────────────────────────────────────────
 
 export type SpanKind = 'SERVER' | 'CLIENT' | 'INTERNAL' | 'DB' | 'EXTERNAL';
@@ -474,7 +505,7 @@ export interface TraceDetailResponse {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Payload (F2 추가) — docs/api.md L195~213 박제 정확 반영.
+// Payload (F2 추가) — docs/api.md L195~213 계약 고정 정확 반영.
 // direction은 소문자 'in' | 'out' (server 권위). UI 표시 라벨은 대문자로 변환.
 // 응답에 spanId 필드는 없음 (요청 path로 이미 식별 가능).
 // ────────────────────────────────────────────────────────────────────────────
@@ -486,7 +517,7 @@ export interface Payload {
   contentType: string | null;
   /** utf-8, 마스킹 적용 후. server는 다시 마스킹하지 않음. */
   body: string;
-  /** 마스킹 전 원본 byte 크기 (docs/api.md sizeBytes 박제). */
+  /** 마스킹 전 원본 byte 크기 (docs/api.md sizeBytes 명시 그대로). */
   sizeBytes: number;
   truncated: boolean;
 }

@@ -48,6 +48,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * <p>R20/AC-03-5 verbatim (비협상): "Q-U4 어휘 밖 항목(예: sampling rate·payload 상한)은 이 채널로
  * 설정 불가 — 어휘 폐쇄가 API 표면에서도 지켜진다" (수단 = 스키마 제한 — 미지 필드는 바인딩 대상도
  * 저장 컬럼도 없음).
+ *
+ * <p>[Phase R21] R21/AC-01-4 (R-04) — 대표 수락 기준: R20/AC-03-5(어휘 폐쇄 + 입력 상한 경계 — 실
+ * SQLite persist 봉인) · R21/AC-02-11(서비스 삭제 시 설정 행 동반 삭제) · R21/AC-08-1(I-3 — JSON 파싱
+ * 단계 400 flat).
  */
 class ServiceInstrumentConfigApiTest {
 
@@ -267,5 +271,54 @@ class ServiceInstrumentConfigApiTest {
                         .content("{\"requireEntryRoot\": true}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.requireEntryRoot").value(true));
+    }
+
+    // ─── [Phase R21] R-U4: 서비스 삭제 시 설정 행 동반 삭제 + I-3: 파싱 400 flat ──
+
+    /**
+     * [Phase R21] R21/AC-02-11 (R-U4) — 서비스 삭제 시 저장된 계측 설정 지시도 함께 철회된다(같은
+     * 트랜잭션). D-05 불변: traces 행은 보존(services + service_instrument_configs 만 touch).
+     */
+    @Test
+    void deletesInstrumentConfigRowAlongWithServiceAndKeepsTraces() throws Exception {
+        long now = System.currentTimeMillis();
+        jdbc.update("INSERT INTO services (service_name, registered_at, last_seen_at, source) "
+                + "VALUES (?, ?, ?, 'auto')", "svc", now, now);
+        jdbc.update("""
+                INSERT INTO traces (trace_id, root_operation, service_name, start_time, duration_ms,
+                                    status, span_count, received_at)
+                VALUES ('t-1', 'GET /x', 'svc', ?, 5, 'OK', 1, ?)
+                """, now, now);
+
+        mockMvc.perform(put("/v1/services/svc/instrument-config")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"captureParams\": false}"))
+                .andExpect(status().isOk());
+
+        new io.apilens.server.services.ServicesService(jdbc).delete("svc");
+
+        // 설정 행 동반 삭제 — GET 404 (지시 철회 = 202 필드 부재의 원천).
+        mockMvc.perform(get("/v1/services/svc/instrument-config"))
+                .andExpect(status().isNotFound());
+        // D-05 불변 — traces 행 보존, services 행만 제거.
+        assertEquals(1, jdbc.queryForObject(
+                        "SELECT COUNT(*) FROM traces WHERE service_name = 'svc'", Integer.class),
+                "서비스 삭제가 traces 를 지우면 D-05 위반");
+        assertEquals(0, jdbc.queryForObject(
+                        "SELECT COUNT(*) FROM services WHERE service_name = 'svc'", Integer.class),
+                "services 행은 제거돼야 한다");
+    }
+
+    /**
+     * [Phase R21] R21/AC-08-1 (I-3) — JSON 파싱 단계 400 도 flat { "error": ... } (검증 400 과 동형).
+     * 컨트롤러 로컬 @ExceptionHandler(HttpMessageNotReadableException)가 파싱 예외를 받는 것을 실측 봉인.
+     */
+    @Test
+    void returnsFlatErrorBodyOnUnreadableJsonPut() throws Exception {
+        mockMvc.perform(put("/v1/services/svc/instrument-config")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"captureParams\": fal"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("요청 본문(JSON)을 읽을 수 없습니다."));
     }
 }
