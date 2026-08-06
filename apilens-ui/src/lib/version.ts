@@ -9,4 +9,6 @@
 //   R18 회귀(package.json 만 bump, 이 SSOT 누락)를 구조로 차단하려고 이번 라운드에
 //   src/test/version.test.ts 를 신설했다 — package.json version 의 앞 두 자리와 일치를 단언.
 //   표시 위치는 BrandNav 로고 옆(화면 왼쪽 위). major.minor 만 표기한다(patch 미표기가 기존 규약).
-export const APP_VERSION = 'v0.5';
+// [Phase R20] R20/AC-13-2 (FR-13): v0.5 → v0.6 — v0.6.0 릴리스 UI 표시 라벨 (package.json 0.6.0 동기,
+//   lockfile 은 npm install 로만 동기 — 손편집 금지가 R19 D-14 확정). version.test.ts 자동 가드가 앞 두 자리 일치를 단언.
+export const APP_VERSION = 'v0.6';

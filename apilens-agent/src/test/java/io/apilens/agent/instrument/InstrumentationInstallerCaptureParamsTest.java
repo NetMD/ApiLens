@@ -137,6 +137,7 @@ class InstrumentationInstallerCaptureParamsTest {
                 false,                                // debug
                 false,                                // captureResultSet
                 captureParams,
-                List.of());                           // [Phase R18] excludePackages — default 제외 없음
+                List.of(),                            // [Phase R18] excludePackages — default 제외 없음
+                false);                               // [Phase R20] R20/AC-01-1 requireEntryRoot — default 꺼짐
     }
 }

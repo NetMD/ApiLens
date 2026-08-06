@@ -16,13 +16,19 @@
 package io.apilens.server.ingest;
 
 import io.apilens.common.IngestRequest;
+import io.apilens.server.instrument.config.InstrumentConfigPayload;
+import io.apilens.server.instrument.config.ServiceInstrumentConfigService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
+import java.util.List;
+import java.util.Optional;
+
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -46,6 +52,7 @@ class IngestControllerTest {
 
     private IngestService service;
     private IngestPauseState pauseState;
+    private ServiceInstrumentConfigService configService;
     private MockMvc mockMvc;
 
     @BeforeEach
@@ -53,7 +60,10 @@ class IngestControllerTest {
         service = mock(IngestService.class);
         // 시각 소스 주입 — cap 트리거 없이 pause/resume 상태만 제어(결정적).
         pauseState = new IngestPauseState(() -> 0L);
-        IngestController controller = new IngestController(service, pauseState);
+        // [Phase R20] R20/AC-04-1 — 3-인자(202 config piggyback 조립점 협력자). 기본 mock 은 부재(empty).
+        configService = mock(ServiceInstrumentConfigService.class);
+        when(configService.find(anyString())).thenReturn(Optional.empty());
+        IngestController controller = new IngestController(service, pauseState, configService);
         this.mockMvc = MockMvcBuilders.standaloneSetup(controller).build();
     }
 
@@ -119,5 +129,68 @@ class IngestControllerTest {
                         .content(VALID_BODY))
                 .andExpect(status().isServiceUnavailable())          // 503 — 400 아님
                 .andExpect(jsonPath("$.error").value("서버가 유지보수 중이라 잠시 수신을 멈췄습니다."));
+    }
+
+    // ── [Phase R20] R20/AC-04-1/AC-04-2 — 202 config piggyback 단일 조립점 (B-14/B-22) ──
+
+    private static final String ONE_SPAN_BODY = """
+            {"spans":[{"spanId":"s1","traceId":"t1","parentSpanId":null,"serviceName":"svc-a",
+            "operationName":"op","spanKind":"SERVER","startTime":1,"endTime":2,"status":"OK",
+            "attributes":null,"payloads":[]}]}
+            """;
+
+    /**
+     * R20/AC-04-1 verbatim (비협상): "202 body 는 <b>additive only — 기존 두 필드(accepted·traces)
+     * 형식 불변, 새 필드 추가만 허용</b>". 정방향: config 있는 서비스 → 세 필드 동반, 기존 두 필드 불변.
+     */
+    @Test
+    void attachesInstrumentConfigWhenServiceHasOne() throws Exception {
+        when(service.ingest(any(IngestRequest.class))).thenReturn(new IngestResponse(1, 1));
+        when(configService.find("svc-a")).thenReturn(Optional.of(
+                new InstrumentConfigPayload(false, null, true, List.of("com.foo.Bar"))));
+
+        mockMvc.perform(post("/v1/spans")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(ONE_SPAN_BODY))
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.accepted").value(1))          // 기존 필드 불변
+                .andExpect(jsonPath("$.traces").value(1))            // 기존 필드 불변
+                .andExpect(jsonPath("$.instrumentConfig.captureParams").value(false))
+                .andExpect(jsonPath("$.instrumentConfig.requireEntryRoot").value(true))
+                .andExpect(jsonPath("$.instrumentConfig.gateExcludes[0]").value("com.foo.Bar"))
+                // 지시 없음(null) 축은 키 자체 생략(@JsonInclude NON_NULL — 부재 허용형 대칭).
+                .andExpect(jsonPath("$.instrumentConfig.captureResultSet").doesNotExist());
+    }
+
+    /**
+     * R20/AC-04-2 verbatim (비협상): "새 202 config 필드는 <b>부재 허용형(옵셔널)</b> — 필드가 없어도
+     * 소비 측이 깨지지 않는다". 정방향: config 없는 서비스 → JSON 에 instrumentConfig 키 자체 없음(B-14).
+     */
+    @Test
+    void omitsInstrumentConfigKeyWhenServiceHasNone() throws Exception {
+        when(service.ingest(any(IngestRequest.class))).thenReturn(new IngestResponse(1, 1));
+        when(configService.find("svc-a")).thenReturn(Optional.empty());
+
+        mockMvc.perform(post("/v1/spans")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(ONE_SPAN_BODY))
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.accepted").value(1))
+                .andExpect(jsonPath("$.traces").value(1))
+                .andExpect(jsonPath("$.instrumentConfig").doesNotExist());
+    }
+
+    /** 조회 실패 폴백 — 이미 커밋된 적재의 202 를 500 으로 바꾸지 않는다(config 미탑재 폴백). */
+    @Test
+    void keepsAccepted202WhenConfigLookupFails() throws Exception {
+        when(service.ingest(any(IngestRequest.class))).thenReturn(new IngestResponse(1, 1));
+        when(configService.find(anyString())).thenThrow(new RuntimeException("lookup contention"));
+
+        mockMvc.perform(post("/v1/spans")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(ONE_SPAN_BODY))
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.accepted").value(1))
+                .andExpect(jsonPath("$.instrumentConfig").doesNotExist());
     }
 }

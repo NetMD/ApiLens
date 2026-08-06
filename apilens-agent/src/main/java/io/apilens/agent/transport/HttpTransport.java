@@ -18,6 +18,7 @@ package io.apilens.agent.transport;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import io.apilens.agent.instrument.RemoteConfigGate;
 import io.apilens.agent.util.AgentLogger;
 import io.apilens.common.IngestRequest;
 import io.apilens.common.Span;
@@ -144,6 +145,12 @@ public final class HttpTransport {
             int status = response.statusCode();
             if (status >= 200 && status < 300) {
                 logger.debug("ingest ok: status=" + status + " bytes=" + body.length);
+                // [Phase R20] R20/AC-05-1 — 202 body best-effort 파싱(원격 config 유일 진입점 —
+                //   RETRYABLE 1회 재귀도 같은 attempt 재호출 = 같은 지점). "202 파싱 실패 ≠ 전송 실패"
+                //   (W-13, 사용자 명시 비협상 결정): applyBestEffort 는 어떤 입력에도 throw 하지 않아
+                //   SUCCESS 판정·재시도 계정이 불변이다. server self-healing 재전송(W-1)과 짝 —
+                //   매 202 마다 무조건 재적용(멱등 — volatile 쓰기는 저렴).
+                RemoteConfigGate.applyBestEffort(response.body());
                 return Outcome.SUCCESS;
             }
             if (status >= 400 && status < 500) {

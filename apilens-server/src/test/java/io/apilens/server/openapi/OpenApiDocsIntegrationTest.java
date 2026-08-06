@@ -90,7 +90,7 @@ class OpenApiDocsIntegrationTest {
     private TestRestTemplate rest;
 
     /**
-     * T-INT-1 — 면제 + 스펙 자동생성 + 컨텍스트 로드 + build-info 배선(info.version=="0.5.0").
+     * T-INT-1 — 면제 + 스펙 자동생성 + 컨텍스트 로드 + build-info 배선(info.version=="0.6.0").
      */
     @Test
     void returns200AndOpenApiSpecOnDocsWithoutToken() throws Exception {
@@ -101,8 +101,8 @@ class OpenApiDocsIntegrationTest {
         assertTrue(root.hasNonNull("openapi"), "spec must contain an 'openapi' field");
         JsonNode info = root.get("info");
         assertNotNull(info, "spec must contain an 'info' block");
-        // 게이트 E — info.version 은 build-info 주입값. [Phase R19] bump(0.4.0→0.5.0)가 문서까지 전파됨을 실측 봉인.
-        assertEquals("0.5.0", info.get("version").asText(), "info.version must track the Gradle build version");
+        // 게이트 E — info.version 은 build-info 주입값. [Phase R20] bump(0.5.0→0.6.0)가 문서까지 전파됨을 실측 봉인.
+        assertEquals("0.6.0", info.get("version").asText(), "info.version must track the Gradle build version");
         assertEquals("ApiLens API", info.get("title").asText());
     }
 
@@ -124,6 +124,28 @@ class OpenApiDocsIntegrationTest {
         ResponseEntity<String> res = rest.getForEntity("/v1/traces", String.class);
         assertEquals(HttpStatus.UNAUTHORIZED, res.getStatusCode(),
                 "/v1/traces without token must be 401 — proves the filter is active");
+    }
+
+    /**
+     * [Phase R20] R20/AC-03-3 verbatim (비협상): "신규 경로는 /v1/** 아래에 두고 AuthWhitelist diff 0
+     * (불변식 6) 상태에서 default-deny 자동 보호. 키 설정 환경에서 무인증 호출이 거부됨을 테스트로
+     * 확인." — 단위 테스트(standalone MockMvc)는 필터 미경유라 통합 케이스로만 검증 가능(B-18).
+     */
+    @Test
+    void returns401OnInstrumentConfigWithoutToken() {
+        ResponseEntity<String> getRes =
+                rest.getForEntity("/v1/services/x/instrument-config", String.class);
+        assertEquals(HttpStatus.UNAUTHORIZED, getRes.getStatusCode(),
+                "GET instrument-config without token must be 401 — default-deny 자동 보호(화이트리스트 무수정)");
+
+        org.springframework.http.HttpHeaders headers = new org.springframework.http.HttpHeaders();
+        headers.setContentType(org.springframework.http.MediaType.APPLICATION_JSON);
+        ResponseEntity<String> putRes = rest.exchange(
+                "/v1/services/x/instrument-config", org.springframework.http.HttpMethod.PUT,
+                new org.springframework.http.HttpEntity<>("{\"captureParams\": false}", headers),
+                String.class);
+        assertEquals(HttpStatus.UNAUTHORIZED, putRes.getStatusCode(),
+                "PUT instrument-config without token must be 401");
     }
 
     /**

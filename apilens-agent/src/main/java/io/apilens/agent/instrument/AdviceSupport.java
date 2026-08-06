@@ -24,12 +24,15 @@ import io.apilens.common.Span;
 import io.apilens.common.SpanKind;
 import io.apilens.common.SpanStatus;
 
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.sql.ResultSet;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Helpers shared by every {@code @Advice} class. Advice methods inline this
@@ -43,6 +46,17 @@ import java.util.Map;
 public final class AdviceSupport {
 
     public static final String CONTENT_TYPE_JSON = "application/json";
+
+    /**
+     * [Phase R20] R20/AC-07-2 — {@code exception.stacktrace} 문자 수 상한(OQ-7 architect 확정값:
+     * 4,096자 + 후미 절단 + {@code "... (truncated)"} 접미). 상한 존재 자체가 봉인(W-3 — 용량 절감
+     * 라운드에서 유일하게 부피를 늘리는 항목이라 실용 최소). 원인 지점은 항상 문자열 앞부분
+     * (최상단 프레임 + 첫 Caused by)에 있으므로 앞 보존이 운영 가치 순서와 일치.
+     */
+    public static final int STACKTRACE_MAX_CHARS = 4096;
+
+    /** [Phase R20] R20/AC-07-2 — 절단 접미 문자열 (상한 초과분에만 부착). */
+    static final String STACKTRACE_TRUNCATED_SUFFIX = "... (truncated)";
 
     /**
      * Re-entrancy guard for JDBC. JDBC drivers (HikariCP proxy → driver → underlying)
@@ -64,6 +78,25 @@ public final class AdviceSupport {
             if (InstrumentationInstaller.DEBUG) {
                 System.err.println("[ApiLens][ADVICE] enter " + spanKind + " " + operationName);
             }
+            // [Phase R20] (Q-1) — R20/AC-01-2 Q-U1 verbatim: 옵션 ON && root 후보(스택 깊이 0) && kind 가
+            // 진입점(SERVER)이 아니면 trace 생성 억제. 기본값 반드시 꺼짐(Q-D3 — 사용자 명시 비협상 결정).
+            // v0.7.0 전방 호환(Q-U2): traceparent 를 수신한 span(원격 부모 있음)은 진입점 취급 —
+            // 이 조건식은 depth/kind 만 보므로 그때 "‖ 원격 부모 있음" 축을 여기 한 곳에 더하면 된다.
+            if (InstrumentationInstaller.REQUIRE_ENTRY_ROOT
+                    && !"SERVER".equals(spanKind)
+                    && TraceContext.depth() == 0) {
+                return TraceContext.Frame.SKIPPED;
+            }
+            // [Phase R20] (Q-2) 게이트 exclude — R20/AC-06-1: 리플렉션 실제 이름(FQN) 정확 일치만.
+            // "com.foo.Bar" exclude 가 "com.foo.BarMapper#x" 에 오매칭되지 않는다(prefix·부분 문자열 금지 —
+            // 패키지 단위 빼기는 weaving exclude 의 소관, W-9 역할 분리). 빈 Set 이면 비용 ≈ 0.
+            Set<String> gateExcluded = InstrumentationInstaller.GATE_EXCLUDED_NAMES;
+            if (!gateExcluded.isEmpty()) {
+                int hash = operationName.indexOf('#');
+                if (hash > 0 && gateExcluded.contains(operationName.substring(0, hash))) {
+                    return TraceContext.Frame.SKIPPED;
+                }
+            }
             return TraceContext.push(operationName, spanKind);
         } catch (Throwable t) {
             if (InstrumentationInstaller.DEBUG) {
@@ -83,6 +116,13 @@ public final class AdviceSupport {
      * in a {@code finally}, with {@code outer = true} for non-SKIPPED frames.
      */
     public static TraceContext.Frame enterDbSpan(String typeName, String operationName) {
+        // [Phase R20] (Q-1) — R20/AC-01-4 (W-4, 사용자 명시 비협상 결정): 이 판정은 IN_DB_SPAN 의
+        // 어떤 읽기/쓰기보다 앞에 있어야 한다. set(아래) 이후에 두면 억제된 root 가 ThreadLocal 을
+        // true 로 남겨 그 스레드의 이후 JDBC span 이 전부 SKIP 되는 영구 누수가 된다.
+        // kind 는 "DB" 고정이라 SERVER 비교 불요. boolean·depth 읽기만이라 throw 표면 없음(불변식 5).
+        if (InstrumentationInstaller.REQUIRE_ENTRY_ROOT && TraceContext.depth() == 0) {
+            return TraceContext.Frame.SKIPPED;
+        }
         Boolean inFlight = IN_DB_SPAN.get();
         if (Boolean.TRUE.equals(inFlight)) {
             if (InstrumentationInstaller.DEBUG) {
@@ -179,6 +219,13 @@ public final class AdviceSupport {
                 if (thrown.getMessage() != null) {
                     attrs.put("exception.message", thrown.getMessage());
                 }
+                // [Phase R20] R20/AC-07-1 — exception.stacktrace 추가(OTel semconv 표준명, 기존 두 키
+                //   불변). thrown == null 이면 키 자체를 넣지 않는다(기존 두 키 전례). 에러 span 에만
+                //   발생 — 핫패스 아님. 상한·절단은 STACKTRACE_MAX_CHARS(4,096자 + 후미 절단) 참조.
+                String stacktrace = buildStackTrace(thrown);
+                if (stacktrace != null) {
+                    attrs.put("exception.stacktrace", stacktrace);
+                }
             }
 
             String serviceName = InstrumentationInstaller.SERVICE_NAME;
@@ -209,6 +256,34 @@ public final class AdviceSupport {
                         + t.getClass().getSimpleName() + ": " + t.getMessage());
             }
         }
+    }
+
+    /**
+     * [Phase R20] R20/AC-07-1/AC-07-2 — 예외 전체 스택 문자열 생성 + 상한 절단.
+     * {@code printStackTrace(PrintWriter(StringWriter))} 가 원인 사슬({@code Caused by:})을 자동
+     * 포함한다. 어떤 실패에도 throw 하지 않고 null 을 반환한다(호스트 throw 0 — 불변식 5:
+     * 이 helper 가 실패해도 exit 는 stacktrace 키만 생략하고 span enqueue 를 계속한다).
+     */
+    private static String buildStackTrace(Throwable thrown) {
+        try {
+            StringWriter sw = new StringWriter();
+            thrown.printStackTrace(new PrintWriter(sw));
+            return truncateStackTrace(sw.toString(), STACKTRACE_MAX_CHARS);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /**
+     * [Phase R20] R20/AC-07-2 — 문자 수 상한 절단(경계값 단위 테스트 진입점, [S-66] 임계 분기 봉인).
+     * 경계: 길이 == max → 무절단(≤ 비교). 길이 > max → 앞 max 자 + {@code "... (truncated)"}.
+     * 프레임 수가 아니라 문자 수 상한 — 원인 사슬 경계 계산 불요 + ASCII 위주라 UTF-8 경계 문제 회피.
+     */
+    static String truncateStackTrace(String raw, int maxChars) {
+        if (raw == null || raw.length() <= maxChars) {
+            return raw;
+        }
+        return raw.substring(0, maxChars) + STACKTRACE_TRUNCATED_SUFFIX;
     }
 
     /**

@@ -7,7 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-다음 release 후보가 누적되는 영역입니다. 아래 항목은 아직 구현 전인 후보이며, 이번 라운드(v0.5.0)에서 구현된 변경은 아래 `[0.5.0]` 블록으로 옮겼습니다.
+다음 release 후보가 누적되는 영역입니다. **아래 "이번 라운드 구현분(v0.6.0 예정)" 은 구현이 끝난 변경**이며, 릴리스 시점에 `[0.6.0]` 블록으로 옮깁니다. "(candidate)" 표시 항목은 아직 구현 전인 후보입니다.
+
+### 이번 라운드 구현분 (v0.6.0 예정)
+
+> **agent + server 라운드** (v0.4.0 이후 두 번째 agent 변경). 운영망(NAS 등)에 **새 agent jar 재배포 + 대상 앱 JVM 재시작이 필요**합니다(재배포 순서: collector 먼저 → agent 나중 — 구 agent 는 새 202 응답 필드를 읽지 않아 무중단). **스키마 마이그레이션 1건 추가** — ⚠️ DB 마이그레이션은 되돌릴 수 없습니다. 0.6.0 으로 한 번 올린 DB 파일을 이전 collector 로 다시 열지 마세요. **올리기 전 DB 파일 백업을 권합니다.**
+
+#### Added
+
+- **진입점 없는 흐름 차단 옵션 (`apilens.instrument.require-entry-root`, 기본 꺼짐)** — 켜면 진입점(들어오는 요청을 받는 controller 계층)이 아닌 곳에서 시작되려는 흐름을 만들지 않습니다. 조상 제외로 말단이 새 시작점이 되어 조각 흐름이 쏟아지는 문제를 원천에서 만들지 않는 레버입니다. **켜면 배치 워커(@Scheduled/@Async 류) 흐름이 통째로 사라지며, 그것이 이 옵션의 목적(의도된 동작)입니다 — 그래서 기본값이 꺼짐입니다.** 켜지 않으면 동작이 이전과 완전히 같습니다. agent 시작 알림(agent 버전 표시)은 옵션과 무관하게 유지됩니다.
+- **원격 계측 설정 채널 (재시작 없이, 줄이는 방향만)** — 서비스별 "원하는 계측 설정"을 server 에 저장(`PUT/GET/DELETE /v1/services/{서비스명}/instrument-config`)하면, 적재 202 응답에 실려 agent 에 전달되어 JVM 재시작 없이 적용됩니다. 설정 항목은 4가지뿐: JDBC 파라미터 캡처 끄기 · JDBC 결과 캡처 끄기 · 진입점 없는 흐름 차단 켜기 · 이름 그대로 개별 제외 목록(gateExcludes — **weaving 으로 못 빼던 MyBatis mapper 를 화면 이름 그대로 제외 가능**). **agent 는 JVM 시작 `-D` 값을 기준점으로 줄이는 방향(및 시작값 복귀)만 적용하고 확대 지시는 버립니다**(판정은 agent 안 — server 를 신뢰하지 않음). 원격 값은 메모리에만 있어 재시작 시 시작 `-D` 값으로 복원됩니다. 화면은 다음 버전 — 지금은 API(curl)로 설정합니다.
+- **에러 기록에 stack trace 본문 채움 (`exception.stacktrace`)** — 에러 span 의 속성에 원인 사슬(`Caused by:`)을 포함한 stack trace 가 담깁니다(4,096자 후미 절단 + `... (truncated)`). 화면의 에러 박스가 유형·메시지에 더해 발생 지점 스택을 보여 줄 수 있게 됩니다.
+- **유지보수 상태 조회에 적재 경합 카운터 노출** — `GET /v1/maintenance/status` 응답에 `sqliteBusyEncountered`(경합 횟수)·`sqliteBusyDropped`(유실 청크 수)가 추가됐습니다(기존 두 필드 불변). 카운터는 메모리에만 있어 재시작 시 0 으로 돌아가는 것이 정상이며, 누적 기준선은 `logs/apilens.log` 로 비교합니다.
+
+#### Changed
+
+- **적재 202 응답 계약을 "추가만 허용" 으로 재정의** — 기존 두 필드(`accepted`·`traces`)의 이름·타입·의미는 불변이고, `instrumentConfig` 필드가 설정 있는 서비스에만 추가로 실립니다(없으면 필드 자체 생략 — 구 agent·기존 소비자 영향 0).
+- **보관 정리(cleanup/purge)의 배치 사이 양보** — 배치 트랜잭션 사이에 짧은 정지(50ms)를 넣어, 정리가 도는 동안에도 적재·조회가 끼어들 틈을 보장합니다(삭제 순서·정확성 불변).
+- **server 로그 위생** — 기본 로그 레벨을 DEBUG → INFO 로 조정하고, HikariCP 의 'Retrograde clock change' 반복 경고를 메시지 조건으로만 걸러냅니다(같은 로거의 'Thread starvation' 등 다른 신호는 그대로 보존). 파일 로깅(`logs/apilens.log`)은 그대로 유지됩니다.
+- **계측 분석 작업 스레드 상한 고정** — 분석 작업 스레드 풀을 상한 2로 고정했습니다(동시 실행 1건 + 시간 초과로 버려진 작업 1건 구조와 정합).
+- **버전 0.5.0 → 0.6.0** (server jar / agent 버전 라벨 / UI 표시 라벨). agent 버전도 0.6.0 으로 정렬됩니다.
+- 계측 분석 화면의 MyBatis mapper 안내 문구가 원격 계측 설정 대안을 함께 안내하도록 갱신됩니다.
+
+#### 스키마
+
+- `service_instrument_configs` 테이블 신설(서비스별 원격 계측 설정 저장 — 마이그레이션 V5). 기존 테이블 무변경.
 
 ### Added
 

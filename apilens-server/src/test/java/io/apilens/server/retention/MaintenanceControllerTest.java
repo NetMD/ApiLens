@@ -15,8 +15,13 @@
  */
 package io.apilens.server.retention;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.apilens.server.ingest.IngestPauseState;
 import io.apilens.server.ingest.IngestPauseStateTestFactory;
+import io.apilens.server.ingest.IngestProperties;
+import io.apilens.server.ingest.IngestService;
+import io.apilens.server.masking.MaskingEngineHolder;
+import io.apilens.server.masking.MaskingRuleRepository;
 import io.apilens.server.settings.SettingsRegistry;
 import io.apilens.server.settings.SettingsService;
 import org.flywaydb.core.Flyway;
@@ -83,10 +88,18 @@ class MaintenanceControllerTest {
         RetentionCleanupService cleanupService =
                 new RetentionCleanupService(jdbc, txManager, settingsService);
 
-        // [Phase R15] 3-인자 — IngestPauseState 추가 주입. 기본 시간 소스(System) 인스턴스.
+        // [Phase R15] IngestPauseState 추가 주입. 기본 시간 소스(System) 인스턴스.
+        // [Phase R20] R20/AC-10-1 — 4-인자(IngestService 추가 — SQLITE_BUSY 카운터 노출).
         MaintenanceController controller =
-                new MaintenanceController(cleanupService, jdbc, new IngestPauseState());
+                new MaintenanceController(cleanupService, jdbc, new IngestPauseState(), newIngestService());
         this.mockMvc = MockMvcBuilders.standaloneSetup(controller).build();
+    }
+
+    /** [Phase R20] R20/AC-10-1 — 카운터 원천 실 IngestService (IngestServiceChunkCommitTest 구성 동형). */
+    private IngestService newIngestService() {
+        ObjectMapper mapper = new ObjectMapper();
+        MaskingEngineHolder maskingHolder = new MaskingEngineHolder(new MaskingRuleRepository(jdbc), mapper);
+        return new IngestService(jdbc, maskingHolder, mapper, new IngestProperties(1_048_576L));
     }
 
     @AfterEach
@@ -209,8 +222,9 @@ class MaintenanceControllerTest {
      * cap 결정적 주입을 위해 시간 소스를 외부에서 제어할 수 있게 한다.
      */
     private MockMvc mockMvcWith(IngestPauseState pauseState) {
+        // [Phase R20] R20/AC-10-1 — 4-인자 전환(카운터 원천 실 IngestService).
         MaintenanceController controller =
-                new MaintenanceController(newCleanupService(), jdbc, pauseState);
+                new MaintenanceController(newCleanupService(), jdbc, pauseState, newIngestService());
         return MockMvcBuilders.standaloneSetup(controller).build();
     }
 
@@ -267,6 +281,42 @@ class MaintenanceControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.paused").value(false))
                 .andExpect(jsonPath("$.pausedAt").doesNotExist());
+    }
+
+    // ── [Phase R20] R20/AC-10-1/AC-10-2 — SQLITE_BUSY 카운터 노출 (B-19) ──
+
+    /**
+     * R20/AC-10-1 verbatim (비협상): "기존 카운터의 <b>표면화만</b>. 기확정 설계 불변: 카운터 이름 유지 ·
+     * 인메모리(DB 저장 금지·스키마 무변경) · 재시작 시 0 복귀 정상". 정방향: status 응답에 4필드 —
+     * 기존 두 필드(paused·pausedAt) 불변 + 카운터 2필드(fresh 인스턴스라 0 = 재시작 0 복귀와 동형).
+     */
+    @Test
+    void reportsBusyCountersOnStatusWithExistingFieldsIntact() throws Exception {
+        mockMvc.perform(get("/v1/maintenance/status"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.paused").value(false))
+                .andExpect(jsonPath("$.pausedAt").doesNotExist())
+                .andExpect(jsonPath("$.sqliteBusyEncountered").value(0))
+                .andExpect(jsonPath("$.sqliteBusyDropped").value(0));
+    }
+
+    /** R20/AC-10-1 — pause/resume echo 에도 카운터 2필드 동반(3 생성처 단일 조립 검증). */
+    @Test
+    void reportsBusyCountersOnPauseAndResumeEcho() throws Exception {
+        IngestPauseState pauseState = IngestPauseStateTestFactory.withClock(() -> 1_000L);
+        MockMvc mvc = mockMvcWith(pauseState);
+
+        mvc.perform(post("/v1/maintenance/pause"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.paused").value(true))
+                .andExpect(jsonPath("$.sqliteBusyEncountered").value(0))
+                .andExpect(jsonPath("$.sqliteBusyDropped").value(0));
+
+        mvc.perform(post("/v1/maintenance/resume"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.paused").value(false))
+                .andExpect(jsonPath("$.sqliteBusyEncountered").value(0))
+                .andExpect(jsonPath("$.sqliteBusyDropped").value(0));
     }
 
     /**

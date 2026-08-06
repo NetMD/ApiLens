@@ -211,12 +211,15 @@ public class IngestService {
         return false;
     }
 
-    // 테스트 관측용 package-private getter (생성자 인자 아님 — V-02 무관).
-    long sqliteBusyEncounteredCount() {
+    // [Phase R20] R20/AC-10-1 — status 표면(/v1/maintenance/status) + 테스트 관측용 getter.
+    //   package-private → public 승격(MaintenanceController 는 다른 패키지 — retention ↔ ingest).
+    //   생성자 인자 아님(V-02 4-인자 봉인 무관). R17 확정 설계 불변: 카운터 이름 그대로 · 인메모리
+    //   (DB 저장 금지) · 재시작 0 복귀 정상 · 기준선은 logs/apilens.log 누적 비교.
+    public long sqliteBusyEncounteredCount() {
         return sqliteBusyEncountered.get();
     }
 
-    long sqliteBusyDroppedCount() {
+    public long sqliteBusyDroppedCount() {
         return sqliteBusyDropped.get();
     }
 
@@ -296,6 +299,13 @@ public class IngestService {
      *
      * <p>같은 서비스에 hello 가 2건 이상이면 {@code startTime} 이 가장 큰 것이 이긴다(BL-03).
      * attribute 부재 · 값 null · 공백 문자열은 그 hello 를 건너뛴다 → 기존 값이 그대로 유지된다.
+     *
+     * <p>⚠️ 알려진 한계 — 서로 다른 시작 알림은 각자 다른 수집 요청으로 들어오므로
+     *    <b>요청 도착 순서가 보장되지 않는다.</b> 드물게 오래된 시작 알림이 늦게 도착해
+     *    최신 버전 값을 옛 값으로 덮을 수 있다. 이것을 완전히 막으려면 시작 알림을 받은
+     *    시각을 따로 저장해야 하는데, 그것은 컬럼을 하나 더 만드는 일이라 R19 가 범위에서
+     *    뺐다(정체성 메타 1컬럼만 추가). <b>결함이 아니라 알려진 한계이고, 컬럼을 더해
+     *    해결할 문제가 아니다.</b>
      */
     private static Map<String, String> extractAgentVersions(List<Span> traceSpans) {
         Map<String, String> versions = new HashMap<>();

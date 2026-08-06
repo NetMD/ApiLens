@@ -42,7 +42,7 @@ agent가 이 명세를 따라야 UI 측 표시 로직이 깔끔해진다.
 | --------------------- | ------ | -------------------------------- | --------------------------------- |
 | `exception.type`      | string | `"NullPointerException"`         | 예외 클래스 simple name          |
 | `exception.message`   | string | `"Cannot invoke ... on null"`    | 예외 메시지                       |
-| `exception.stacktrace`| string | `"java.lang...\n  at ...\n..."` | 멀티라인 stacktrace               |
+| `exception.stacktrace`| string | `"java.lang...\n  at ...\n..."` | 멀티라인 stacktrace (원인 사슬 `Caused by:` 포함). agent 가 **4,096자 후미 절단** — 초과분은 잘리고 끝에 `... (truncated)` 가 붙음 |
 
 UI는 status=ERROR span 옆에 stacktrace 박스를 빨갛게 표시 (CLAUDE.md 디자인 결정).
 

@@ -13,6 +13,7 @@
 //   displaysUncertainBadgeAsSeparateWording       — 불확실을 "뺄 수 있어요" 로 반올림하지 않는다
 //   displaysAllThreeAxesWithServerRanks           — 세 축 상시 표시 + 서버가 준 순위 병기
 //   showsUnsupportedAgentNoticeForOldAgent        — agent 버전 미지원 알림
+//   displaysProxyReasonWithRemoteGateAlternative  — [Phase R20] R20/AC-11-2·AC-12-1: 불가 사유 ⓐ + 대안 안내 ⓑ 2요소 문구 상시 노출
 // 반대 방향 lock-in 동사(hides*/rejects*/denies*) 0건.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -291,6 +292,24 @@ describe('계측 분석 화면 — 임계 반응 · 절감/부작용 짝 · 확�
     expect(
       screen.getByText('이 계층이 실제로 빠지는지 확인하지 못했어요. 적용 뒤 직접 확인해 주세요'),
     ).toBeInTheDocument();
+  });
+
+  it('displaysProxyReasonWithRemoteGateAlternative — mapper 불가 사유는 불가 ⓐ + 대안 ⓑ 2요소 문구로 행 안에 상시 노출된다', async () => {
+    mockApi(0.3);
+    renderScreen();
+    fireEvent.click(screen.getByRole('button', { name: '분석 실행' }));
+    await screen.findByLabelText('com.acme.batch.OrderSyncJob 선택');
+
+    // [Phase R20] R20/AC-11-2 — Plan AC verbatim: "최종 문구는 ⓐ 불가 사유 유지 + ⓑ 대안 안내, 2요소를 각각 충족해야
+    // 한다. R19 T-31 은 ⓐ만 담고 ⓑ가 빠졌다 — 같은 갭 재발 시 FAIL" (비협상 — Q-U9).
+    // 문구는 설계 §1-⑧ 확정값 바이트 그대로 단언한다 (가시 텍스트 — getByText 는 sr-only 전용이 아님을 함께 보증).
+    expect(
+      screen.getByText(
+        '이 계층은 계측이 걸리는 이름이 화면에 보이는 이름과 달라서, 이 이름으로는 빠지지 않아요. 대신 원격 계측 설정으로는 이 이름 그대로 뺄 수 있어요 — 방법은 agent 옵션 문서를 보세요',
+      ),
+    ).toBeInTheDocument();
+    // [Phase R20] R20/AC-12-2 — 판별 로직·배지 diff 0: mapper 행은 여전히 NOT_EXCLUDABLE (체크박스 DOM 부재 유지).
+    expect(screen.queryByLabelText('com.acme.report.ReportMapper 선택')).toBe(null);
   });
 
   it('displaysAllThreeAxesWithServerRanks — 세 축을 항상 함께 보여 주고 순위는 서버 값을 그대로 쓴다', async () => {

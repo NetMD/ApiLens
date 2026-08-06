@@ -16,7 +16,9 @@ allprojects {
     //   ⚠️ agent 는 이번에 변경하지 않는다 — AgentMain.AGENT_VERSION 은 0.4.0 유지가 정답이고
     //   그 자리에 사유 주석을 다는 것조차 하지 않는다(agent 소스 diff 0 비협상). 제품 0.5.0 ≠ agent 0.4.0
     //   이 의도라는 사실은 CHANGELOG.md 가 적는다.
-    version = "0.5.0"
+    // [Phase R20] R20/AC-13-1 — 0.5.0 → 0.6.0 (minor: agent 고아 trace 억제 옵션 + 원격 config 채널 +
+    //   O-2 잔여. 두 번째 agent 변경 라운드라 AgentMain.AGENT_VERSION 도 0.6.0 정렬 — AgentMain.java:55).
+    version = "0.6.0"
 }
 
 subprojects {

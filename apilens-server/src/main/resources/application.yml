@@ -97,4 +97,6 @@ logging:
     name: logs/apilens.log
   level:
     root: INFO
-    io.apilens: DEBUG
+    # [Phase R20] R20/AC-09-1 — DEBUG → INFO (로그 위생, Q-3③). hikari 로거 레벨은 무접촉 —
+    #   Retrograde 잡음은 logback-spring.xml 의 message 조건 DENY 가 전담(불변식 11).
+    io.apilens: INFO

@@ -54,6 +54,12 @@ public class ServiceAdvice {
                             @Advice.Thrown Throwable thrown,
                             @Advice.Origin("#t") String typeName,
                             @Advice.Origin("#m") String methodName) {
+        // [Phase R20] R20/AC-01-8 — 조기 단락(W-11 확정: JdbcAdvice 전례 복제, 4 advice 동일 형태).
+        // 억제(SKIPPED)·enter 실패(null) 시 직렬화/마스킹/payload 생성 없이 즉시 반환.
+        if (frame == null || frame == TraceContext.Frame.SKIPPED) {
+            AdviceSupport.exit(frame, thrown, null, null);
+            return;
+        }
         if (InstrumentationInstaller.DEBUG) {
             System.err.println("[ApiLens][RAW] ServiceAdvice.exit " + typeName + "#" + methodName
                     + " frame=" + (frame == null ? "null" : "ok")

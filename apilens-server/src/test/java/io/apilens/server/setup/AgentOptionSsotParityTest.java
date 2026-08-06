@@ -72,6 +72,9 @@ class AgentOptionSsotParityTest {
         assertTrue(ssotKeys.contains("apilens.service.name"), "SSOT missing apilens.service.name: " + ssotKeys);
         assertTrue(ssotKeys.contains("apilens.jdbc.capture-params"), "SSOT missing capture-params: " + ssotKeys);
         assertTrue(ssotKeys.contains("apilens.jdbc.capture-result-set"), "SSOT missing capture-result-set: " + ssotKeys);
+        // [Phase R20] R20/AC-01-1 — 신규 키 SSOT 편입(docs 미갱신 자동 검출의 한쪽 끝).
+        assertTrue(ssotKeys.contains("apilens.instrument.require-entry-root"),
+                "SSOT missing require-entry-root: " + ssotKeys);
     }
 
     @Test
@@ -102,8 +105,10 @@ class AgentOptionSsotParityTest {
                 "docs/agent-options.md untracked — CI checkout 에 없으면 skip (Design §9.1 명문)");
 
         String docs = Files.readString(AGENT_OPTIONS_DOCS);
+        // [Phase R20] R20/AC-01-1 — 신규 키(require-entry-root) docs 표기 대조 편입(NFR-07 SSOT 대조).
         for (String key : Set.of("apilens.server", "apilens.service.name",
-                "apilens.jdbc.capture-params", "apilens.jdbc.capture-result-set")) {
+                "apilens.jdbc.capture-params", "apilens.jdbc.capture-result-set",
+                "apilens.instrument.require-entry-root")) {
             assertTrue(docs.contains("`" + key + "`"),
                     "docs/agent-options.md 에 키 표기 누락/오기: " + key);
         }

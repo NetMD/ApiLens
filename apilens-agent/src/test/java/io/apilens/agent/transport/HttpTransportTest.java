@@ -214,6 +214,71 @@ class HttpTransportTest {
                 "recovery must log exactly once on the down→up transition, was:\n" + out);
     }
 
+    // ─── [Phase R20] R20/AC-05-1 — 202 body best-effort 파싱 (W-13 transport 축) ───
+
+    /**
+     * R20/AC-05-1 — 202 body 의 instrumentConfig 가 게이트에 적용되고 전송은 SUCCESS.
+     * 줄이는 방향 지시(requireEntryRoot=true)라 reduce-only 3분지 통과.
+     */
+    @Test
+    void appliesInstrumentConfigFromAcceptedBody() {
+        io.apilens.agent.instrument.RemoteConfigGate.init(launchConfigDefaults());
+        io.apilens.agent.instrument.InstrumentationInstaller.REQUIRE_ENTRY_ROOT = false;
+        try {
+            byte[] responseBody = "{\"accepted\":1,\"traces\":1,\"instrumentConfig\":{\"requireEntryRoot\":true}}"
+                    .getBytes(StandardCharsets.UTF_8);
+            server.createContext("/v1/spans", exchange -> {
+                exchange.getResponseHeaders().add("Content-Type", "application/json");
+                exchange.sendResponseHeaders(202, responseBody.length);
+                exchange.getResponseBody().write(responseBody);
+                exchange.close();
+            });
+
+            HttpTransport transport = newTransport();
+            boolean sent = transport.send(List.of(span("s1")));
+
+            assertTrue(sent, "config 탑재 202 도 SUCCESS");
+            assertTrue(io.apilens.agent.instrument.InstrumentationInstaller.REQUIRE_ENTRY_ROOT,
+                    "202 body 의 줄이는 방향 지시가 volatile 게이트에 적용");
+        } finally {
+            io.apilens.agent.instrument.InstrumentationInstaller.REQUIRE_ENTRY_ROOT = false;
+        }
+    }
+
+    /**
+     * R20/AC-05-1 verbatim (비협상): "파싱 실패(비 JSON·거대 문자열·예상 밖 타입) 시 config 적용만
+     * 건너뛰고 <b>SUCCESS 판정·전송 흐름·RETRYABLE 재시도 계정 불변</b>" — "202 파싱 실패 ≠ 전송 실패"(W-13).
+     */
+    @Test
+    void keepsSuccessWhenAcceptedBodyIsGarbage() {
+        io.apilens.agent.instrument.RemoteConfigGate.init(launchConfigDefaults());
+        AtomicInteger callCount = new AtomicInteger();
+        byte[] garbage = "definitely-not-json {{{".getBytes(StandardCharsets.UTF_8);
+        server.createContext("/v1/spans", exchange -> {
+            callCount.incrementAndGet();
+            exchange.sendResponseHeaders(202, garbage.length);
+            exchange.getResponseBody().write(garbage);
+            exchange.close();
+        });
+
+        HttpTransport transport = newTransport();
+        boolean sent = transport.send(List.of(span("s1")));
+
+        assertTrue(sent, "202 파싱 실패 ≠ 전송 실패 — SUCCESS 판정 불변");
+        assertEquals(1, callCount.get(), "재시도 계정 불변 — 파싱 실패가 RETRYABLE 로 새지 않는다");
+    }
+
+    private static io.apilens.agent.config.AgentConfig launchConfigDefaults() {
+        return new io.apilens.agent.config.AgentConfig(
+                true, null, "http://localhost:8765", "svc",
+                io.apilens.agent.config.AgentConfig.DEFAULT_SAMPLING_RATE,
+                io.apilens.agent.config.AgentConfig.DEFAULT_BATCH_MAX_SIZE,
+                io.apilens.agent.config.AgentConfig.DEFAULT_BATCH_FLUSH_INTERVAL_MS,
+                io.apilens.agent.config.AgentConfig.DEFAULT_QUEUE_CAPACITY,
+                io.apilens.agent.config.AgentConfig.DEFAULT_PAYLOAD_MAX_BYTES,
+                false, false, true, List.of(), false);
+    }
+
     private static int count(String haystack, String needle) {
         int n = 0;
         for (int i = haystack.indexOf(needle); i >= 0; i = haystack.indexOf(needle, i + needle.length())) {

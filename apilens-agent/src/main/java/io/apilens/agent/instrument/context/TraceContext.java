@@ -95,10 +95,20 @@ public final class TraceContext {
     public static final class Frame {
 
         /**
-         * Sentinel returned by enter helpers when a span must be skipped (re-entrancy
-         * guard). Exit helpers must short-circuit when they see this instance — never
-         * pop the live stack, never enqueue. {@code traceId}/{@code spanId} use a
-         * placeholder that is impossible to collide with a real generated id.
+         * Sentinel returned by enter helpers when a span must be skipped. Exit helpers
+         * must short-circuit when they see this instance — never pop the live stack,
+         * never enqueue. {@code traceId}/{@code spanId} use a placeholder that is
+         * impossible to collide with a real generated id.
+         *
+         * <p>[Phase R20] R20/AC-01-8 — 용도 3종 (기존 1종에서 확장, 시맨틱 동일: "스택 pop 안 함 +
+         * enqueue 안 함"):
+         * <ol>
+         *   <li>JDBC re-entrancy guard (기존 — inner wrapper 는 span 을 만들지 않는다)</li>
+         *   <li>(Q-1) 진입점 게이트 억제 — 옵션 ON 시 진입점(SERVER)이 아닌 root 후보
+         *       (Q-U1, {@code InstrumentationInstaller.REQUIRE_ENTRY_ROOT})</li>
+         *   <li>런타임 게이트 exclude — 원격 config 로 FQN 정확 일치 제외된 마디
+         *       ({@code InstrumentationInstaller.GATE_EXCLUDED_NAMES})</li>
+         * </ol>
          */
         public static final Frame SKIPPED = new Frame(
                 "__SKIPPED__", "__SKIPPED__", null, "__SKIPPED__", "__SKIPPED__", 0L);

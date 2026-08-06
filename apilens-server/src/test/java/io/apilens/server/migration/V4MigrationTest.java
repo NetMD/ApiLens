@@ -154,12 +154,14 @@ class V4MigrationTest {
     void recordsFourAppliedMigrations() {
         migrateAll();
 
-        // V1~V4 가 모두 적용됐다는 것 자체가 "V1~V3 파일 내용 무변경(체크섬 유지)" 의 증명이다.
+        // V1~V5 가 모두 적용됐다는 것 자체가 "기존 파일 내용 무변경(체크섬 유지)" 의 증명이다.
+        // [Phase R20] R20/AC-03-4 — V5(service_instrument_configs) 추가로 4 → 5. V1~V4 파일은
+        //   주석 한 글자도 무수정(불변식 7) — migrate 성공 자체가 체크섬 보존의 증명.
         Integer applied = jdbc.queryForObject(
                 "SELECT COUNT(*) FROM flyway_schema_history WHERE success = 1 AND version IS NOT NULL",
                 Integer.class);
         assertNotNull(applied);
-        assertEquals(4, applied.intValue(), "V1~V4 must all apply cleanly");
+        assertEquals(5, applied.intValue(), "V1~V5 must all apply cleanly");
     }
 
     private int count(String sql) {

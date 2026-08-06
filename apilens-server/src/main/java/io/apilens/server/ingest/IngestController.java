@@ -16,6 +16,7 @@
 package io.apilens.server.ingest;
 
 import io.apilens.common.IngestRequest;
+import io.apilens.server.instrument.config.ServiceInstrumentConfigService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.headers.Header;
 import io.swagger.v3.oas.annotations.media.Content;
@@ -42,12 +43,19 @@ public class IngestController {
     // [Phase R15] AC-A2-1 — 수신 일시정지 상태 주입(controller 레이어 분기). 사용자 명시 비협상 결정(D02).
     // CLAUDE.md '아키텍처 핵심 원칙' (Agent 무변경 — server 가 503 으로 수신 차단) 인용.
     private final IngestPauseState pauseState;
+    // [Phase R20] R20/AC-04-1 — 202 config piggyback 단일 조립점의 협력자(S-116). 사용자 명시 비협상
+    // 결정(Q-U3 additive only). ⚠️ IngestService 생성자 4-인자 봉인 무접촉 — 신규 의존은 controller
+    // 레이어 주입(R15 pauseState 전례 동형). CLAUDE.md 'Build 설정 lessons §1' 인용.
+    private final ServiceInstrumentConfigService instrumentConfigService;
 
     // [봉인#1 NFR-04] IngestService 시그니처 불변 — pause 체크는 controller 레이어에서만.
-    // R13 287a7e7 회귀 진원지(IngestService 생성자 변경이 통합테스트 컴파일 깨짐). 2-인자 추가만.
-    public IngestController(IngestService service, IngestPauseState pauseState) {
+    // R13 287a7e7 회귀 진원지(IngestService 생성자 변경이 통합테스트 컴파일 깨짐).
+    // [Phase R20] 2→3-인자(instrumentConfigService 추가만 — R15 의 1→2 전례 동형).
+    public IngestController(IngestService service, IngestPauseState pauseState,
+                            ServiceInstrumentConfigService instrumentConfigService) {
         this.service = service;
         this.pauseState = pauseState;
+        this.instrumentConfigService = instrumentConfigService;
     }
 
     // [Phase R15] AC-A2-1/AC-A2-3 — 일시정지면 503+Retry-After 로 즉시 응답, service.ingest() 미호출
@@ -75,8 +83,30 @@ public class IngestController {
                     .body(Map.of("error", "서버가 유지보수 중이라 잠시 수신을 멈췄습니다."));
         }
         IngestResponse response = service.ingest(request);
-        // 202 — body { accepted, traces } 형식 불변(GT-3). @ResponseStatus(ACCEPTED) 제거 후 ResponseEntity 통일.
-        return ResponseEntity.accepted().body(response);
+        // 202 — additive only(GT-3 재정의, Q-U3): 기존 두 필드 { accepted, traces } 형식 불변,
+        // 새 필드 추가만 허용. instrumentConfig 는 부재 허용형. @ResponseStatus(ACCEPTED) 제거 후 ResponseEntity 통일.
+        return ResponseEntity.accepted().body(attachInstrumentConfig(request, response));
+    }
+
+    /**
+     * [Phase R20] R20/AC-04-1 — 202 config piggyback <b>단일 조립점</b>(S-116). batch 의 서비스명 =
+     * 첫 span 기준(agent 는 단일 서비스 — 모든 span 의 serviceName = config.serviceName(), hello 포함
+     * — batch 내 단일이 구조 보장). config 행이 있으면 <b>매 202 마다 무조건</b> 실어 보낸다
+     * (self-healing 재적용, W-1 — 변경 감지 없음: agent 재시작으로 기동 -D 값이 복원돼도 다음 202 에서
+     * 재적용). 행 부재면 그대로 반환(부재 허용형 — 키 생략).
+     *
+     * <p>조회 실패(경합 등)는 config 미탑재로 폴백 — 이미 커밋된 적재의 202 를 500 으로 바꾸지 않는다
+     * (host-throw-0 계열: agent 재시도로 인한 중복 적재 유발 방지. 다음 202 가 self-healing).
+     */
+    private IngestResponse attachInstrumentConfig(IngestRequest request, IngestResponse response) {
+        try {
+            String serviceName = request.spans().get(0).serviceName();
+            return instrumentConfigService.find(serviceName)
+                    .map(config -> new IngestResponse(response.accepted(), response.traces(), config))
+                    .orElse(response);
+        } catch (Exception e) {
+            return response;
+        }
     }
 
     @ExceptionHandler(IllegalArgumentException.class)

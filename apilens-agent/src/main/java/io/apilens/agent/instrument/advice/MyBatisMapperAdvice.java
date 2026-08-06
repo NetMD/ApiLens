@@ -70,7 +70,11 @@ public class MyBatisMapperAdvice {
                             @Advice.Argument(2) Object[] args,
                             @Advice.Return(typing = Assigner.Typing.DYNAMIC) Object returnValue,
                             @Advice.Thrown Throwable thrown) {
-        if (frame == null) {
+        // [Phase R20] R20/AC-01-8 — 조기 단락(W-11 확정: JdbcAdvice 전례 복제, 4 advice 동일 형태).
+        // 기존 null 단락을 통일 형태로 대체 — exit(null) 호출이 추가되나 no-op(동작 동등, 유지보수 우위).
+        // 게이트 exclude(FQN 정확 일치)로 SKIPPED 가 반환되는 유일한 INTERNAL advice 계열이기도 하다.
+        if (frame == null || frame == TraceContext.Frame.SKIPPED) {
+            AdviceSupport.exit(frame, thrown, null, null);
             return;
         }
         Map<String, Object> attributes = new HashMap<>();

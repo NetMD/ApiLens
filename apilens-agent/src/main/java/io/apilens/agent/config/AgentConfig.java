@@ -49,6 +49,11 @@ import java.util.List;
  *                             (= 제외 없음 = 현 계측 그대로, opt-in). Types whose name starts with any
  *                             listed prefix are never advice-woven (runtime cost zero — the advice
  *                             bytecode is simply not synthesised).
+ * @param requireEntryRoot     when true, a root-candidate span (stack depth 0) whose kind is not
+ *                             the entry point (SERVER) does not create a trace. [Phase R20]
+ *                             R20/AC-01-1 (Q-U1 verbatim — "옵션 ON && root 후보(스택 깊이 0) &&
+ *                             kind 가 진입점(SERVER)이 아니면 trace 생성 억제"). default {@code false}
+ *                             — 기본값 반드시 꺼짐(Q-D3·불변식 1, 사용자 명시 비협상 결정).
  */
 public record AgentConfig(
         boolean enabled,
@@ -63,7 +68,8 @@ public record AgentConfig(
         boolean debug,
         boolean captureResultSet,
         boolean captureParams,
-        List<String> excludePackages
+        List<String> excludePackages,
+        boolean requireEntryRoot
 ) {
 
     public static final String PROP_SERVER = "apilens.server";
@@ -92,6 +98,17 @@ public record AgentConfig(
      * CLAUDE.md 'v0.1 범위'(계측 레버) · '아키텍처 핵심 원칙'(Agent 는 가볍게) 인용.
      */
     public static final String PROP_EXCLUDE_PACKAGES = "apilens.instrument.exclude-packages";
+    /**
+     * [Phase R20] R20/AC-01-1 — (Q-1) 고아 trace 억제 옵션. 사용자 명시 비협상 결정
+     * (Q-U1 verbatim: "옵션 ON && root 후보(스택 깊이 0) && kind 가 진입점(SERVER)이 아니면
+     * trace 생성 억제"). <b>default=false — 기본값 반드시 꺼짐(Q-D3·불변식 1). default change
+     * forbidden — review-arch FAIL condition.</b> 켜면 배치 워커(@Scheduled/@Async 류) trace 가
+     * 통째로 사라진다 — 그것이 이 옵션의 목적이며 의도된 동작(AC-01-7).
+     * 소비처는 {@code InstrumentationInstaller.REQUIRE_ENTRY_ROOT} 게이트(깔때기 진입부)뿐 —
+     * queue/transport 층 kind 필터 금지(불변식 2, hello span 보존).
+     * CLAUDE.md 'UI 디자인 철학'(흐름과 끊긴 지점) · '아키텍처 핵심 원칙'(Agent 는 가볍게) 인용.
+     */
+    public static final String PROP_REQUIRE_ENTRY_ROOT = "apilens.instrument.require-entry-root";
 
     public static final String DEFAULT_SERVER = "http://localhost:8765";
     public static final double DEFAULT_SAMPLING_RATE = 1.0;
@@ -106,8 +123,9 @@ public record AgentConfig(
         // captureResultSet (also opt-in / off when the agent itself is off).
         // excludePackages=List.of() — [Phase R18] disabled 상태에선 어차피 weaving 0 이므로
         // 빈 목록이 일관적(제외 대상 없음).
+        // requireEntryRoot=false — [Phase R20] R20/AC-01-1 disabled 폴백도 기본값(꺼짐)과 동일.
         return new AgentConfig(false, reason, null, null,
-                0.0, 0, 0, 0, 0, debug, false, false, List.of());
+                0.0, 0, 0, 0, 0, debug, false, false, List.of(), false);
     }
 
     /**
@@ -153,10 +171,13 @@ public record AgentConfig(
         // [Phase R18] AC-01-1/AC-01-2 — 사용자 명시 비협상(NFR-05): 미설정/빈 값 → List.of()
         //   (= 제외 없음 = 현 계측 그대로). 침묵 회귀 0.
         List<String> excludePackages = parseCommaList(System.getProperty(PROP_EXCLUDE_PACKAGES));
+        // [Phase R20] R20/AC-01-1 — (Q-1) 억제 옵션. 기본값 반드시 꺼짐(Q-D3·불변식 1, 비협상):
+        //   두 번째 인자(false) 변경 시 review-arch FAIL. 미설정 시 현 동작과 완전 동일(AC-01-6).
+        boolean requireEntryRoot = parseBoolean(PROP_REQUIRE_ENTRY_ROOT, false, logger);
 
         return new AgentConfig(true, null, serverUrl, serviceName,
                 sampling, batchMax, flushInterval, queueCap, payloadMax, debug, captureResultSet,
-                captureParams, excludePackages);
+                captureParams, excludePackages, requireEntryRoot);
     }
 
     /**

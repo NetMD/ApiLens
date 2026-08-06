@@ -16,6 +16,7 @@
 package io.apilens.server.retention;
 
 import io.apilens.server.ingest.IngestPauseState;
+import io.apilens.server.ingest.IngestService;
 import io.swagger.v3.oas.annotations.Operation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -57,13 +58,19 @@ public class MaintenanceController {
     // [Phase R15] AC-A3-1 — 수신 일시정지 상태(io.apilens.server.ingest.IngestPauseState) 추가 주입.
     // 사용자 명시 비협상 결정(D03). CLAUDE.md '데이터 모델' (in-memory, V4 금지) 인용.
     private final IngestPauseState pauseState;
+    // [Phase R20] R20/AC-10-1 — SQLITE_BUSY 카운터 노출용 IngestService 주입. controller 생성자는
+    // 봉인 대상 아님(R15 의 2→3 전례 — IngestService 생성자 4-인자 봉인과 별개). actuator 기각 근거:
+    // MeterRegistry 를 IngestService 에 주입하면 4-인자 봉인과 정면 충돌 + actuator/health 는 무토큰
+    // 면제 표면이라 인증 경계가 어긋난다. 사용자 명시 비협상 결정(R17 확정 설계 불변).
+    private final IngestService ingestService;
 
-    // 3-인자(기존 2-인자 + pauseState). cleanup/purge/optimize 본문 diff 0(D06).
+    // 3→4-인자(기존 3-인자 + ingestService). cleanup/purge/optimize 본문 diff 0(D06).
     public MaintenanceController(RetentionCleanupService cleanupService, JdbcTemplate jdbc,
-                                 IngestPauseState pauseState) {
+                                 IngestPauseState pauseState, IngestService ingestService) {
         this.cleanupService = cleanupService;
         this.jdbc = jdbc;
         this.pauseState = pauseState;
+        this.ingestService = ingestService;
     }
 
     /**
@@ -129,10 +136,11 @@ public class MaintenanceController {
      * status() 도 isPaused() 를 호출 — 조회 시점 cap 경과면 자가 재개 echo(echo 일관성).
      */
     // [Phase R17] FR-05 (M-4) — maintenance @Operation 신설.
-    @Operation(summary = "유지보수 상태 조회 — paused 여부·pausedAt echo (cap 경과 시 자가 재개 반영)")
+    // [Phase R20] R20/AC-10-1 — SQLITE_BUSY 카운터 2필드 additive 확장(기존 두 필드 불변).
+    @Operation(summary = "유지보수 상태 조회 — paused 여부·pausedAt echo (cap 경과 시 자가 재개 반영) + SQLITE_BUSY 카운터(인메모리 — 재시작 시 0 복귀 정상)")
     @GetMapping("/v1/maintenance/status")
     public MaintenanceStatusResponse status() {
-        return new MaintenanceStatusResponse(pauseState.isPaused(), pauseState.pausedAt());
+        return statusSnapshot();
     }
 
     /**
@@ -146,7 +154,7 @@ public class MaintenanceController {
     @PostMapping("/v1/maintenance/pause")
     public MaintenanceStatusResponse pause() {
         pauseState.pause();
-        return new MaintenanceStatusResponse(pauseState.isPaused(), pauseState.pausedAt());
+        return statusSnapshot();
     }
 
     /**
@@ -160,7 +168,17 @@ public class MaintenanceController {
     @PostMapping("/v1/maintenance/resume")
     public MaintenanceStatusResponse resume() {
         pauseState.resume();
-        return new MaintenanceStatusResponse(pauseState.isPaused(), pauseState.pausedAt());
+        return statusSnapshot();
+    }
+
+    /**
+     * [Phase R20] R20/AC-10-1 — status/pause/resume 3 생성처 공통 스냅샷(4필드 단일 조립).
+     * 카운터는 {@link IngestService} 인메모리 값 그대로 — DB 저장 금지·재시작 0 복귀 정상
+     * (R17 확정 설계 불변, 기준선은 logs/apilens.log 누적 비교).
+     */
+    private MaintenanceStatusResponse statusSnapshot() {
+        return new MaintenanceStatusResponse(pauseState.isPaused(), pauseState.pausedAt(),
+                ingestService.sqliteBusyEncounteredCount(), ingestService.sqliteBusyDroppedCount());
     }
 
     /**

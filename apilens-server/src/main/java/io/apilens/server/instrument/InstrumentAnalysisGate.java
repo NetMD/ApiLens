@@ -126,7 +126,10 @@ public class InstrumentAnalysisGate {
             t.setDaemon(true);
             return t;
         };
-        this.worker = Executors.newCachedThreadPool(factory);
+        // [Phase R20] R20/AC-11-3 — newCachedThreadPool → newFixedThreadPool(2) (R-2, 사용자 확정
+        //   Q-U7③). 위 필드 javadoc("상시 1개 + 버려진 작업 1개")과 상한 2 가 정확 정합 — cached 는
+        //   이론상 무한 생성이라 상한을 코드로 못박는다.
+        this.worker = Executors.newFixedThreadPool(2, factory);
     }
 
     @PreDestroy

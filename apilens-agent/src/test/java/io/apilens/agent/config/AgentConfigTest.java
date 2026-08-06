@@ -40,7 +40,8 @@ class AgentConfigTest {
             AgentConfig.PROP_DEBUG,
             AgentConfig.PROP_CAPTURE_RESULT_SET,
             AgentConfig.PROP_CAPTURE_PARAMS,
-            AgentConfig.PROP_EXCLUDE_PACKAGES
+            AgentConfig.PROP_EXCLUDE_PACKAGES,
+            AgentConfig.PROP_REQUIRE_ENTRY_ROOT
     };
 
     private final AgentLogger silent = new AgentLogger(false);
@@ -369,5 +370,62 @@ class AgentConfigTest {
 
         assertTrue(disabled.excludePackages().isEmpty(),
                 "disabled 상태에선 weaving 자체가 0 이므로 빈 목록이 일관적");
+    }
+
+    // ─── [Phase R20] R20/AC-01-1 — (Q-1) 억제 옵션 파싱 (사용자 비협상 Q-D3) ─────
+    //
+    // 정방향 동사(defaults/parses/keeps) — 기본값 반드시 꺼짐이 사용자 결정 자체.
+    // 반대 방향(rejects/throws) lock-in 0.
+
+    /**
+     * UT-ERT-01: R20/AC-01-1 verbatim — "**기본값 반드시 꺼짐**(Q-D3·불변식 1): 미설정 시 현 동작과
+     * 완전 동일" (비협상). parseBoolean 두 번째 인자가 false 임을 단언 — 변경 시 review-arch FAIL.
+     */
+    @Test
+    void requireEntryRootDefaultsToFalseWhenUnset() {
+        System.setProperty(AgentConfig.PROP_SERVICE_NAME, "svc");
+
+        AgentConfig config = AgentConfig.fromSystemProperties(silent);
+
+        assertTrue(config.enabled());
+        assertFalse(config.requireEntryRoot(),
+                "기본값 반드시 꺼짐(Q-D3 비협상) — 미설정 시 억제 없음(현 동작과 완전 동일)");
+    }
+
+    /** UT-ERT-02: 명시 true → 억제 옵션 켬(운영자 명시 opt-in 경로). */
+    @Test
+    void requireEntryRootExplicitTrueAccepted() {
+        System.setProperty(AgentConfig.PROP_SERVICE_NAME, "svc");
+        System.setProperty(AgentConfig.PROP_REQUIRE_ENTRY_ROOT, "true");
+
+        assertTrue(AgentConfig.fromSystemProperties(silent).requireEntryRoot());
+    }
+
+    /** UT-ERT-03: 잘못된 값("maybe")은 default(false)로 fallback — 오타로 억제가 켜지지 않는다. */
+    @Test
+    void requireEntryRootGarbageValueFallsBackToDefaultFalse() {
+        System.setProperty(AgentConfig.PROP_SERVICE_NAME, "svc");
+        System.setProperty(AgentConfig.PROP_REQUIRE_ENTRY_ROOT, "maybe");
+
+        AgentConfig config = AgentConfig.fromSystemProperties(silent);
+
+        assertTrue(config.enabled());
+        assertFalse(config.requireEntryRoot(),
+                "잘못된 값은 default(false) fallback — 오타로 배치 워커 trace 가 침묵 소멸하지 않는다");
+    }
+
+    /** UT-ERT-04: PROP 상수 문자열이 문서화된 정확값인지 자기증명(docs/agent-options.md cross-link). */
+    @Test
+    void requireEntryRootPropertyNameMatchesDocumentedValue() {
+        assertEquals("apilens.instrument.require-entry-root", AgentConfig.PROP_REQUIRE_ENTRY_ROOT);
+    }
+
+    /** UT-ERT-05: disabled() factory 도 requireEntryRoot=false 로 일관(기본값과 동일). */
+    @Test
+    void disabledFactoryHasRequireEntryRootFalse() {
+        AgentConfig disabled = AgentConfig.disabled("test reason", false);
+
+        assertFalse(disabled.requireEntryRoot(),
+                "disabled 폴백도 기본값(꺼짐)과 동일 — 침묵 축소 금지 일관");
     }
 }

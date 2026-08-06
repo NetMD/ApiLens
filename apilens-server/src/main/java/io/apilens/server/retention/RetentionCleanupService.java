@@ -61,6 +61,14 @@ public class RetentionCleanupService {
      */
     static final int RETENTION_DELETE_BATCH_SIZE = 500;
 
+    /**
+     * [Phase R20] R20/AC-08-1 — 배치 사이 양보 창(ms). 배치 tx 커밋으로 write lock 이 풀린 사이에
+     * 다른 writer(ingest)/reader 가 끼어들 짬을 <b>보장</b>한다 — {@code Thread.yield()} 는 스케줄러
+     * 힌트일 뿐이라 채택하지 않았다. cleanup 은 04:00 백그라운드 작업이라 배치당 +50ms 는 무해하고,
+     * purge(수동)도 같은 경로라 두 호출 모두에 효과가 미친다. R17 ingest 청크 커밋과 동형 사상.
+     */
+    static final long BATCH_YIELD_MS = 50L;
+
     static final long DAY_MS = 86_400_000L;
 
     private final JdbcTemplate jdbc;
@@ -224,12 +232,20 @@ public class RetentionCleanupService {
      * Batch loop shared by cleanup (cutoff present) and purgeAll (cutoff absent).
      * Each batch is its own transaction (writer 락 분산) + explicit 3-step child-first DELETE.
      *
+     * <p>[Phase R20] R20/AC-08-1 — 2회차 배치부터 SELECT 직전에 {@link #BATCH_YIELD_MS} 만큼 정지
+     * (배치 사이에만 — 첫 배치·종료 직전 빈 SELECT 앞엔 없음). 삭제 순서(payloads→spans→traces)·
+     * SQL 문자열·배치 tx 경계 diff 0(AC-08-3). W-10 전건 준수(AC-08-2): setQueryTimeout 미사용 ·
+     * 시간 상한 미도입(목적은 양보이지 상한이 아님) · org.sqlite.* main import 0 유지.
+     *
      * @param cutoffMs present → {@code received_at < cutoff} 만 삭제. empty → 전체 삭제.
      */
     private CleanupResult deleteInBatches(OptionalLong cutoffMs) {
         int batches = 0;
         int deletedTraces = 0;
         while (true) {
+            if (batches > 0) {
+                sleepQuietly(BATCH_YIELD_MS);   // 배치 사이 양보 창 — 다른 writer/reader 가 끼어들 짬.
+            }
             // cutoff 유무로 대상 선정만 분기 — cutoff 없으면 전체에서 오래된 순으로 배치.
             List<String> traceIds = cutoffMs.isPresent()
                     ? jdbc.queryForList(
@@ -264,6 +280,18 @@ public class RetentionCleanupService {
             deletedTraces += traceIds.size();
         }
         return new CleanupResult(batches, deletedTraces);
+    }
+
+    /**
+     * [Phase R20] R20/AC-08-1 — 양보 sleep. {@code InterruptedException} 시 interrupt 플래그 복원 후
+     * 즉시 진행한다(삭제 정확성 우선 — 배치 루프를 중단하지 않는다).
+     */
+    private static void sleepQuietly(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     /**

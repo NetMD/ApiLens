@@ -40,6 +40,7 @@ import net.bytebuddy.matcher.ElementMatchers;
 import net.bytebuddy.utility.JavaModule;
 
 import java.lang.instrument.Instrumentation;
+import java.util.Set;
 
 /**
  * Wires ByteBuddy's {@link AgentBuilder} to four {@code @Advice} classes —
@@ -73,6 +74,25 @@ public final class InstrumentationInstaller {
      * into target bytecode, so the runtime cost is zero.
      */
     public static volatile boolean CAPTURE_PARAMS;
+    /**
+     * [Phase R20] R20/AC-01-1/AC-01-2 — (Q-1) 진입점 게이트. 사용자 명시 비협상 결정
+     * (Q-U1 verbatim: "옵션 ON && root 후보(스택 깊이 0) && kind 가 진입점(SERVER)이 아니면
+     * trace 생성 억제" / Q-D3 기본값 반드시 꺼짐). 읽기 지점은
+     * {@link AdviceSupport#enter}·{@link AdviceSupport#enterDbSpan} 깔때기 진입부 2곳뿐 —
+     * queue/transport 층 kind 필터 금지(불변식 2 — hello span 은 깔때기 밖이라 게이트 무관).
+     * 원격 config(RemoteConfigGate)는 reduce-only 3분지 통과분만 이 값을 바꾼다(기준점 = 기동 -D 값).
+     * CLAUDE.md '아키텍처 핵심 원칙'(Agent 자체 장애가 호스트 앱에 영향 0) 인용.
+     */
+    public static volatile boolean REQUIRE_ENTRY_ROOT;
+    /**
+     * [Phase R20] R20/AC-06-1/AC-06-2 — 런타임 게이트 exclude (FQN 정확 일치 집합).
+     * 사용자 명시 비협상 결정(Q-D4: retransform 금지 — 게이트 방식만. 아래 install 의
+     * RETRANSFORMATION 은 초기 install 용도이며 런타임 config 재적용 수단으로 재호출하지 않는다).
+     * 매칭 기준 = 리플렉션 실제 이름(operationName 의 '#' 앞 FQN — MyBatis mapper 인터페이스 이름
+     * 그대로). 기동값 = 빈 Set = 최대 계측 — 어떤 목록이든 "기동값 이하"라 원격 전체 교체 허용(Q-U5).
+     * 불변 Set 통째 교체만(항목 add/remove 금지 — 읽기 스레드 안전).
+     */
+    public static volatile Set<String> GATE_EXCLUDED_NAMES = Set.of();
 
     private InstrumentationInstaller() {
     }
@@ -114,6 +134,10 @@ public final class InstrumentationInstaller {
         // Phase E3 — 사용자 비협상 D-03: default=true (config 가 같은 default 보장).
         // 이 static 필드는 advice 본문의 second-line defensive guard 가 참조.
         CAPTURE_PARAMS = config.captureParams();
+        // [Phase R20] R20/AC-01-1 — (Q-1) 게이트 내부 배선. 기본값 반드시 꺼짐(Q-D3·불변식 1).
+        //   ⚠️ 이 "배선"은 InstrumentationInstaller 로의 배선이다 — Setup wizard 옵션 빌더 배선은
+        //   금지(불변식 10, 같은 "배선" 단어의 두 대상 혼동 주의).
+        REQUIRE_ENTRY_ROOT = config.requireEntryRoot();
 
         try {
             AgentBuilder builder = new AgentBuilder.Default()

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  [Phase R20] R20/AC-09-2/AC-09-3 — HikariCP 'Retrograde clock change' WARN 을 message 조건으로만
+  DENY 한다(불변식 11 — hikari 로거 레벨 상향 금지, 'Thread starvation' 형제 신호 보존).
+  W-5: Spring Boot 표준 include 3종으로 기존 콘솔+파일 로깅(logging.file.name=logs/apilens.log —
+  SQLITE_BUSY 유실률 기준선 비교처)을 통째로 보존한다. 신설 후 logs/apilens.log 적재 지속은
+  QA 실측 게이트(AC-09-3).
+-->
+<configuration>
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+    <include resource="org/springframework/boot/logging/logback/console-appender.xml"/>
+    <include resource="org/springframework/boot/logging/logback/file-appender.xml"/>
+    <turboFilter class="io.apilens.server.logging.RetrogradeClockDenyFilter"/>
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+        <appender-ref ref="FILE"/>
+    </root>
+</configuration>

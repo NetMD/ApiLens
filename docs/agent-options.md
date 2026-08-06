@@ -1,7 +1,7 @@
 <!--
 title: ApiLens Agent 옵션
 owner: maintainer
-last-reviewed: 2026-07-30
+last-reviewed: 2026-08-04
 -->
 
 # ApiLens Agent 옵션
@@ -23,7 +23,7 @@ java -javaagent:/path/to/apilens-agent.jar \
 
 ## 옵션 표
 
-실제 agent가 인식하는 시스템 프로퍼티는 다음 12개다.
+실제 agent가 인식하는 시스템 프로퍼티는 다음 13개다.
 
 | 옵션                                | 기본값                  | 타입    | 필수 | 설명                                                                |
 | ----------------------------------- | ----------------------- | ------- | ---- | ------------------------------------------------------------------- |
@@ -39,6 +39,7 @@ java -javaagent:/path/to/apilens-agent.jar \
 | `apilens.jdbc.capture-result-set`   | `false`                 | boolean |      | **opt-in** — true 시 JDBC SELECT 결과(row)를 payload_out에 캡처. 위험 항목 참고 |
 | `apilens.jdbc.capture-params`       | `true`                  | boolean |      | **default ON** — PreparedStatement 표준 12종 setter + addBatch 호출에서 파라미터 값을 PAYLOAD IN에 직렬화. 운영망 hot-path 오버헤드 회피용 escape hatch로 `false` 토글 가능. 비활성 시 advice 자체가 weaving 되지 않아 런타임 비용 0. 자세한 동작은 아래 항목 참고 |
 | `apilens.instrument.exclude-packages` | `(없음)`               | String(콤마 목록) |  | **opt-in** — 계측에서 제외할 패키지 prefix 목록(콤마 구분). 미설정/빈 값이면 제외 없음(현 계측 그대로). 지정한 prefix 로 시작하는 클래스는 weaving 대상에서 빠져 span·payload 생성이 없다(weaving 시점 결정, 런타임 비용 0). 자세한 동작·가이드는 아래 항목 참고 |
+| `apilens.instrument.require-entry-root` | `false`              | boolean |      | **opt-in** — true 시 흐름의 시작점이 진입점(들어오는 요청을 받는 controller 계층)이 아니면 그 흐름 자체를 만들지 않음. **배치 워커 흐름이 통째로 사라지므로 기본 꺼짐.** 자세한 동작은 아래 항목 참고 |
 
 ## 검증 / 안전 동작 (모두 silent + agent disabled — 호스트 앱은 정상 시작)
 
@@ -249,6 +250,10 @@ PAYLOAD IN 본문의 키는 **JDBC parameterIndex 의 decimal string** 입니다
 보이는 mapper 이름을 옵션에 적어도 **아무 일도 일어나지 않습니다**(경고도 뜨지
 않습니다).
 
+대신 **원격 계측 설정의 `gateExcludes`** 로는 화면에 보이는 mapper 인터페이스 이름
+**그대로**, JVM 재시작 없이 개별 제외할 수 있습니다 — 아래 [원격 계측 설정](#원격-계측-설정-재시작-없이-줄이는-방향만)
+절과 [두 가지 "제외"의 차이](#두-가지-제외의-차이-weaving-제외-vs-원격-게이트-제외) 표를 보세요.
+
 통째로 빼려면 `org.apache.ibatis.binding.MapperProxy` 를 지정해야 합니다. 다만 이
 경우 **SQL 과 mapper 메서드의 대응이 사라집니다** — 어느 메서드가 그 쿼리를 불렀는지
 알 수 없게 됩니다. SQL 자체는 DB 구간에 그대로 남습니다.
@@ -268,6 +273,109 @@ PAYLOAD IN 본문의 키는 **JDBC parameterIndex 의 decimal string** 입니다
 있었습니다. 이 값은 그 표본·그 구간의 값이며 일반적인 수치가 아닙니다 — 빼기 전에
 **계측 분석 화면에서 예상 결과를 먼저 확인**하시기 바랍니다. 그 화면이 빼기 전후의
 조각남 정도를 미리 계산해 보여 줍니다.
+
+이 조각남을 원천에서 만들지 않으려면 아래
+`apilens.instrument.require-entry-root`(진입점 없는 흐름 만들지 않기) 옵션을 함께
+검토하세요.
+
+## `apilens.instrument.require-entry-root` (opt-in) — 진입점 없는 흐름 만들지 않기
+
+기본 꺼짐. 켜면 **흐름의 시작점이 되려는 기록의 종류가 진입점(들어오는 요청을 받는
+controller 계층)이 아니면 그 흐름 자체를 만들지 않습니다.**
+
+```bash
+-Dapilens.instrument.require-entry-root=true
+```
+
+### 왜 있는 옵션인가
+
+계측 제외로 흐름의 위쪽을 빼면 그 아래 호출들이 각자 독립된 시작점이 되어, 기록이
+하나뿐인 조각 흐름이 쏟아질 수 있습니다(위 절 참조). 이 옵션은 그 조각을 **애초에
+만들지 않는** 쪽의 레버입니다 — 진입점 없이 시작되려는 흐름은 저장도, 전송도, 본문
+생성도 하지 않습니다.
+
+### 켜기 전 반드시 알아야 할 것
+
+- **켜면 배치 워커(`@Scheduled`/`@Async` 류)에서 시작되는 흐름이 통째로 사라집니다.
+  이것이 이 옵션의 목적이며 의도된 동작입니다 — 그래서 기본값이 꺼짐입니다.** 배치
+  흐름도 계속 보고 싶다면 켜지 마세요.
+- 진입점(controller)에서 시작된 흐름은 영향이 없습니다 — 그 아래 service /
+  repository / mapper / DB 기록은 그대로 남습니다.
+- 억제된 시작점 아래에서 이어지는 호출들도 함께 억제됩니다(일관 억제 — 반쪽 흐름이
+  남지 않습니다).
+- agent 시작 알림(`operationName=agent.startup`)은 이 옵션과 무관하게 계속 전송됩니다
+  — 서비스 화면의 agent 버전 표시가 유지됩니다.
+- 이 옵션은 조각남 한계의 **완화이지 소멸이 아닙니다** — 켜지 않으면 동작은 이전과
+  완전히 같습니다.
+- 실제로 얼마나 줄었는지는 본인 운영망에서 적용 전·후를 측정해 확인하세요 — 문서가
+  정량 수치를 단정하지 않습니다.
+- 재시작 없이 켜고 싶다면 아래 원격 계측 설정(`requireEntryRoot`)으로도 켤 수
+  있습니다.
+
+## 원격 계측 설정 (재시작 없이, 줄이는 방향만)
+
+server 에 서비스별 "원하는 계측 설정"을 저장해 두면, agent 가 기록을 보낼 때의
+응답에 실려 전달되어 **JVM 재시작 없이** 적용됩니다. 설정 화면은 아직 없고 API 로
+설정합니다(curl).
+
+```bash
+# 저장 (전체 교체 — 같은 요청을 몇 번 보내도 결과 동일)
+curl -X PUT http://localhost:8765/v1/services/my-app/instrument-config \
+  -H "Content-Type: application/json" \
+  -d '{"captureParams": false, "requireEntryRoot": true,
+       "gateExcludes": ["com.acme.mapper.NoisyMapper"]}'
+
+# 조회 (미설정이면 404)
+curl http://localhost:8765/v1/services/my-app/instrument-config
+
+# 철회 (몇 번을 보내도 결과 동일)
+curl -X DELETE http://localhost:8765/v1/services/my-app/instrument-config
+```
+
+> server 에 API Key 인증을 켠 경우 위 호출에는 `-H "Authorization: Bearer <키>"` 가
+> 필요합니다.
+
+설정할 수 있는 항목은 다음 4가지뿐입니다 (그 외 항목은 이 채널로 설정할 수 없습니다):
+
+| 항목               | 뜻                                                                       |
+| ------------------ | ------------------------------------------------------------------------ |
+| `captureParams`    | `false` = JDBC 파라미터 캡처 끄기 (`apilens.jdbc.capture-params` 의 실행 중 값) |
+| `captureResultSet` | `false` = JDBC 결과(row) 캡처 끄기 (`apilens.jdbc.capture-result-set` 의 실행 중 값) |
+| `requireEntryRoot` | `true` = 진입점 없는 흐름 만들지 않기 켜기 (위 절 참조)                  |
+| `gateExcludes`     | 재시작 없이 이름 그대로 개별 제외할 클래스/인터페이스의 **정확한 전체 이름** 목록 (최대 100개, 항목당 512자) |
+
+### 동작 원칙 (안전 경계)
+
+- **줄이는 방향만 적용됩니다 — 기준점은 JVM 을 시작할 때 준 `-D` 값입니다.** 시작값
+  이하로 줄이는 지시와 시작값까지 되돌리는 지시는 적용되고, 시작값을 넘어 확대하는
+  지시는 agent 가 버립니다. 이 판정은 server 가 아니라 **agent 안에서** 합니다 —
+  server 가 무엇을 보내든 agent 계측이 시작값 이상으로 커지지 않습니다.
+- **원격으로 끈 것은 영구 설정이 아닙니다** — 게이트 값은 메모리에만 있고 JVM 재시작
+  시 시작 `-D` 값으로 되돌아갑니다. 영구로 만들려면 `-D` 를 바꿔 재시작하세요.
+- **전파는 기록 전송 응답에 실려 옵니다** — 트래픽이 없는 서비스, 수신 일시정지 중,
+  또는 억제 옵션으로 기록이 급감한 서비스는 적용이 늦어질 수 있습니다. 늦는 방향은
+  항상 "예전 계측 상태가 잠시 더 유지되는" 쪽이며, 기록이 흐르기 시작하면 자동
+  적용됩니다(급하면 JVM 재시작 = 시작 `-D` 값 복원).
+- **철회(DELETE)해도 agent 에 이미 적용된 값은 되돌아가지 않습니다** — 응답에 설정이
+  더 이상 실리지 않을 뿐입니다. 되돌리려면 시작값 복귀를 명시한 저장(PUT)을 넣거나
+  JVM 을 재시작하세요.
+- 이 원격 설정은 `-D` 옵션의 **기본값을 바꾸는 것이 아닙니다** — 실행 중인 JVM 의
+  메모리 값만 바꿉니다. 문서의 옵션 표 기본값은 그대로 유효합니다.
+- `apilens.jdbc.capture-params=false` 로 **시작한** JVM 은 해당 계측 코드 자체가
+  심어지지 않으므로, 원격 지시로도 켤 수 없습니다(구조적으로 불가).
+- **키를 설정하지 않은(무인증 폴백) 환경에서 원격 계측 설정 API 는 LAN 신뢰
+  전제입니다** — 같은 망의 행위자가 남의 서비스 계측을 줄이는 방향으로 끌 수
+  있습니다. 최악은 계측 꺼짐(가용성)이지 데이터 탈취가 아닙니다.
+
+## 두 가지 "제외"의 차이 (weaving 제외 vs 원격 게이트 제외)
+
+| | 계측 제외 옵션 (`apilens.instrument.exclude-packages`) | 원격 게이트 제외 (원격 계측 설정 `gateExcludes`) |
+|---|---|---|
+| 판별 기준 | 패키지 접두(클래스가 로드될 때 이름 시작 부분) | 클래스/인터페이스 **정확한 전체 이름** — MyBatis mapper 처럼 계측이 걸리는 이름이 화면 이름과 달라도 **화면 이름 그대로** |
+| 적용 시점 | JVM **재시작 필요** (클래스를 바꿔 심는 시점에만) | **재시작 불요** — 다음 설정 전달 시점부터 |
+| 비용 | 제외 대상 런타임 비용 0 (계측 코드 자체가 안 심어짐) | 계측 코드는 남고 진입 즉시 되돌아감 (아주 작은 확인 비용 잔존) |
+| 영구성 | `-D` 라서 재시작 후에도 유지 | 메모리에만 — 재시작 시 사라짐 (server 가 다음 전달에서 다시 적용) |
+| 공통 주의 | 흐름의 위쪽(조상)을 빼면 아래 호출이 새 시작점으로 승격해 조각난 흐름이 늘 수 있음 — "진입점 없는 흐름 만들지 않기" 옵션(`apilens.instrument.require-entry-root`) 병용을 검토 | (좌동) |
 
 ## Security 권고
 
