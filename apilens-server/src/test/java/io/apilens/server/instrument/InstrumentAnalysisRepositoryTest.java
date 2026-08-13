@@ -173,6 +173,45 @@ class InstrumentAnalysisRepositoryTest {
         assertFalse(payloads.containsKey(BATCH));
     }
 
+    // ─── [Phase R22] ② 절감 계산 기준 = 실제 저장 바이트 (R22/AC-02-5·02-6) ──
+
+    /**
+     * [Phase R22] R22/AC-02-1/R22/AC-02-5/R22/AC-02-6 — R22/AC-02-5 verbatim: "절단 행
+     * ({@code truncated=1}, 선언 크기가 본문 길이보다 훨씬 큰 행) 케이스 테스트가 <b>두 픽스처 파일
+     * 양쪽</b>에 있다". 사용자 명시 결정(D-1). CLAUDE.md '데이터 모델 (8개 테이블, 변경 신중히)' 인용.
+     *
+     * <p>★ R22/AC-02-6 verbatim: "그 케이스는 <b>교체 전 코드에서 실패한다.</b> (교체가 무엇을 고쳤는지
+     * 증명하는 유일한 회귀 가드다.)" — 교체 전(선언 크기 합산)이면 1,000,050 이 나온다.
+     */
+    @Test
+    void countsTheStoredBodyLengthNotTheDeclaredSizeForTruncatedPayloads() {
+        // 선언 1,000,000 · 실제 저장 본문 100 · truncated=1 — 운영에서 절단이 일어난 행의 모양.
+        insertPayload("s2", 1_000_000L, 100L, 1);
+
+        Map<String, InstrumentAnalysisRepository.PayloadRow> payloads = payloadRowsByClass();
+
+        // s2 는 원래 50바이트짜리 payload 1건 + 이번 절단 행 1건 = 150 (= 50 + 100).
+        assertEquals(2L, payloads.get(SERVICE_CLASS).payloadCount());
+        assertEquals(150L, payloads.get(SERVICE_CLASS).payloadBytes(),
+                "절감 예측은 디스크에 실제로 있는 본문 길이를 센다 (선언 크기 1,000,000 이 아니다)");
+    }
+
+    /**
+     * [Phase R22] R22/AC-02-1/R22/AC-02-5/R22/AC-02-6 — Q3b(직접 귀속 절감)도 같은 기준이어야 한다.
+     * 두 쿼리가 어긋나면 같은 화면의 표 숫자와 "빼면 이렇게 돼요" 숫자가 다른 기준으로 계산된다.
+     */
+    @Test
+    void countsTheStoredBodyLengthForTruncatedPayloadsInDirectSavingsToo() {
+        insertPayload("s2", 1_000_000L, 100L, 1);
+
+        InstrumentAnalysisRepository.SavingsRow savings =
+                repository.directSavings(SERVICE, FROM_MS, TO_MS, List.of(SERVICE_CLASS));
+
+        assertEquals(2L, savings.payloadCountDelta());
+        assertEquals(150L, savings.payloadBytesDelta(),
+                "Q3b 도 실제 저장 바이트 기준 (교체 전이면 1,000,050)");
+    }
+
     // ─── ★ V-01 — 아무것도 빼지 않으면 시뮬레이션 = 구간 총계 ────────────────
 
     @Test
@@ -347,11 +386,28 @@ class InstrumentAnalysisRepositoryTest {
                 spanId, traceId, parentSpanId, service, operationName, spanKind, startTime, startTime + 1L);
     }
 
+    /**
+     * 절단 없는 payload — 선언 크기({@code size_bytes})와 본문 길이가 <b>같다</b>.
+     *
+     * <p>// [Phase R22] R22/AC-02-7 verbatim: "기존 단언은 약화되지 않는다. 픽스처 헬퍼가 넘겨받은
+     * // sizeBytes 길이만큼의 본문을 만들게 고쳐, 호출 지점과 단언을 손대지 않고 기존 단언이 그대로
+     * // 성립하게 한다". 호출 지점(:106-108·:117·:122)과 기존 단언(:168·:171·:237·:258) 무변경.
+     */
     private void insertPayload(String spanId, long sizeBytes) {
+        insertPayload(spanId, sizeBytes, sizeBytes, 0);
+    }
+
+    /**
+     * 선언 크기와 본문 길이를 따로 주는 픽스처 — 절단 행({@code truncated=1}) 재현용.
+     *
+     * <p>★ 본문은 <b>ASCII 로만</b> 만든다. 한 글자 = 1바이트여야
+     * {@code length(CAST(body AS BLOB)) == bodyBytes} 가 성립한다 (Design §3.4 인코딩 축).
+     */
+    private void insertPayload(String spanId, long declaredBytes, long bodyBytes, int truncated) {
         jdbc.update("""
                         INSERT INTO payloads (span_id, direction, content_type, body, size_bytes, truncated)
-                        VALUES (?, 'out', 'application/json', '{}', ?, 0)
+                        VALUES (?, 'out', 'application/json', ?, ?, ?)
                         """,
-                spanId, sizeBytes);
+                spanId, "x".repeat((int) bodyBytes), declaredBytes, truncated);
     }
 }

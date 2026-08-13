@@ -68,6 +68,66 @@ class RetentionOptimizeTest {
         assertFalse(RetentionCleanupService.hasEnoughDisk(0L, 500L));
     }
 
+    // ── [Phase R22] ① 회수 루프의 **새** 디스크 가드 경계값 (R22/AC-01-4·01-5) ──
+    //
+    //  ★ 위 3건(기존 hasEnoughDisk)은 **한 글자도 안 고친다** — 그쪽은 전체 VACUUM 용이고
+    //    optimizeDatabase() 전용으로 남는다 (R22/AC-01-4 · R22/AC-01-9 회귀 무변경).
+    //    아래 3건은 예산 크기에 맞는 **별도 가드**의 경계다. 두 가드를 섞어 쓰지 말 것.
+
+    /**
+     * [Phase R22] R22/AC-01-4 경계 — 가용 == 필요 → 허용({@code >=}, true). 정방향.
+     *
+     * <p>필요한 여유 = 예산 × {@code RECLAIM_WAL_BYTES_PER_PAGE}. 루프 중에는 DB 파일이 안 줄고 WAL 만
+     * 자라므로, 새로 필요한 여유는 <b>WAL 증가분뿐</b>이다 (기존 가드처럼 DB 전체 크기를 요구하면
+     * 19.6 MB 회수를 위해 1 GB 여유를 요구하는 꼴이라 과하게 막는다).
+     */
+    @Test
+    void allowsWhenUsableSpaceEqualsTheRequiredWalHeadroom() {
+        long need = requiredHeadroom(RetentionCleanupService.RETENTION_VACUUM_BUDGET_PAGES);
+        assertTrue(RetentionCleanupService.hasEnoughDiskForReclaim(
+                need, RetentionCleanupService.RETENTION_VACUUM_BUDGET_PAGES));
+    }
+
+    /** [Phase R22] R22/AC-01-4 경계 — 가용 > 필요 → 허용(true). 정방향. */
+    @Test
+    void allowsWhenUsableSpaceExceedsTheRequiredWalHeadroom() {
+        long need = requiredHeadroom(RetentionCleanupService.RETENTION_VACUUM_BUDGET_PAGES);
+        assertTrue(RetentionCleanupService.hasEnoughDiskForReclaim(
+                need + 1L, RetentionCleanupService.RETENTION_VACUUM_BUDGET_PAGES));
+    }
+
+    /**
+     * [Phase R22] R22/AC-01-4 경계 — 가용 < 필요 → 거부(false). <b>의도된 거부 = 정방향.</b>
+     *
+     * <p>거부는 "회수를 건너뛰고 로그만" 이라 <b>안전한 방향</b>이다 — 정리 자체는 성공으로 끝난다.
+     */
+    @Test
+    void rejectsWhenUsableSpaceIsBelowTheRequiredWalHeadroom() {
+        long need = requiredHeadroom(RetentionCleanupService.RETENTION_VACUUM_BUDGET_PAGES);
+        // 1 byte 부족도 거부 (>= 엄격).
+        assertFalse(RetentionCleanupService.hasEnoughDiskForReclaim(
+                need - 1L, RetentionCleanupService.RETENTION_VACUUM_BUDGET_PAGES));
+        assertFalse(RetentionCleanupService.hasEnoughDiskForReclaim(
+                0L, RetentionCleanupService.RETENTION_VACUUM_BUDGET_PAGES));
+    }
+
+    /**
+     * ★ 이 가드가 <b>선형 외삽이 아님</b>을 값으로 못박는다 (R22/AC-01-5). 한 점(3,000페이지의
+     * 9.30 KB/page)을 곱한 값이면 20,000페이지에서 182 MB 를 요구해 실측 400.9 MB 를 2.2배 과소평가한다.
+     * 실측 곡선 최댓값 상계(20 KB/page)를 쓰므로 20,000페이지에서 390.6 MB 를 요구한다.
+     */
+    @Test
+    void requiresTheUpperBoundHeadroomInsteadOfASinglePointExtrapolation() {
+        long linearFromOnePoint = 20_000L * 9_300L;   // 한 점 곱셈 = 186 MB (금지된 계산)
+        assertFalse(RetentionCleanupService.hasEnoughDiskForReclaim(linearFromOnePoint, 20_000L),
+                "한 점 곱셈으로 나온 여유는 이 가드를 통과하지 못한다 (곡선 상계가 더 크다)");
+        assertTrue(RetentionCleanupService.hasEnoughDiskForReclaim(requiredHeadroom(20_000L), 20_000L));
+    }
+
+    private static long requiredHeadroom(long budgetPages) {
+        return budgetPages * RetentionCleanupService.RECLAIM_WAL_BYTES_PER_PAGE;
+    }
+
     // ── busy 비전파 (Mockito — VACUUM 예외 흡수) ─────────────────────────
 
     /**

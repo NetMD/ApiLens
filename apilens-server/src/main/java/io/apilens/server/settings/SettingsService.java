@@ -113,9 +113,29 @@ public class SettingsService {
         }
     }
 
+    /**
+     * [Phase R22] R22/AC-04-2/R22/AC-04-3/R22/AC-04-4 — R22/AC-04-3 verbatim: "<b>반환값은 기존과 같은
+     * {@code 0L} 유지 · {@code SettingsResponse} DTO 무변경 · FE 무변경 · FE 테스트 무변경.</b>
+     * 값으로 구분하거나 새 필드를 만드는 안은 채택하지 않는다." 사용자 명시 결정(OQ-8·9).
+     *
+     * <p>운영에서 {@code retention_meta} 의 행(id=1)이 사라져 정리 시각이 계속 "이력 없음" 으로 보인 일이
+     * 있었다. 원인은 <b>끝내 규명하지 못했다</b> — 추측으로 채우지 않는다. 이 로그가 <b>재발 감지의 유일한
+     * 표면</b>이다("고쳤다" 가 아니라 "다시 생기면 알 수 있게 했다"). 행 자체는 다음 정리의 upsert 가
+     * 다시 만든다.
+     *
+     * <p>★ 기존 {@code jdbc.query} 의 throw 의미론은 <b>일부러 그대로 둔다.</b> 여기에 포괄 try-catch 를
+     * 씌우면 DB 장애가 "이력 없음" 으로 위장되어, 위와 같은 무음 실패를 새로 심는 셈이다.
+     * R22/AC-04-4 가 요구하는 것은 <b>이 라운드가 새로 넣는 코드가 예외를 만들지 않는다</b>는 것이고,
+     * {@code log.warn} 은 던지지 않는다.
+     */
     private long readLastCleanupAt() {
         List<Long> rows = jdbc.query("SELECT last_cleanup_at FROM retention_meta WHERE id = 1",
                 (rs, rowNum) -> rs.getLong(1)); // NULL → 0 (이력 없음과 동일 취급)
-        return rows.isEmpty() ? 0L : rows.get(0);
+        if (rows.isEmpty()) {
+            log.warn("retention_meta row (id=1) is missing — returning 0 (no cleanup history). "
+                    + "the row is re-created by the next cleanup upsert");
+            return 0L;
+        }
+        return rows.get(0);
     }
 }

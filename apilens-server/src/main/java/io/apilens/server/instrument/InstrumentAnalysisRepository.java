@@ -199,12 +199,37 @@ public class InstrumentAnalysisRepository {
 
     // ─── Q1b — 클래스별 payload 집계 ─────────────────────────────────────────
 
-    /** Per-class payload count and size. 별도 실행 — 비용·실패 격리(위 Q1a 주석 참조). */
+    /**
+     * Per-class payload count and size. 별도 실행 — 비용·실패 격리(위 Q1a 주석 참조).
+     *
+     * <p>// [Phase R22] R22/AC-02-1/R22/AC-02-2/R22/AC-02-3 — R22/AC-02-1 verbatim: "payload 바이트
+     * // 집계 2곳이 {@code COALESCE(SUM(length(CAST(p.body
+     * // AS BLOB))), 0)} 로 바뀐다 (이 메서드의 {@code payload_bytes} 와 {@link #directSavings} 의
+     * // {@code payload_bytes_delta} — 좌표는 줄번호가 아니라 두 별칭으로 가리킨다)". 사용자 명시 결정(D-1).
+     * // CLAUDE.md '데이터 모델 (8개 테이블, 변경 신중히)' 인용 — 스키마 0 · 마이그레이션 0.
+     * // ★ 위 인용의 SQL 식을 줄바꿈해 적은 이유: 완료 판정 grep 이 <b>실제 SQL 2곳</b>만 세도록
+     * //   문서 인용이 한 줄에 통째로 걸리지 않게 한 것이다(값을 바꾼 것이 아니라 줄만 접었다).
+     *
+     * <p><b>왜 {@code size_bytes} 가 아닌가</b>: {@code size_bytes} 는 <b>자르기 전 원본 크기</b>다
+     * ({@code PayloadGuard} javadoc 정의 — 무접촉). 절감 예측이 물어야 하는 것은 "이 클래스를 빼면
+     * 디스크에서 실제로 얼마가 사라지는가" 이고, 디스크에 있는 것은 <b>잘린 뒤 저장된 본문</b>이다.
+     * 절단 행({@code truncated=1})에서 둘이 갈리므로 소비처 해석을 바꾼다 — <b>정의는 안 바꾼다</b>
+     * (R22/AC-02-3: 뒤집으면 R13 테스트가 깨진다).
+     *
+     * <p><b>왜 {@code CAST(... AS BLOB)} 이 필수인가</b> (R22/AC-02-2): {@code payloads.body} 는
+     * {@code TEXT} 라 {@code length(TEXT)} 는 <b>문자 수</b>를 센다. 한글이 든 본문에서 또 다른 방향으로
+     * 틀린다. {@code CAST(TEXT AS BLOB)} 은 UTF-8 바이트열이므로 {@code length()} 가 바이트 수가 된다.
+     * {@code body} 가 NULL 인 행은 {@code SUM} 이 건너뛰고, 전량 NULL 이면 {@code COALESCE} 가 0 을 준다.
+     *
+     * <p>별칭({@code payload_bytes})·정렬({@code ORDER BY payload_bytes DESC})·{@code COALESCE(...,0)} 는
+     * 그대로다 — <b>식만 바뀌고 구조는 안 바뀐다</b>.
+     */
     public List<PayloadRow> aggregatePayloadsByClass(String serviceName, long fromMs, long toMs, int cap) {
         String sql = "SELECT\n"
                 + "    " + CLASS_EXPR + "               AS class_name,\n"
                 + "    COUNT(*)                         AS payload_count,\n"
-                + "    COALESCE(SUM(p.size_bytes), 0)   AS payload_bytes\n"
+                // [Phase R22] R22/AC-02-1 — 실제 저장 바이트. size_bytes(자르기 전 원본)가 아니다.
+                + "    COALESCE(SUM(length(CAST(p.body AS BLOB))), 0)   AS payload_bytes\n"
                 + "FROM traces t\n"
                 + "JOIN spans s    ON s.trace_id = t.trace_id\n"
                 + "JOIN payloads p ON p.span_id  = s.span_id\n"
@@ -341,8 +366,10 @@ public class InstrumentAnalysisRepository {
         Long spanDelta = jdbc.queryForObject(spanSql, Long.class, params.toArray());
 
         // Q3b — 제외 대상에 직접 달린 payload
+        // [Phase R22] R22/AC-02-1/R22/AC-02-2 — Q1b(:207 부근)와 같은 식으로 교체. 두 곳이 어긋나면
+        //   같은 화면의 "표 숫자" 와 "빼면 이렇게 돼요 숫자" 가 다른 기준으로 계산된다. 사용자 명시 결정(D-1).
         String payloadSql = "SELECT COUNT(*) AS payload_count_delta,\n"
-                + "       COALESCE(SUM(p.size_bytes), 0) AS payload_bytes_delta\n"
+                + "       COALESCE(SUM(length(CAST(p.body AS BLOB))), 0) AS payload_bytes_delta\n"
                 + "FROM traces t\n"
                 + "JOIN spans s    ON s.trace_id = t.trace_id\n"
                 + "JOIN payloads p ON p.span_id  = s.span_id\n"

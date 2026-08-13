@@ -90,7 +90,7 @@ class OpenApiDocsIntegrationTest {
     private TestRestTemplate rest;
 
     /**
-     * T-INT-1 — 면제 + 스펙 자동생성 + 컨텍스트 로드 + build-info 배선(info.version=="0.6.0").
+     * T-INT-1 — 면제 + 스펙 자동생성 + 컨텍스트 로드 + build-info 배선(info.version=="0.6.1").
      */
     @Test
     void returns200AndOpenApiSpecOnDocsWithoutToken() throws Exception {
@@ -102,7 +102,9 @@ class OpenApiDocsIntegrationTest {
         JsonNode info = root.get("info");
         assertNotNull(info, "spec must contain an 'info' block");
         // 게이트 E — info.version 은 build-info 주입값. [Phase R20] bump(0.5.0→0.6.0)가 문서까지 전파됨을 실측 봉인.
-        assertEquals("0.6.0", info.get("version").asText(), "info.version must track the Gradle build version");
+        // [Phase R22] R22/AC-06-1 — bump(0.6.0→0.6.1) 동반 정정. 이 단언은 build.gradle.kts 의
+        //   version 값을 리터럴로 붙잡으므로, 제품 버전을 올릴 때 **반드시 함께** 올려야 한다(안 올리면 RED).
+        assertEquals("0.6.1", info.get("version").asText(), "info.version must track the Gradle build version");
         assertEquals("ApiLens API", info.get("title").asText());
     }
 

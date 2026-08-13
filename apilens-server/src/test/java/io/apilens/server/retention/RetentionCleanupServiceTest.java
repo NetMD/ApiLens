@@ -22,6 +22,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.mockito.Mockito;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -30,6 +32,8 @@ import org.sqlite.SQLiteDataSource;
 import javax.sql.DataSource;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -300,7 +304,147 @@ class RetentionCleanupServiceTest {
         assertDoesNotThrow(job::runScheduled);
     }
 
+    // ─── [Phase R22] ① 예산 제한 회수 루프 (R22/AC-01-1·01-2·01-8) ───────────
+
+    /**
+     * [Phase R22] R22/AC-01-1/R22/AC-01-2 — R22/AC-01-1 verbatim: "회수는 예산 제한 루프다. 루프 진입 전에
+     * {@code PRAGMA freelist_count} 를 읽고 {@code min(남은 free page, 예산)} 만큼만 돈다. 예산 단위는
+     * <b>페이지 개수</b>다." 사용자 명시 결정(OQ-1). CLAUDE.md '데이터 모델 (8개 테이블, 변경 신중히)' 인용.
+     *
+     * <p>★★ <b>준비를 안 하면 이 테스트는 통과하면서 아무것도 검증하지 않는다.</b> ★★
+     * 단위 테스트 DB 는 Flyway 만 돌아 {@code auto_vacuum = NONE} 이다({@code StartupDbInitializer} 는
+     * Spring 기동 때만 돈다). 그 상태에서 {@code PRAGMA incremental_vacuum} 은 <b>no-op</b> 이라 free page 가
+     * 안 줄고 루프가 첫 회전에서 끝난다. 그래서 (1) {@code auto_vacuum=INCREMENTAL} 과 {@code VACUUM} 을
+     * <b>같은 connection</b> 에서 먼저 걸고 (2) free page 가 실제로 생겼는지 <b>단언으로 먼저 확인</b>한 뒤
+     * (3) 줄어듦을 단언한다.
+     */
+    @Test
+    void reclaimsFreePagesWithinTheBudgetDuringCleanup() {
+        enableIncrementalAutoVacuum();
+        long freedPages = seedAndDropBulkPayloads(120, 40_000);
+
+        long before = freelistCount();
+        // (2) 전제 확인 — free page 가 실제로 생겼는가. 안 생겼으면 아래 단언이 무의미(vacuous)해진다.
+        assertTrue(before > 0,
+                "전제: 삭제로 free page 가 실제로 생겨야 회수 루프가 검증된다 (생성 시도 " + freedPages + " 행)");
+
+        service.cleanup(System.currentTimeMillis());
+
+        long after = freelistCount();
+        assertTrue(after < before,
+                "예산 안에서 free page 가 실제로 줄어든다 (before=" + before + " after=" + after + ")");
+    }
+
+    /**
+     * [Phase R22] R22/AC-01-2 verbatim: "루프 종료 조건은 <b>호출 횟수가 아니라 {@code freelist_count}
+     * 재확인</b>이다." — {@code auto_vacuum} 이 {@code NONE} 이면 {@code incremental_vacuum} 이 no-op 이라
+     * free page 가 안 준다. 그때 루프가 예산(5,000회)만큼 헛돌지 않고 <b>첫 회전에서 즉시 끝나는지</b> 본다.
+     *
+     * <p>이 DB 는 Flyway 만 돌아 {@code auto_vacuum = NONE} 이므로 준비 없이 그대로가 그 상황이다.
+     */
+    @Test
+    void endsTheReclaimLoopImmediatelyWhenNoPageCanBeFreed() {
+        seedAndDropBulkPayloads(40, 4_000);
+        long before = freelistCount();
+        assertTrue(before > 0, "전제: free page 는 있으나 auto_vacuum=NONE 이라 회수는 불가능한 상태");
+
+        long startedAt = System.currentTimeMillis();
+        assertDoesNotThrow(() -> service.cleanup(System.currentTimeMillis()));
+        long elapsed = System.currentTimeMillis() - startedAt;
+
+        // 예산 5,000회를 헛돌았다면 이 시간 안에 못 끝난다 (회전마다 PRAGMA 2회).
+        assertTrue(elapsed < 10_000L, "회수 불가 환경에서 루프가 헛돌지 않는다 (elapsed=" + elapsed + "ms)");
+    }
+
+    /**
+     * [Phase R22] R22/AC-01-8 verbatim: "회수 루프는 {@code finalizeMaintenance} 안에서 <b>정리 시각
+     * 기록보다 뒤</b>에 놓이고, <b>자체 try-catch</b> 로 감싸인다. 여기서 나온 예외는 밖으로 나가지 않는다."
+     * 사용자 명시 결정(C-2).
+     *
+     * <p>회수 PRAGMA 만 던지게 만들고 나머지는 실제 DB 로 돌린다 — 시각 기록이 <b>이미 끝난 뒤</b>라
+     * 그 밤의 기록이 남고, 뒤이은 {@code wal_checkpoint}·{@code ANALYZE} 도 그대로 진행된다.
+     */
+    @Test
+    void keepsTheCleanupTimestampWhenFreePageReclaimFails() {
+        JdbcTemplate throwingReclaim = Mockito.spy(jdbc);
+        Mockito.doThrow(new DataAccessResourceFailureException("simulated reclaim failure"))
+                .when(throwingReclaim).execute("PRAGMA incremental_vacuum");
+        RetentionCleanupService svc =
+                new RetentionCleanupService(throwingReclaim, txManager, settingsService);
+
+        seedAndDropBulkPayloads(20, 4_000);   // free page 를 만들어 회수 루프에 진입시킨다.
+        long now = System.currentTimeMillis();
+
+        assertDoesNotThrow(() -> svc.cleanup(now));
+
+        Long lastCleanupAt = jdbc.queryForObject(
+                "SELECT last_cleanup_at FROM retention_meta WHERE id = 1", Long.class);
+        assertEquals(now, lastCleanupAt, "회수가 터져도 그 밤의 정리 시각은 남는다");
+        // ANALYZE 가 실제로 진행됐는지 = 회수 예외가 나머지 단계를 막지 않았는지.
+        assertNotNull(jdbc.queryForObject(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = 'sqlite_stat1'", Integer.class));
+    }
+
+    // ─── [Phase R22] ④ 정리 시각 upsert (R22/AC-04-1) ────────────────────────
+
+    /**
+     * [Phase R22] R22/AC-04-1 verbatim: "{@code retention_meta} 갱신이 <b>upsert</b> 다. …
+     * {@code retention_meta.id} 가 {@code INTEGER PRIMARY KEY} 라 {@code ON CONFLICT(id)} 가 성립한다."
+     * 사용자 명시 결정(OQ-8·9). CLAUDE.md '데이터 모델 (8개 테이블, 변경 신중히)' 인용.
+     *
+     * <p>행이 사라진 운영 사고가 실재했다 — 기존 {@code UPDATE} 는 행이 없으면 0행 갱신으로 <b>조용히
+     * 성공</b>해 정리 시각이 영영 "이력 없음" 으로 남았다. upsert 는 행을 <b>다시 만든다</b>.
+     */
+    @Test
+    void recreatesTheRetentionMetaRowWhenItIsMissing() {
+        jdbc.update("DELETE FROM retention_meta");   // ④가 겪은 운영 상태 재현 (원인은 미규명).
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM retention_meta", Integer.class));
+
+        long now = System.currentTimeMillis();
+        service.cleanup(now);
+
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM retention_meta", Integer.class),
+                "행이 없어도 upsert 가 다시 만든다");
+        assertEquals(now, jdbc.queryForObject(
+                "SELECT last_cleanup_at FROM retention_meta WHERE id = 1", Long.class));
+    }
+
     // ─── fixture helpers ────────────────────────────────────────────────────
+
+    /**
+     * {@code auto_vacuum} 을 {@code INCREMENTAL} 로 전환한다 — <b>PRAGMA 와 VACUUM 은 같은 connection</b>.
+     * auto_vacuum 은 connection 수준 pending 설정이라 다른 connection 의 VACUUM 은 기존 값으로 재구성해
+     * 전환이 silent 실패한다 ({@code StartupDbInitializer} 와 같은 모양).
+     */
+    private void enableIncrementalAutoVacuum() {
+        jdbc.execute((java.sql.Connection con) -> {
+            try (java.sql.Statement st = con.createStatement()) {
+                st.execute("PRAGMA auto_vacuum=INCREMENTAL");
+                st.execute("VACUUM");
+            }
+            return null;
+        });
+    }
+
+    /** payload 행을 대량으로 넣었다 지워 free page 를 만든다. 반환값 = 넣었다 지운 행 수. */
+    private long seedAndDropBulkPayloads(int rows, int bodyBytes) {
+        insertTraceTree("t-bulk", System.currentTimeMillis());
+        String body = "x".repeat(bodyBytes);
+        List<Object[]> batch = new ArrayList<>();
+        for (int i = 0; i < rows; i++) {
+            batch.add(new Object[]{"bulk-" + i, body, (long) bodyBytes});
+        }
+        jdbc.batchUpdate("INSERT INTO payloads (span_id, direction, content_type, body, size_bytes, truncated) "
+                + "VALUES (?, 'out', 'application/json', ?, ?, 0)", batch);
+        jdbc.update("DELETE FROM payloads WHERE span_id LIKE 'bulk-%'");
+        return rows;
+    }
+
+    private long freelistCount() {
+        Long v = jdbc.queryForObject("PRAGMA freelist_count", Long.class);
+        return v == null ? 0L : v;
+    }
+
 
     /** trace 1건 + spans 2건 + payload 1건 트리 삽입 (3단 삭제 정합 검증용). */
     private void insertTraceTree(String traceId, long receivedAt) {

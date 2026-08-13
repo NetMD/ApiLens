@@ -77,6 +77,38 @@ class SettingsApiTest {
                 .andExpect(jsonPath("$.lastCleanupAt").value(0)); // V1 시드 0 = 이력 없음 (FE T-11 분기)
     }
 
+    /**
+     * [Phase R22] R22/AC-04-5 verbatim: ""행 없음" 케이스 테스트가 있다. 기존
+     * {@code SettingsApiTest} 의 {@code lastCleanupAt = 0} 단언은 <b>행이 없어도 통과</b>하므로 두 상태를
+     * 구분하지 못한다 — 그 공백을 닫는다." 사용자 명시 결정(OQ-8·9).
+     *
+     * <p>R22/AC-04-3 verbatim: "<b>반환값은 기존과 같은 {@code 0L} 유지 · {@code SettingsResponse} DTO
+     * 무변경 · FE 무변경 · FE 테스트 무변경.</b>" — 행이 없어도 200 이고 값도 0 그대로다. 달라지는 것은
+     * <b>서버 로그에 경고가 남는다</b>는 것뿐이다("고쳤다" 가 아니라 "다시 생기면 알 수 있게 했다").
+     */
+    @Test
+    void returns200WithZeroLastCleanupAtWhenTheRetentionMetaRowIsMissing() throws Exception {
+        jdbc.update("DELETE FROM retention_meta");   // ④가 겪은 운영 상태 재현 (원인은 미규명)
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM retention_meta", Integer.class),
+                "전제: 행이 실제로 없다 (기존 단언은 이 상태와 시드 0 을 구분하지 못했다)");
+
+        mockMvc.perform(get("/v1/settings"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.settings['retention.days']").value(30))
+                .andExpect(jsonPath("$.lastCleanupAt").value(0));
+    }
+
+    /** [Phase R22] R22/AC-04-3 — 행이 있으면 그 값이 그대로 내려온다 (위 케이스와 짝). */
+    @Test
+    void returnsTheStoredLastCleanupAtWhenTheRetentionMetaRowExists() throws Exception {
+        long stamped = 1_700_000_000_000L;
+        jdbc.update("UPDATE retention_meta SET last_cleanup_at = ? WHERE id = 1", stamped);
+
+        mockMvc.perform(get("/v1/settings"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.lastCleanupAt").value(stamped));
+    }
+
     @Test
     void returnsStoredDbValueOverYmlFallback() throws Exception {
         // D-05 비협상: "DB 저장 값이 yml 보다 우선"

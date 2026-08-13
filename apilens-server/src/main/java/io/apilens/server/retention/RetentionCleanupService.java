@@ -26,9 +26,11 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import java.io.File;
 import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.OptionalLong;
+import java.util.Set;
 
 /**
  * Retention cleanup: deletes traces older than the resolved retention window,
@@ -71,10 +73,109 @@ public class RetentionCleanupService {
 
     static final long DAY_MS = 86_400_000L;
 
+    /**
+     * ① 야간 정리 1회가 회수하는 free page 수 상한 — <b>페이지 개수</b> 단위.
+     *
+     * <p>// [Phase R22] R22/AC-01-1/R22/AC-01-3 — R22/AC-01-3 verbatim: "예산 기본값은
+     * // {@code RETENTION_VACUUM_BUDGET_PAGES} <b>상수 한 곳</b>에 있고, 그 자리에 근거 주석이 달린다.
+     * // 근거로 <b>실측 행</b>을 지목한다 (계산으로 채운 행이 아니다)". 사용자 명시 결정(OQ-1).
+     * // CLAUDE.md '절대 변경하지 말아야 할 결정 사항 §2' (SQLite + Flyway) 인용 — 스키마 변경 0.
+     *
+     * <p>★★ <b>이 값은 "자동커밋" 과 한 쌍이다. 따로 고를 수 없다.</b> ★★
+     * 회수 루프는 회수 PRAGMA 를 {@code TransactionTemplate} 으로 <b>묶지 않고</b>
+     * 문장마다 자동커밋으로 돈다. 근거는 아래 <b>실측 2행</b>(운영 DB 사본 직접 측정 — 계산 값 아님):
+     * <pre>
+     *   예산 5,000 · 자동커밋 (채택)  → 회수 19.6 MB · WAL +56.1 MB · 루프 268 ms · 뒤이은 체크포인트 130 ms
+     *   예산 5,000 · 트랜잭션 1개 묶음 → 회수 19.6 MB · WAL +22.3 MB · 루프 192 ms · 뒤이은 체크포인트 132 ms
+     * </pre>
+     * 묶음이 WAL·속도 둘 다 낫는데도 자동커밋을 고른 이유: 04:00 창에는 <b>ingest writer 가 살아 있다.</b>
+     * 묶음은 192 ms 동안 쓰기 잠금을 통째로 잡고, 자동커밋은 5,000번 잡았다 놓는다. 이 서비스는
+     * {@link #BATCH_YIELD_MS} 로 "배치 사이에 다른 writer 가 끼어들 짬을 보장" 하는 쪽을 이미 골랐고,
+     * <b>잠금 보유 시간을 WAL 용량보다 우선</b>해 왔다. 같은 방향이다.
+     *
+     * <p>★ <b>예산 ≤ 5,000 에서만 자동커밋이 정당하다.</b> 실측상 자동커밋의 페이지당 WAL 은 예산과 함께
+     * 커진다 (9.29 → 10.96 → 16.70 → 19.57 KB/page). <b>10,000 이상으로 올리려면 트랜잭션 묶음으로 함께
+     * 바꿔야 한다</b> — 예산만 올리고 방식을 그대로 두면 WAL 이 초선형으로 뛴다(171 MB → 400.9 MB).
+     * 20,000 이상으로 올리려면 (1) 트랜잭션 묶음으로 바꾸고 (2) {@link #RECLAIM_WAL_BYTES_PER_PAGE} 를
+     * 다시 재야 한다 — 그 지점에서 이 상수의 마진이 0.97배로 사라진다.
+     *
+     * <p><b>이 예산이 못 하는 것</b> (막았다고 쓰지 않는다):
+     * <ol>
+     *   <li><b>전량 회수가 아니다.</b> 밀려 있는 잔량은 이 루프로 안 없어진다 — 수집기를 멈추고
+     *       1회 수동 회수해야 한다 ({@code docs/api.md} 「밀린 빈 공간을 한 번에 돌려받기」 절).</li>
+     *   <li><b>틀리는 방향</b>: 예산을 넘는 free page 는 <b>남는 쪽</b>으로 틀린다 (데이터가 지워지는
+     *       쪽이 아니다). 안전한 방향이다.</li>
+     *   <li><b>돌려준 공간은 영구가 아니다.</b> 트래픽이 늘면 파일이 다시 그만큼 자란다.</li>
+     *   <li>"예산을 얼마까지 키워도 되는가" 는 아래 관측 로그 3점이 쌓인 뒤 판정한다 —
+     *       <b>후속 관측 라운드</b> 몫이다.</li>
+     * </ol>
+     */
+    static final int RETENTION_VACUUM_BUDGET_PAGES = 5_000;
+
+    /**
+     * ① 디스크 가드가 쓰는 페이지당 WAL 증가분 상계 — 20 KiB/page.
+     *
+     * <p>// [Phase R22] R22/AC-01-5 verbatim: "새 가드의 크기 계산식은 <b>선형식이 아니다</b>.
+     * // 페이지당 WAL 이 예산과 함께 커지는 것이 실측됐으므로, 선형식으로 세우면 가드가 뚫린다."
+     * // 사용자 명시 결정(A-2). CLAUDE.md '데이터 모델 (8개 테이블, 변경 신중히)' 인용.
+     *
+     * <p>★ <b>이 값은 "한 점을 재고 곱한" 값이 아니다.</b> 3,000페이지에서 잰 9.30 KB/page 를 예산에
+     * 곱하면 20,000페이지 예측이 182 MB 인데 실측은 400.9 MB 였다 (<b>2.2배 과소</b> — 가드가 뚫린다).
+     * 대신 <b>실측 곡선의 최댓값 19.57 KB/page 를 20 으로 올린 상계</b>를 쓴다:
+     * <pre>
+     *   예산 2,000  → 실측 WAL 19.0 MB  · 가드 요구 39.1 MB  (2.06배 여유)
+     *   예산 5,000  → 실측 WAL 56.1 MB  · 가드 요구 97.7 MB  (1.74배 여유)  ← 채택 예산
+     *   예산 10,000 → 실측 WAL 171.0 MB · 가드 요구 195.3 MB (1.14배 여유)
+     *   예산 20,000 → 실측 WAL 400.9 MB · 가드 요구 390.6 MB (0.97배 — ★여기서 마진이 사라진다)
+     * </pre>
+     *
+     * <p>⚠️ <b>한계</b>: 이 상수는 실측 범위(≤20,000페이지)에서만 검증됐고, 20,000 에서는 이미 부족하다.
+     * 또 이 실측은 <b>동시 적재·동시 조회가 없는 상태</b>다 — 04:00 창에는 ingest writer 가 살아 있어
+     * WAL 은 더 커지는 방향이다. 채택 예산 5,000 의 1.74배 여유가 그 몫을 흡수하는 자리다.
+     * <b>틀리는 방향</b>: 상수가 실제보다 크면 가드가 과하게 막는 쪽(회수를 건너뛰고 로그만) — 안전하다.
+     */
+    static final long RECLAIM_WAL_BYTES_PER_PAGE = 20L * 1024L;
+
+    /**
+     * ③ 한 밤에 후보로 삼는 고아 span 개수 상한.
+     *
+     * <p>// [Phase R22] R22/AC-03-10 verbatim: "후보 개수 상한({@code ORPHAN_CANDIDATE_CAP})과 초과 시
+     * // 동작이 정해져 있다. 초과분을 그 밤에 버려도 고아는 안 사라지므로 다음 밤에 다시 후보가 된다 —
+     * // 잃는 것이 없다". 사용자 명시 결정(D-2). CLAUDE.md '데이터 모델 (8개 테이블, 변경 신중히)' 인용.
+     *
+     * <p><b>왜 500 인가</b> — 새 근거를 발명하지 않고 {@link #RETENTION_DELETE_BATCH_SIZE} 의 기존 근거를
+     * 그대로 따랐다: SQLite 파라미터 바인딩 한계(구버전 999)의 안전 마진. 스윕의 DELETE 두 문장이 각각
+     * 최대 500개 자리표시자를 만드는데 같은 마진 안이다. 행 크기로도 상한이 된다 — span_id 는 W3C 규격
+     * 16자리 16진수라 500 × (16 + 구분자 1) ≈ <b>8.5 KB</b>. {@code settings} 한 행이 한 밤에 통째로 다시
+     * 쓰이므로, 이 상한이 "이상 상황 한 번이 영구적으로 큰 행을 남기는 것" 을 막는다.
+     *
+     * <p><b>이 상한이 못 하는 것</b> (막았다고 쓰지 않는다):
+     * <ol>
+     *   <li>한 밤에 최대 500개만 후보가 된다. 고아가 5,000개인 밤이면 다 없애는 데 열흘 넘게 걸린다.</li>
+     *   <li><b>틀리는 방향</b>: 못 잡은 고아는 <b>남는 쪽</b>이다 (지워지는 쪽이 아니다). 안전하다.</li>
+     *   <li>후보 탐색이 상한에 걸리면 어젯밤 후보가 오늘 목록에서 빠질 수 있고, 그러면 그 span 은 삭제가
+     *       한 주기 더 밀린다. 역시 남는 쪽이다.</li>
+     * </ol>
+     */
+    static final int ORPHAN_CANDIDATE_CAP = 500;
+
+    /**
+     * ③ [전체 삭제] 즉시 스윕의 회전 안전 상한 (= 최대 {@code 20 × 500} = 10,000 span).
+     *
+     * <p>// [Phase R22] R22/AC-03-8 — [전체 삭제]는 2밤차를 기다리지 않고 즉시 지운다. 그 루프가
+     * // 무한히 돌지 않도록 회전 수에 상한을 둔다. 넘으면 경고 후 종료 — 다음 purge/야간이 이어받는다.
+     */
+    static final int ORPHAN_PURGE_MAX_ROUNDS = 20;
+
     private final JdbcTemplate jdbc;
     private final TransactionTemplate tx;
     private final SettingsService settingsService;
     private final int batchSize;
+    /**
+     * ③ 후보 목록 단일 진입점. <b>생성자 본문에서 파생</b>한다 — bean 주입으로 만들면 이 생성자가
+     * 5-인자가 되어 server 테스트 5곳의 호출부가 전부 깨진다 (진입점 시그니처 불변 봉인).
+     */
+    private final OrphanCandidateStore candidates;
 
     @Autowired
     public RetentionCleanupService(JdbcTemplate jdbc, PlatformTransactionManager txManager,
@@ -89,6 +190,9 @@ public class RetentionCleanupService {
         this.tx = new TransactionTemplate(txManager);
         this.settingsService = settingsService;
         this.batchSize = batchSize;
+        // [Phase R22] R22/AC-03-5 — ★생성자에서 jdbc 를 호출하지 않는다. optimize 경계 테스트가
+        //   mock JdbcTemplate 을 넘기므로, 여기서 질의하면 그 테스트가 stub 부재로 깨진다.
+        this.candidates = new OrphanCandidateStore(jdbc);
     }
 
     /** Cleanup 실행 결과 (관측/테스트용). */
@@ -107,6 +211,11 @@ public class RetentionCleanupService {
      * 같은 트랜잭션 + SQLite 단일 writer 특성으로 3단 사이 집합 불변 — 고아 0 보장 (NFR-02).
      */
     CleanupResult cleanup(long nowMs) {
+        // [Phase R22] R22/AC-01-6 관측 로그 ①/3 — 삭제 **전** freelist_count.
+        //   ★이 값이 "주기 최솟값"(하룻밤 사이에 낮 적재가 재사용하고 남은 바닥) 이고, 다음 라운드가
+        //   예산을 얼마까지 키워도 되는지 정하는 **유일한 입력**이다. 빠지면 영원히 모른다.
+        logFreelistBeforeDelete();
+
         // [Phase R12] AC-A1-6 — D-05 resolve 경유 (settings DB 값 > yml fallback)
         long cutoffMs = nowMs - settingsService.resolveRetentionDays() * DAY_MS;
 
@@ -133,6 +242,11 @@ public class RetentionCleanupService {
 
         // cutoff 미지정(empty) = 전체 trace 가 삭제 대상.
         CleanupResult result = deleteInBatches(OptionalLong.empty());
+
+        // [Phase R22] R22/AC-03-8 — ★finalizeMaintenance **앞**에 놓는다. 스윕이 만든 free page 를
+        //   같은 실행의 ① 회수가 함께 돌려주기 때문이다. 예외는 자체 try-catch 가 흡수하므로
+        //   아래 finalizeMaintenance 는 어떤 경우에도 실행된다.
+        purgeOrphanSpansImmediately();
 
         finalizeMaintenance(now);
 
@@ -299,24 +413,169 @@ public class RetentionCleanupService {
      * stamp last_cleanup_at, reclaim free pages, truncate WAL, refresh stats.
      *
      * <p>// [Phase R13] AC-D1-2 — 디스크 회수의 구조적 한계 2가지 (D-04 파일 삭제 금지 전제):
-     * // (i) incremental_vacuum 는 tail-only — free page 가 파일 끝에 모일 때만 회수한다.
-     * //     중간 단편화는 즉시 안 줄 수 있다 (full VACUUM 은 파일 재생성이라 D-04 로 금지).
+     * // [Phase R22] R22/AC-01-10 — ★오진단 정정: 이전 서술 "incremental_vacuum 는 tail-only" 는 **틀렸다**.
+     * // [Phase R22] ★오진단 정정: "free page 가 파일 끝에 모일 때만 회수한다" 도 **틀린 설명**이었다.
+     * // (i) incremental_vacuum 은 비어 있는 페이지를 **전량 회수할 수 있다.** 회수가 안 보였던 진짜 이유는
+     * //     드라이버가 이 PRAGMA 를 호출당 한 페이지만 진행시켰기 때문이다. 그래서 이제 예산만큼 반복해서
+     * //     부른다 (reclaimFreePages). 남는 한계는 "한 번에 예산만큼만 회수한다" 이고, 밀린 잔량은
+     * //     수집기를 멈추고 1회 수동 회수해야 없어진다.
+     * //     (중간 단편화까지 재배치하는 full VACUUM 은 파일 재생성이라 D-04 로 금지 — 그대로다.)
      * // (ii) wal_checkpoint(TRUNCATE) 는 reader 경합(SQLITE_BUSY)에 취약 — 수동 purge 는 운영자가
      * //      화면을 보는 중(reader 활성) 실행될 확률이 높아 busy 로 부분 실패할 수 있다.
-     * //      그 경우 다음 cleanup(nightly/수동)에서 자연 재시도된다 (재시도 코드 불요).
+     * //      그 경우 다음 cleanup(nightly/수동)에서 자연 재시도된다 (재시도 코드 불요). ★이 서술은 그대로 참이다.
      */
     private void finalizeMaintenance(long nowMs) {
         // AC-A1-7: 정상 종료 시 항상 갱신 (삭제 0건 포함) — "마지막 실행 시각" 의미 (T-10).
-        jdbc.update("UPDATE retention_meta SET last_cleanup_at = ? WHERE id = 1", nowMs);
+        // [Phase R22] R22/AC-04-1 verbatim: "retention_meta 갱신이 **upsert** 다. SettingsService 의
+        //   ON CONFLICT ... DO UPDATE 모양을 따라간다 (새 관용구를 만들지 않는다). retention_meta.id 가
+        //   INTEGER PRIMARY KEY 라 ON CONFLICT(id) 가 성립한다."
+        //   ★행이 사라진 운영 사고가 실재했다 — UPDATE 는 행이 없으면 0행 갱신으로 조용히 성공한다.
+        //   ★이 문장은 **일부러 try-catch 로 감싸지 않는다**: 지금 UPDATE 도 실패하면 전파되고 그것이
+        //     현재 계약이다. 여기를 삼키면 DB 쓰기 실패가 조용히 사라져, ④가 겪은 무음 실패를 새로 심는다.
+        jdbc.update("""
+                        INSERT INTO retention_meta (id, last_cleanup_at) VALUES (1, ?)
+                        ON CONFLICT(id) DO UPDATE SET last_cleanup_at = excluded.last_cleanup_at
+                        """, nowMs);
 
-        // BL-03: incremental_vacuum — full VACUUM 경로 아님 (D-04: 파일 삭제/재생성 0). tail-only 한계 (i).
-        jdbc.execute("PRAGMA incremental_vacuum");
+        // BL-03: incremental_vacuum — full VACUUM 경로 아님 (D-04: 파일 삭제/재생성 0).
+        // [Phase R22] R22/AC-01-1/R22/AC-01-8 — 한 줄 호출이 **예산 제한 루프**가 된다. 순서상 자리는
+        //   그대로다(위 (i) 정정 참조: 한계는 tail-only 가 아니라 **한 번에 예산만큼**이다).
+        //   시각 기록(위 upsert) **바로 뒤** — 회수가 터져도 그 밤의 기록은 이미 남았다.
+        reclaimFreePages();
         // [수동 정리] WAL truncate 미호출 시 -wal 파일이 안 줄어드는 문제 (디스크 회수 보강).
         // 순서: incremental_vacuum → wal_checkpoint(TRUNCATE) → ANALYZE. (순서 불변 봉인 — Design §2.D.1)
         // TRUNCATE 모드는 checkpoint 후 -wal 파일을 0 바이트로 잘라 디스크를 즉시 회수한다.
         checkpointWal();
         // AC-A4-3: cleanup 후 ANALYZE — 인덱스 통계 갱신.
         jdbc.execute("ANALYZE");
+    }
+
+    // ══ [Phase R22] ① 예산 제한 free page 회수 (신규 패턴 — 앵커 밀도 2배) ══════════════════════
+    //
+    //  신규 패턴 #3 "예산 제한 PRAGMA 루프". 이 패턴이 처음이라 되풀이 차단을 위해 아래 3가지를
+    //  코드 옆에 남긴다. 다음 조사자가 여기부터 읽는다.
+    //
+    //   (ㄱ) **예산 차감이 호출 횟수가 아니라 freelist_count 차이다.** 지금 드라이버는 1호출 = 1페이지지만,
+    //        그 1:1 은 드라이버 버전에 딸린 성질이라 다음 갱신에서 조용히 깨질 수 있다. 차이로 세면
+    //        1호출 = N페이지가 되어도 예산이 지켜진다 (R22/AC-01-2).
+    //   (ㄴ) **after >= free 즉시 종료가 무한 루프를 막는다.** auto_vacuum 이 INCREMENTAL 이 아니면
+    //        incremental_vacuum 은 no-op 이라 freelist_count 가 안 줄어든다. 이 가드가 없으면 그 환경에서
+    //        루프가 예산만큼 헛돈다. ★단위 테스트 DB 가 정확히 그 상태다(Flyway 만 돌아 auto_vacuum=NONE).
+    //   (ㄷ) **회수 루프는 페이지 도메인만 다룬다.** 바이트 변환은 디스크 가드 한 곳에서만 일어난다.
+    //
+    //  ★회수 PRAGMA 를 부르는 곳은 이 메서드 한 곳뿐이다 (단일 위임 진입점 — G-05 로 검증).
+
+    /**
+     * ① 예산 제한 free page 회수. <b>예외는 이 메서드 밖으로 나가지 않는다.</b>
+     *
+     * <p>// [Phase R22] R22/AC-01-1/R22/AC-01-2/R22/AC-01-8 — R22/AC-01-8 verbatim: "회수 루프는
+     * // {@code finalizeMaintenance} 안에서 <b>정리 시각 기록보다 뒤</b>에 놓이고, <b>자체 try-catch</b> 로
+     * // 감싸인다. 여기서 나온 예외는 밖으로 나가지 않는다." 사용자 명시 결정(OQ-1).
+     * // CLAUDE.md '아키텍처 핵심 원칙' (호스트 앱 영향 0 · 실패 시 silent drop) 과 같은 결의 방어.
+     *
+     * <p>잡은 뒤 그냥 돌아오므로 {@link #checkpointWal()}·{@code ANALYZE} 는 그대로 진행된다.
+     * 수동 경로({@code MaintenanceController}, try-catch 없음)에도 500 이 나가지 않는다.
+     */
+    private void reclaimFreePages() {
+        try {
+            long free = readFreelistCount();
+            // R22/AC-01-6 관측 로그 ②/3 — 삭제 **후** freelist_count + 예산. 이번 밤에 회수 가능했던 양.
+            log.info("reclaim start: freelistPages={} budgetPages={}", free, RETENTION_VACUUM_BUDGET_PAGES);
+            if (free <= 0) {
+                return;                                  // 회수할 것이 없음 — 정상 종료.
+            }
+            if (!hasEnoughDiskForReclaimResolved()) {
+                return;                                  // 가드 거부 (자체 warn 로그). 정리 자체는 성공으로 끝난다.
+            }
+
+            long budget = Math.min(free, RETENTION_VACUUM_BUDGET_PAGES);
+            long reclaimed = 0;
+            while (reclaimed < budget) {
+                // 자동커밋 1문장 — TransactionTemplate 으로 묶지 않는다 (예산 상수 javadoc 의 "한 쌍" 근거).
+                jdbc.execute("PRAGMA incremental_vacuum");
+                long after = readFreelistCount();
+                if (after >= free) {
+                    break;                               // ★종료 조건 = freelist 재확인. 진행이 없으면 즉시 종료.
+                }
+                reclaimed += (free - after);             // ★예산은 "실제 줄어든 페이지" 로만 차감한다.
+                free = after;
+            }
+            // R22/AC-01-6 관측 로그 ③/3 — 종료 후 freelist_count + 이번에 회수한 페이지 수(실제 회수량).
+            log.info("reclaim done: reclaimedPages={} freelistPages={}", reclaimed, free);
+        } catch (Exception e) {
+            // 회수는 실패했지만 **정리 자체는 성공**했음이 드러나게 적는다 (시각은 이미 기록됐다).
+            log.warn("free page reclaim failed — cleanup itself succeeded (timestamp already stamped)", e);
+        }
+    }
+
+    /**
+     * ① 관측 로그 ①/3 — 삭제 <b>전</b> {@code freelist_count} (주기 최솟값).
+     *
+     * <p>// [Phase R22] R22/AC-01-6 verbatim: "★①이 빠지면 예산을 얼마까지 키워도 되는지 다음 라운드가
+     * // 영원히 모른다." 자체 try-catch — 관측 실패가 정리를 막지 않는다.
+     *
+     * <p>★ {@code purgeAll()} 에는 넣지 않는다 — purge 는 주기 작업이 아니라 "주기 최솟값" 의미가 성립하지
+     * 않는다. 수동 [보관 기간 즉시 적용] 은 {@code cleanup()} 경유라 함께 찍히는데, 무해한 추가 데이터다.
+     */
+    private void logFreelistBeforeDelete() {
+        try {
+            log.info("cleanup start: freelistPagesBeforeDelete={}", readFreelistCount());
+        } catch (Exception e) {
+            log.warn("freelist observation before delete failed — cleanup continues", e);
+        }
+    }
+
+    /** {@code PRAGMA freelist_count} — 회수 가능한 빈 페이지 수. 매핑 불가 시 0 (루프 미진입 = 안전한 방향). */
+    private long readFreelistCount() {
+        Long v = jdbc.queryForObject("PRAGMA freelist_count", Long.class);
+        return v == null ? 0L : v;
+    }
+
+    /**
+     * ① 회수 루프 실행 전 디스크 여유 가드 (런타임 경로).
+     *
+     * <p>// [Phase R22] R22/AC-01-4 verbatim: "야간 경로에 예산 크기에 맞는 <b>새 디스크 가드</b>가 있다.
+     * // 기존 {@code hasEnoughDisk(long, long)} 과 {@code hasEnoughDiskForVacuum()} 은 <b>시그니처·본문
+     * // 무변경</b>이고, {@code optimizeDatabase()} 전용으로 남는다." 사용자 명시 결정(A-2).
+     *
+     * <p>기존 가드를 왜 못 쓰는가: 그쪽은 <b>전체 VACUUM 용</b>이라 원본 크기만큼의 여유를 요구한다.
+     * 19.6 MB 를 회수하려고 DB 전체 크기만큼의 여유를 요구하면 <b>과하게 막는다</b>.
+     *
+     * <p>{@code resolveDbFile()} 이 null 이면(in-memory 등) {@link #hasEnoughDiskForVacuum()} 과 같은
+     * 관례로 <b>통과</b>시킨다 — 새 관례를 만들지 않는다.
+     */
+    private boolean hasEnoughDiskForReclaimResolved() {
+        File dbFile = resolveDbFile();
+        if (dbFile == null) {
+            log.warn("reclaim disk-guard skipped — DB file path unresolved (in-memory or driver limitation)");
+            return true;
+        }
+        long usable = dbFile.getUsableSpace();
+        if (!hasEnoughDiskForReclaim(usable, RETENTION_VACUUM_BUDGET_PAGES)) {
+            // 필요했던 여유 · 실제 여유를 함께 남긴다 (가드가 왜 거부했는지 로그만 보고 알 수 있게).
+            log.warn("free page reclaim skipped — insufficient disk. needBytes={} usableBytes={} budgetPages={}",
+                    RETENTION_VACUUM_BUDGET_PAGES * RECLAIM_WAL_BYTES_PER_PAGE, usable,
+                    RETENTION_VACUUM_BUDGET_PAGES);
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * ① 디스크 여유 비교 핵심 (경계값 단위 테스트 진입점).
+     *
+     * <p>// [Phase R22] R22/AC-01-4/R22/AC-01-5 — 루프 중에는 DB 파일이 안 줄고 WAL 만 자란다
+     * // (실측: page_count 297,724 → 277,699 인데 파일 크기 변동 0 B). 최대 점유 시점 = 루프 끝 =
+     * // 기존 DB 크기 + WAL. DB 파일은 이미 그 자리를 차지하고 있으므로, <b>새로 필요한 여유는 WAL 증가분뿐</b>이다.
+     *
+     * <p>경계: 가용 == 필요 → <b>허용</b>({@code >=}). 기존 {@link #hasEnoughDisk} 와 같은 경계 규약을 따른다.
+     *
+     * @param usableSpace DB 파일 디렉토리의 가용 디스크 byte
+     * @param budgetPages 이번 회수의 예산(페이지 수)
+     * @return 허용이면 true, 거부면 false
+     */
+    static boolean hasEnoughDiskForReclaim(long usableSpace, long budgetPages) {
+        return usableSpace >= budgetPages * RECLAIM_WAL_BYTES_PER_PAGE;
     }
 
     /**
@@ -344,5 +603,206 @@ public class RetentionCleanupService {
                 log.warn("wal_checkpoint(TRUNCATE) failed — continuing (디스크 회수 한계, 가용성 우선)", e2);
             }
         }
+    }
+
+    // ══ [Phase R22] ③ 고아 span 2밤차 스윕 (신규 패턴 — 앵커 밀도 2배) ═════════════════════════
+    //
+    //  신규 패턴 #1 "다밤(多夜) 상태 기계". 상태가 코드가 아니라 **DB 한 행**(settings 의 내부 키)에
+    //  들어 있고, 한 밤에 한 칸씩만 움직인다. 다음 조사자가 상태 전이를 코드에서 못 읽고 헤매지 않도록
+    //  전이표를 여기 남긴다.
+    //
+    //    없음        → 1밤차 후보 : 쓰기 3단 candidates.write(todayOrphans \ toDelete)
+    //    1밤차 후보  → 삭제       : 쓰기 1·2단 (yesterday ∩ todayOrphans)
+    //    1밤차 후보  → 소멸(자가치유): 오늘 고아가 아니면 교집합에서 빠지고 새 목록에도 안 실린다
+    //    삭제 실패   → 재후보     : 다음 밤 탐색이 다시 잡는다 (안전한 방향)
+    //
+    //  ★ nextCandidates = todayOrphans \ toDelete 인 이유: 오늘 지운 것을 내일 후보로 들고 가면
+    //    이미 없는 span_id 를 계속 나른다. **오늘 처음 본 고아만** 내일의 후보다.
+    //
+    //  신규 패턴 #2 "호출 출처에 따라 다르게 도는 공유 메서드" 는 **일부러 만들지 않았다.**
+    //    (ㄲ) cleanup(long nowMs) 에 출처 플래그를 넘겨 분기하는 안은 **기각**됐다:
+    //      (1) "실수로 true 를 넘기는" 경로가 열리고 (2) 공유 메서드가 출처별로 다르게 도는 첫 사례를 만들며
+    //      (3) cleanup(long) 시그니처가 바뀌어 server 테스트 5곳의 호출부가 흔들린다.
+    //    대신 (ㄱ) 호출처 분리를 채택했다 — 아래 sweepOrphanSpansNightly() 의 호출처가
+    //    RetentionCleanupJob 단 하나인 것 자체가 강제 수단이다. 다음 라운드가 이 메서드를 cleanup() 안으로
+    //    옮기거나 플래그 분기를 되살리지 말 것.
+
+    /**
+     * ③ 야간 전용 고아 span 스윕 — <b>이틀에 걸쳐 확인하고 지운다.</b>
+     *
+     * <p>// [Phase R22] R22/AC-03-2/R22/AC-03-3/R22/AC-03-7/R22/AC-03-11 — R22/AC-03-7 verbatim:
+     * // "수동 <b>[지난 데이터 정리 / 보관 기간 즉시 적용]</b> 경로는 후보 상태를 <b>읽지도 쓰지도 않는다.</b>
+     * // ⇒ 이 버튼을 연달아 두 번 눌러도 고아 삭제는 0 이다. <b>"밤" = 야간 스케줄 실행 1회</b>다."
+     * // <b>사용자 명시 비협상 결정</b>(U-1). CLAUDE.md '데이터 모델 (8개 테이블, 변경 신중히)' 인용.
+     *
+     * <p>★ <b>호출처는 {@link RetentionCleanupJob#runScheduled()} 단 하나다.</b> {@code MaintenanceController}
+     * 에서 후보 상태로 가는 <b>코드 경로가 아예 존재하지 않는다</b> — 플래그 분기가 아니라 구조적 부재다.
+     * 검증은 grep 한 줄로 끝난다 (G-07: MaintenanceController 안에 {@code sweepOrphan}/{@code OrphanCandidate}
+     * /{@code orphanCandidates} 0 hit — <b>비협상</b>).
+     *
+     * <p>★ 이 메서드는 {@code cleanup()} 이 <b>반환한 뒤</b> 돈다. 그래서 스윕이 터져도 시각 기록·회수·
+     * 체크포인트·ANALYZE 는 이미 다 끝났다 — "시각 기록보다 뒤" 가 <b>구조로</b> 보장된다.
+     *
+     * <p>★ <b>이 스윕이 고치지 못하는 것</b>: 스윕은 <b>증상을 치우는 것이지 원인을 고치는 것이 아니다.</b>
+     * 고아가 생기는 원인은 요약 upsert 실패({@code IngestService})이고, 이 라운드는 그것을 건드리지 않는다.
+     * <b>근본 해소는 후속 라운드</b> 몫이다. "고아 span 은 0 이다" 를 단정으로 쓰지 않는다.
+     */
+    public void sweepOrphanSpansNightly() {
+        try {
+            // ── 트랜잭션 밖 (읽기) ──────────────────────────────────────────────
+            List<String> todayOrphans = detectOrphanSpans(ORPHAN_CANDIDATE_CAP);
+            List<String> yesterday = candidates.read();
+
+            Set<String> todaySet = new LinkedHashSet<>(todayOrphans);
+            // ★교집합 — 어젯밤 후보였고 오늘도 고아인 것만 지운다. 저장해 둔 후보를 그대로 지우지 않는다.
+            List<String> toDelete = yesterday.stream().filter(todaySet::contains).distinct().toList();
+            Set<String> deleteSet = new LinkedHashSet<>(toDelete);
+            // ★오늘 처음 발견된 고아만 내일의 후보다 (오늘 지운 것은 안 나른다).
+            List<String> nextCandidates = todayOrphans.stream().filter(id -> !deleteSet.contains(id)).toList();
+
+            // ── 트랜잭션 1개 (쓰기) ─────────────────────────────────────────────
+            // R22/AC-03-11: 스윕과 후보 기록은 **한 트랜잭션**이다. 따로 두면 삭제만 커밋되거나
+            //   후보만 갱신되는 어긋남이 생긴다.
+            int[] deleted = new int[2];
+            tx.executeWithoutResult(status -> {
+                int[] counts = deleteOrphanSpans(toDelete);
+                deleted[0] = counts[0];
+                deleted[1] = counts[1];
+                candidates.write(nextCandidates);
+            });
+
+            if (todayOrphans.size() >= ORPHAN_CANDIDATE_CAP) {
+                log.warn("orphan candidate cap reached: cap={} — the rest become candidates again on the next night",
+                        ORPHAN_CANDIDATE_CAP);
+            }
+            // ★로그에 span_id 를 나열하지 않는다 — **개수만** 남긴다 (식별자 자체가 운영 정보다).
+            log.info("orphan sweep finished: deletedSpans={} deletedPayloads={} candidatesRecorded={}",
+                    deleted[1], deleted[0], nextCandidates.size());
+        } catch (Exception e) {
+            // 후보 값이 깨져 있든, 탐색이 실패하든, 삭제가 실패하든 밖으로 안 나간다.
+            // Job 의 두 번째 try-catch 가 2겹째 그물이다.
+            log.error("orphan span sweep failed — cleanup itself already finished, will retry at next schedule", e);
+        }
+    }
+
+    /**
+     * ③ [전체 삭제] 직후의 즉시 스윕 — <b>2밤차 유예 없음</b>.
+     *
+     * <p>// [Phase R22] R22/AC-03-8 verbatim: "<b>[전체 삭제]({@code purgeAll})는 2밤차를 기다리지 않고
+     * // 즉시 지운다.</b> 그리고 후보 목록도 <b>비운다</b> (전부 지운 뒤 이미 없는 span_id 를 후보로 들고
+     * // 다음 밤을 시작하지 않게 한다)." 사용자 명시 결정(D-2).
+     *
+     * <p>왜 필요한가: {@code purgeAll()} 의 배치 루프는 {@code SELECT trace_id FROM traces} 로 대상을
+     * 고르므로 <b>traces 행이 없는 고아 span 은 절대 못 잡는다.</b> 그러면 "전체 삭제" 를 눌러도 고아가
+     * 남아 <b>그 조작의 이름과 계약이 거짓</b>이 된다.
+     *
+     * <p>수동·의도적·되돌릴 수 없는 조작이라 유예를 걸지 않는다 — 2밤차 유예는 야간 정리에만 건다.
+     */
+    private void purgeOrphanSpansImmediately() {
+        try {
+            int rounds = 0;
+            int totalSpans = 0;
+            int totalPayloads = 0;
+            while (rounds < ORPHAN_PURGE_MAX_ROUNDS) {
+                List<String> orphans = detectOrphanSpans(ORPHAN_CANDIDATE_CAP);
+                if (orphans.isEmpty()) {
+                    break;
+                }
+                if (rounds > 0) {
+                    sleepQuietly(BATCH_YIELD_MS);   // 회전 사이 양보 — 배치 루프와 같은 관례.
+                }
+                int[] counts = new int[2];
+                tx.executeWithoutResult(status -> {
+                    int[] c = deleteOrphanSpans(orphans);
+                    counts[0] = c[0];
+                    counts[1] = c[1];
+                });
+                totalPayloads += counts[0];
+                totalSpans += counts[1];
+                rounds++;
+            }
+            if (rounds >= ORPHAN_PURGE_MAX_ROUNDS) {
+                log.warn("orphan purge stopped at the round cap: rounds={} — the next purge or nightly sweep continues",
+                        ORPHAN_PURGE_MAX_ROUNDS);
+            }
+            // 이미 없는 span_id 를 후보로 들고 다음 밤을 시작하지 않게 후보 목록을 비운다.
+            tx.executeWithoutResult(status -> candidates.write(List.of()));
+            log.info("orphan purge finished: deletedSpans={} deletedPayloads={} rounds={}",
+                    totalSpans, totalPayloads, rounds);
+        } catch (Exception e) {
+            log.error("orphan span purge failed — purge itself succeeded, nightly sweep will pick it up", e);
+        }
+    }
+
+    /**
+     * ③ 고아 span <b>탐색</b> — {@code traces} 에 행이 없는 {@code spans} 를 최대 {@code limit} 건 찾는다.
+     *
+     * <p>// [Phase R22] R22/AC-03-1 verbatim: "고아 판정 기준은 <b>기준 A</b> — {@code spans} 중
+     * // {@code trace_id} 가 {@code traces} 에 없는 행. 이 뜻은 {@code RetentionCleanupServiceTest} 의
+     * // {@code SELECT COUNT(*) FROM spans WHERE trace_id NOT IN (SELECT trace_id FROM traces)} 단언식과
+     * // 같다. <b>새 정의를 만들지 않는다.</b>"
+     *
+     * <p>{@code NOT IN} 대신 {@code NOT EXISTS} 를 쓴 이유는 <b>성능 하나뿐</b>이다 — 상관 서브쿼리가
+     * {@code traces} PK 인덱스를 직격한다. {@code spans.trace_id} 는 {@code NOT NULL} 이고
+     * {@code traces.trace_id} 는 PK 라 <b>NULL 함정이 없어</b> 두 형태의 결과가 같다.
+     *
+     * <p>★ 이 문장은 <b>탐색</b>이다. 자식부터 지우는 <b>삭제</b> 순서와 낱말을 구분해 쓴다 (R22/AC-03-4).
+     *
+     * <p>★ <b>{@code spans} 전수 훑기는 "집계는 {@code traces} 기점" 규칙의 구조적 예외다.</b>
+     * 그 규칙은 <b>화면에 보여 줄 집계</b>의 규칙이다(창·서비스·정렬이 전부 {@code traces} 에 있어 거기서
+     * 시작해야 인덱스가 듣는다). 그런데 여기서 찾는 것은 <b>{@code traces} 에 행이 없는 span</b> 이라,
+     * {@code traces} 를 기점으로 잡으면 <b>찾을 수 있는 집합이 공집합</b>이다 — 규칙 위반이 아니라
+     * <b>규칙이 다루는 대상이 아닌 것</b>이다. 이 예외의 사정권은 <b>이 메서드 한 곳</b>이고,
+     * 화면 집계 쿼리는 전부 {@code traces} 기점 그대로다. 다음 검토가 "traces 기점으로 바꾸자" 를
+     * 넣지 않도록 여기 적어 둔다 (그 수정은 성립 불가능하다).
+     */
+    private List<String> detectOrphanSpans(int limit) {
+        return jdbc.queryForList(
+                """
+                        SELECT s.span_id FROM spans s
+                         WHERE NOT EXISTS (SELECT 1 FROM traces t WHERE t.trace_id = s.trace_id)
+                         LIMIT ?
+                        """,
+                String.class, limit);
+    }
+
+    /**
+     * ③ 고아 span <b>삭제</b> — 반드시 {@code payloads} → {@code spans} 순서.
+     *
+     * <p>// [Phase R22] R22/AC-03-4 verbatim: "<b>삭제 순서는 {@code payloads} → {@code spans}</b> 다.
+     * // (비협상) 기존 payload DELETE 가 {@code spans} 를 경유해 대상을 찾으므로, {@code spans} 를 먼저
+     * // 지우면 그 payload 를 찾을 길이 사라져 <b>영구히</b> 남는다."
+     * // <b>사용자 명시 비협상 결정</b>. CLAUDE.md '데이터 모델 (8개 테이블, 변경 신중히)' 인용.
+     *
+     * <p>★ <b>두 DELETE 문 모두에 고아 술어를 다시 넣는다.</b> 탐색과 쓰기 트랜잭션 사이(수 밀리초)에
+     * 요약이 도착해 <b>되살아난 span 을 죽이는 창</b>을 닫는다. 술어를 두 문장에 다 넣었으므로 되살아난
+     * span 은 어느 문장에도 안 걸린다. 두 문장이 <b>같은 트랜잭션</b> 안이고 SQLite 는 단일 writer 라,
+     * 첫 쓰기 문장부터 쓰기 잠금을 잡아 그 사이 다른 writer 가 커밋할 수 없다 — 술어 판정이 어긋나지 않는다.
+     * <b>id 목록만으로 지우지 말 것.</b>
+     *
+     * <p>★ <b>바인딩만 쓴다</b> — 자리표시자만 문자열로 만들고 값은 전부 파라미터로 넘긴다
+     * (기존 배치 DELETE 관례 그대로). 문자열로 이어 붙이는 경로 0.
+     *
+     * @return {@code [삭제된 payload 수, 삭제된 span 수]}
+     */
+    private int[] deleteOrphanSpans(List<String> spanIds) {
+        if (spanIds.isEmpty()) {
+            return new int[]{0, 0};
+        }
+        String in = String.join(",", Collections.nCopies(spanIds.size(), "?"));
+        Object[] params = spanIds.toArray();
+
+        // 1단 — payloads. 기존 3단 DELETE 의 "spans 를 경유해 대상을 찾는" 모양을 그대로 따른다.
+        int payloads = jdbc.update(
+                "DELETE FROM payloads WHERE span_id IN ("
+                        + "SELECT s.span_id FROM spans s WHERE s.span_id IN (" + in + ")"
+                        + " AND NOT EXISTS (SELECT 1 FROM traces t WHERE t.trace_id = s.trace_id))",
+                params);
+        // 2단 — spans. 같은 고아 술어를 다시 확인한다.
+        int spans = jdbc.update(
+                "DELETE FROM spans WHERE span_id IN (" + in + ")"
+                        + " AND NOT EXISTS (SELECT 1 FROM traces t WHERE t.trace_id = spans.trace_id)",
+                params);
+        return new int[]{payloads, spans};
     }
 }

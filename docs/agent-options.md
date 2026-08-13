@@ -39,7 +39,7 @@ java -javaagent:/path/to/apilens-agent.jar \
 | `apilens.jdbc.capture-result-set`   | `false`                 | boolean |      | **opt-in** — true 시 JDBC SELECT 결과(row)를 payload_out에 캡처. 위험 항목 참고 |
 | `apilens.jdbc.capture-params`       | `true`                  | boolean |      | **default ON** — PreparedStatement 표준 12종 setter + addBatch 호출에서 파라미터 값을 PAYLOAD IN에 직렬화. 운영망 hot-path 오버헤드 회피용 escape hatch로 `false` 토글 가능. 비활성 시 advice 자체가 weaving 되지 않아 런타임 비용 0. 자세한 동작은 아래 항목 참고 |
 | `apilens.instrument.exclude-packages` | `(없음)`               | String(콤마 목록) |  | **opt-in** — 계측에서 제외할 패키지 prefix 목록(콤마 구분). 미설정/빈 값이면 제외 없음(현 계측 그대로). 지정한 prefix 로 시작하는 클래스는 weaving 대상에서 빠져 span·payload 생성이 없다(weaving 시점 결정, 런타임 비용 0). 자세한 동작·가이드는 아래 항목 참고 |
-| `apilens.instrument.require-entry-root` | `false`              | boolean |      | **opt-in** — true 시 흐름의 시작점이 진입점(들어오는 요청을 받는 controller 계층)이 아니면 그 흐름 자체를 만들지 않음. **배치 워커 흐름이 통째로 사라지므로 기본 꺼짐.** 자세한 동작은 아래 항목 참고 |
+| `apilens.instrument.require-entry-root` | `false`              | boolean |      | **opt-in** — true 시 흐름의 시작점이 진입점(들어오는 요청을 받는 controller 계층)이 아니면 그 흐름 자체를 만들지 않음. **진입점 밖에서 시작되는 흐름이 통째로 사라지므로 기본 꺼짐** (배치 워커가 대표적인 예이고, 메시지 소비자·기동 작업·요청에서 갈라진 별도 스레드도 포함). 자세한 동작은 아래 항목 참고 |
 
 ## 검증 / 안전 동작 (모두 silent + agent disabled — 호스트 앱은 정상 시작)
 
@@ -298,11 +298,17 @@ controller 계층)이 아니면 그 흐름 자체를 만들지 않습니다.**
 
 ### 켜기 전 반드시 알아야 할 것
 
-- **켜면 배치 워커(`@Scheduled`/`@Async` 류)에서 시작되는 흐름이 통째로 사라집니다.
-  이것이 이 옵션의 목적이며 의도된 동작입니다 — 그래서 기본값이 꺼짐입니다.** 배치
-  흐름도 계속 보고 싶다면 켜지 마세요.
-- 진입점(controller)에서 시작된 흐름은 영향이 없습니다 — 그 아래 service /
-  repository / mapper / DB 기록은 그대로 남습니다.
+- **켜면 진입점 밖에서 시작되는 흐름이 통째로 사라집니다. 배치 워커(`@Scheduled`/`@Async`
+  류)가 대표적인 예이지만 그것만은 아닙니다.** 이것이 이 옵션의 목적이며 의도된 동작입니다
+  — 그래서 기본값이 꺼짐입니다. 진입점 밖 흐름도 계속 보고 싶다면 켜지 마세요.
+- **사라지는 범위는 "배치 워커" 보다 넓습니다.** 다음도 진입점 밖 시작이라 함께 사라집니다:
+  - 메시지 소비자 / 이벤트 리스너에서 시작되는 흐름
+  - 애플리케이션 기동·종료 시점에 도는 초기화 작업
+  - 서버가 스스로 부르는 내부 작업(캐시 갱신·헬스 점검 등)
+- 진입점(controller)에서 시작된 흐름 자체는 영향이 없습니다 — 그 아래 service /
+  repository / mapper / DB 기록은 그대로 남습니다. **다만 요청에서 갈라져 나온 별도
+  스레드(비동기 실행·별도 스레드 풀에 넘긴 작업)는 그 스레드에서 새로 시작되는 흐름이므로
+  영향을 받습니다.** "요청 처리 중에 일어난 일" 이라고 해서 전부 남는 것은 아닙니다.
 - 억제된 시작점 아래에서 이어지는 호출들도 함께 억제됩니다(일관 억제 — 반쪽 흐름이
   남지 않습니다).
 - agent 시작 알림(`operationName=agent.startup`)은 이 옵션과 무관하게 계속 전송됩니다

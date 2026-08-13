@@ -148,6 +148,59 @@ class MaintenanceControllerTest {
         assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM payloads", Integer.class));
     }
 
+    /**
+     * [Phase R22] V-11 — 수동 [지난 데이터 정리] 토스트의 "약 X 확보" 숫자가 <b>실제로 커진다</b>.
+     *
+     * <p>{@code freedBytes} 는 {@code MaintenanceController} 가 작업 전후 {@code page_count} 차로 계산한다.
+     * ① 이전에는 {@code incremental_vacuum} 이 호출당 한 페이지만 진행돼 사실상 0 이었다. 예산 루프가
+     * 들어온 뒤에는 그 밤에 회수한 만큼이 이 숫자로 나온다 — <b>화면 코드는 한 줄도 안 바꿨는데 화면에
+     * 보이는 숫자가 바뀌는</b> 자리라, 릴리스 노트가 미리 알려야 하는 변화다.
+     *
+     * <p>★ 단위 테스트 DB 는 Flyway 만 돌아 {@code auto_vacuum = NONE} 이다 — 그대로 두면
+     * {@code incremental_vacuum} 이 no-op 이라 이 테스트가 <b>통과하면서 아무것도 검증하지 않는다</b>.
+     * 그래서 전환을 먼저 걸고, free page 가 실제로 생겼는지 단언으로 확인한 뒤 잰다.
+     */
+    @Test
+    void cleanupReturnsFreedBytesAboveZeroWhenFreePagesWereReclaimed() throws Exception {
+        enableIncrementalAutoVacuum();
+        createFreePages(120, 40_000);
+        Long freeBefore = jdbc.queryForObject("PRAGMA freelist_count", Long.class);
+        assertEquals(true, freeBefore != null && freeBefore > 0,
+                "전제: 회수할 free page 가 실제로 생겨야 이 단언이 의미를 가진다");
+
+        String body = mockMvc.perform(post("/v1/maintenance/cleanup"))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+
+        long freedBytes = new ObjectMapper().readTree(body).get("freedBytes").asLong();
+        assertEquals(true, freedBytes > 0,
+                "예산 루프가 회수한 만큼이 freedBytes 로 나온다 (실측 freedBytes=" + freedBytes + ")");
+    }
+
+    /** {@code auto_vacuum} 전환 — PRAGMA 와 VACUUM 은 <b>같은 connection</b> 이어야 반영된다. */
+    private void enableIncrementalAutoVacuum() {
+        jdbc.execute((java.sql.Connection con) -> {
+            try (java.sql.Statement st = con.createStatement()) {
+                st.execute("PRAGMA auto_vacuum=INCREMENTAL");
+                st.execute("VACUUM");
+            }
+            return null;
+        });
+    }
+
+    /** payload 를 대량으로 넣었다 지워 free page 를 만든다. */
+    private void createFreePages(int rows, int bodyBytes) {
+        insertTraceTree("t-bulk", System.currentTimeMillis());
+        String body = "x".repeat(bodyBytes);
+        java.util.List<Object[]> batch = new java.util.ArrayList<>();
+        for (int i = 0; i < rows; i++) {
+            batch.add(new Object[]{"bulk-" + i, body, (long) bodyBytes});
+        }
+        jdbc.batchUpdate("INSERT INTO payloads (span_id, direction, content_type, body, size_bytes, truncated) "
+                + "VALUES (?, 'out', 'application/json', ?, ?, 0)", batch);
+        jdbc.update("DELETE FROM payloads WHERE span_id LIKE 'bulk-%'");
+    }
+
     @Test
     void purgeOnEmptyDbReturns200WithZeroDeleted() throws Exception {
         mockMvc.perform(post("/v1/maintenance/purge"))
@@ -171,7 +224,11 @@ class MaintenanceControllerTest {
         for (int i = 0; i < 30; i++) {
             insertTraceTree("t-" + i, now - 100 * DAY_MS);
         }
-        // 만료분 전부 삭제 → free page 생성 (incremental_vacuum tail-only 한계로 중간 단편 잔존 가능).
+        // 만료분 전부 삭제 → free page 생성.
+        // [Phase R22] R22/AC-01-10 — ★오진단 정정: 이전 주석의 "incremental_vacuum tail-only 한계" 는 **틀렸다**.
+        //   incremental_vacuum 은 빈 페이지를 전량 회수할 수 있고, 회수가 안 보였던 이유는
+        //   호출당 한 페이지만 진행됐기 때문이다. optimize(전체 VACUUM)는 그와 별개로 **중간 단편까지 재배치**
+        //   한다 — 이 테스트가 재는 것은 그 재배치다.
         jdbc.update("DELETE FROM payloads");
         jdbc.update("DELETE FROM spans");
         jdbc.update("DELETE FROM traces");

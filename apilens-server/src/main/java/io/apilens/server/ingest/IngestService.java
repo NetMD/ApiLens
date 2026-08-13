@@ -172,8 +172,13 @@ public class IngestService {
                 if (isSqliteBusy(e)) {
                     sqliteBusyEncountered.incrementAndGet();
                 }
-                // 요약 실패는 span 유실 아님(이미 커밋) → dropped 증가 안 함. 다음 ingest 가 재집계로 자가치유.
-                log.warn("trace summary deferred (self-heal next ingest): traceId={} cause={}",
+                // 요약 실패는 span 유실 아님(이미 커밋) → dropped 증가 안 함.
+                // [Phase R22] R22/AC-05-1 — 이전 서술("다음 ingest 가 재집계로 자가치유")은 **오진단**이었다.
+                //   자가치유는 **같은 trace_id 로 span 이 더 올 때만** 일어난다(upsertTraceSummary 가
+                //   traceId 를 받는다). 마지막 청크에서 실패하면 다음이 안 오고 **영구 고아 span** 이 된다.
+                //   그 고아는 야간 스윕(RetentionCleanupService.sweepOrphanSpansNightly)이 이틀에 걸쳐
+                //   확인해 지운다. ★근본 해소(요약 upsert 실패 자체)는 후속 라운드 몫이다.
+                log.warn("trace summary deferred (self-heal only if more spans arrive for this trace): traceId={} cause={}",
                         traceId, e.getClass().getSimpleName());
             }
         }
