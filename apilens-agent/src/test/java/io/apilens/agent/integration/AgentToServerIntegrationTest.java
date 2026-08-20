@@ -49,6 +49,7 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.function.Predicate;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -134,6 +135,18 @@ class AgentToServerIntegrationTest {
         sender = new SpanSender(queue, transport, logger, 50, 100L);
         senderThread = new Thread(sender, "test-apilens-sender");
         senderThread.setDaemon(true);
+        // ★ 여기서 시작하지 않는다. 각 테스트가 큐를 다 채운 뒤 startSender() 로 깨운다.
+        //   sender 는 첫 span 이 들어오면 곧바로 깨어나서 "그 순간 큐에 있는 것만" 가져간다
+        //   (SpanSender.pollAndSend — poll 로 하나 받고 drainTo 로 논블로킹 훑기). 그래서 미리
+        //   돌려 두면, 테스트가 span 을 여러 번 넣는 사이에 스레드가 한 번만 밀려나도 배치가
+        //   갈라진다. 갈라지면 서버에 먼저 도착한 몫만으로 요약이 만들어져서 span 수가 잠깐
+        //   모자란 상태가 보인다. 한가한 기계에서는 거의 안 나지만 CI 처럼 바쁜 기계에서는
+        //   실제로 났다 — 2026-08-21 Release 빌드 실패(multipleSpansBatchTogether span 수 불일치).
+        //   큐를 먼저 채우고 나중에 깨우면 배치 경계가 정해져서 이 흔들림이 사라진다.
+    }
+
+    /** 큐를 다 채운 뒤에 부른다 — 배치 경계를 정해 두기 위함이다(setup 의 설명 참고). */
+    private void startSender() {
         senderThread.start();
     }
 
@@ -168,6 +181,7 @@ class AgentToServerIntegrationTest {
                 List.of()
         );
         assertTrue(queue.offer(helloSpan));
+        startSender();
 
         // Wait for the sender to flush at least once.
         TraceSummary delivered = waitForTrace(helloSpan.traceId(), 3_000);
@@ -190,19 +204,30 @@ class AgentToServerIntegrationTest {
         queue.offer(root);
         queue.offer(child1);
         queue.offer(child2);
+        // 셋을 다 넣은 뒤에 깨운다 — 그래야 한 배치로 나간다(setup 의 설명 참고).
+        startSender();
 
-        TraceSummary delivered = waitForTrace(traceId, 3_000);
-        assertNotNull(delivered);
+        // ★ "보이자마자" 가 아니라 "span 3개가 다 반영될 때까지" 기다린다.
+        //   배치가 갈라지면 span 수가 잠깐 1이나 2로 보이는데, 그 중간 상태를 잡아채면
+        //   span 이 멀쩡히 다 도착하는데도 실패한다. 기다리는 조건과 확인하는 값이
+        //   어긋나 있던 자리다.
+        TraceSummary delivered = waitForTrace(traceId, 3_000, t -> t.spanCount() == 3);
+        assertNotNull(delivered, "span 3개가 3초 안에 모두 도착해 요약에 반영돼야 한다");
         assertEquals(3, delivered.spanCount());
     }
 
     private TraceSummary waitForTrace(String traceId, long timeoutMs) throws InterruptedException {
+        return waitForTrace(traceId, timeoutMs, t -> true);
+    }
+
+    private TraceSummary waitForTrace(String traceId, long timeoutMs, Predicate<TraceSummary> until)
+            throws InterruptedException {
         long deadline = System.currentTimeMillis() + timeoutMs;
         while (System.currentTimeMillis() < deadline) {
             TraceListResponse list = queryService.listTraces(
                     null, null, null, null, 100, null);
             for (TraceSummary t : list.traces()) {
-                if (traceId.equals(t.traceId())) {
+                if (traceId.equals(t.traceId()) && until.test(t)) {
                     return t;
                 }
             }
