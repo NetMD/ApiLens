@@ -16,6 +16,14 @@
 //   showsPartialReclaimToastWhenBusyWithFreedBytes — busy=true + freedBytes>0 부분 회수 (T-C07)
 //   showsDiskShortageToastWhenBusyWithZeroFreed — busy=true + freedBytes==0 디스크 부족 거부 (T-C08)
 //   disablesOptimizeButtonWhileCleanupRunning — cleanup 실행 중이면 optimize 버튼 잠금 (C-C01)
+//
+// [Phase T / R23] AC-06-2/AC-07-2 추가 검증 (정방향 동사 명시 — EXT-003 lock-in 가드):
+//   showsZeroDeferredSummaryWithNormalBadge — 요약 실패 0 은 "0건 (정상)" (T-R23-02)
+//   showsDeferredSummaryCountWithoutNormalBadge — 0 이 아니면 "(정상)" 병기 없음 (T-R23-03)
+//   displaysThousandsSeparatedDeferredCount — 1234 → "1,234건" (toLocaleString)
+//   showsDiskUsageInItsOwnSection — 「디스크 사용량」이 「적재 상태」와 다른 구획에 뜬다 (AC-07-2 비협상)
+//   showsZeroFreeSpaceAsPlainValue — 회수 가능한 빈 공간 0 → "0 B" (결함 아님 — 전체 삭제 직후 정상값)
+//   keepsExistingHelpTextAndButtonsUnchanged — 기존 도움말·라벨·버튼 3개 문구 무변경 (T-R23-09/10)
 // 반대 방향 lock-in 동사(hides*/rejects*/skips*) 0건.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -52,7 +60,7 @@ function mockApi(
 
     // [Phase R15] 수신 일시정지 상태 폴링 — DataManagementSection 이 useMaintenanceStatus 공유(기본 paused=false).
     if (url.includes('/v1/maintenance/status')) {
-      return Promise.resolve(jsonResponse({ paused: false, pausedAt: null, sqliteBusyEncountered: 0, sqliteBusyDropped: 0 }));
+      return Promise.resolve(jsonResponse({ paused: false, pausedAt: null, sqliteBusyEncountered: 0, sqliteBusyDropped: 0, traceSummaryDeferred: 0, dbSizeBytes: 1_442_205_696, freePageBytes: 179_621_888 }));
     }
 
     if (method === 'POST' && url.includes('/v1/maintenance/cleanup')) {
@@ -324,7 +332,7 @@ function mockToggleApi(paused: boolean, behavior: 'ok' | 'toggleFail' = 'ok'): T
     if (method === 'GET' && url.includes('/v1/maintenance/status')) {
       log.statusInvalidations += 1;
       return Promise.resolve(
-        jsonResponse({ paused, pausedAt: paused ? 1_730_000_000_000 : null, sqliteBusyEncountered: 0, sqliteBusyDropped: 0 }),
+        jsonResponse({ paused, pausedAt: paused ? 1_730_000_000_000 : null, sqliteBusyEncountered: 0, sqliteBusyDropped: 0, traceSummaryDeferred: 0, dbSizeBytes: 1_442_205_696, freePageBytes: 179_621_888 }),
       );
     }
     if (method === 'POST' && url.includes('/v1/maintenance/pause')) {
@@ -332,11 +340,11 @@ function mockToggleApi(paused: boolean, behavior: 'ok' | 'toggleFail' = 'ok'): T
       if (behavior === 'toggleFail') {
         return Promise.resolve(jsonResponse({ error: 'boom' }, 500));
       }
-      return Promise.resolve(jsonResponse({ paused: true, pausedAt: 1_730_000_000_000, sqliteBusyEncountered: 0, sqliteBusyDropped: 0 }));
+      return Promise.resolve(jsonResponse({ paused: true, pausedAt: 1_730_000_000_000, sqliteBusyEncountered: 0, sqliteBusyDropped: 0, traceSummaryDeferred: 0, dbSizeBytes: 1_442_205_696, freePageBytes: 179_621_888 }));
     }
     if (method === 'POST' && url.includes('/v1/maintenance/resume')) {
       log.resumeCalls += 1;
-      return Promise.resolve(jsonResponse({ paused: false, pausedAt: null, sqliteBusyEncountered: 0, sqliteBusyDropped: 0 }));
+      return Promise.resolve(jsonResponse({ paused: false, pausedAt: null, sqliteBusyEncountered: 0, sqliteBusyDropped: 0, traceSummaryDeferred: 0, dbSizeBytes: 1_442_205_696, freePageBytes: 179_621_888 }));
     }
     return Promise.resolve(jsonResponse({ error: 'unexpected' }, 500));
   });
@@ -391,7 +399,7 @@ describe('DataManagementSection — 수신 일시정지/재개 토글 (R15)', ()
         typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
       const method = init?.method ?? 'GET';
       if (url.includes('/v1/maintenance/status')) {
-        return Promise.resolve(jsonResponse({ paused: false, pausedAt: null, sqliteBusyEncountered: 0, sqliteBusyDropped: 0 }));
+        return Promise.resolve(jsonResponse({ paused: false, pausedAt: null, sqliteBusyEncountered: 0, sqliteBusyDropped: 0, traceSummaryDeferred: 0, dbSizeBytes: 1_442_205_696, freePageBytes: 179_621_888 }));
       }
       if (method === 'POST' && url.includes('/v1/maintenance/cleanup')) {
         return new Promise<Response>((resolve) => {
@@ -441,8 +449,23 @@ describe('DataManagementSection — 적재 상태 카운터 (R21/AC-03-1)', () =
     vi.restoreAllMocks();
   });
 
-  /** status 응답의 카운터 2종만 바꿔 mock (다른 endpoint 는 비대상). */
-  function mockStatusWithCounters(encountered: number, dropped: number): void {
+  /**
+   * status 응답의 카운터만 바꿔 mock (다른 endpoint 는 비대상).
+   *
+   * [Phase T / R23] AC-07-4/AC-07-5 — 이 factory 는 픽스처가 **여러 줄로 쪼개져 있어**
+   *   회귀 가드 G-R23-07 의 게이트 A(한 줄짜리 상태 픽스처를 세는 축)가 못 잡는 자리다.
+   *   같은 가드의 게이트 B(뷰 필드 이름을 세는 축)가 이 사각지대를 덮는다 —
+   *   게이트 하나로 닫으면 여기가 조용히 낡는다. 두 게이트의 판정 명령 원문은 설계 §6.1 에 있다.
+   *   ⚠️ 게이트가 세는 문자열을 이 주석에 그대로 옮겨 적지 않는다(적으면 주석 자신이 거짓 hit 이 된다).
+   *   요약 실패 흐름 수·디스크 두 값도 같은 자리에서 함께 넓힌다.
+   */
+  function mockStatusWithCounters(
+    encountered: number,
+    dropped: number,
+    deferred = 0,
+    dbSizeBytes = 1_442_205_696,
+    freePageBytes = 179_621_888,
+  ): void {
     vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
       const url =
         typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
@@ -453,6 +476,9 @@ describe('DataManagementSection — 적재 상태 카운터 (R21/AC-03-1)', () =
             pausedAt: null,
             sqliteBusyEncountered: encountered,
             sqliteBusyDropped: dropped,
+            traceSummaryDeferred: deferred,
+            dbSizeBytes,
+            freePageBytes,
           }),
         );
       }
@@ -468,8 +494,11 @@ describe('DataManagementSection — 적재 상태 카운터 (R21/AC-03-1)', () =
     expect(screen.getByText('적재 중 잠금 경합 (SQLITE_BUSY)')).toBeInTheDocument();
     expect(screen.getByText('경합으로 저장하지 못한 청크')).toBeInTheDocument();
     // T-17 — "(정상)" 병기 (결핍 어휘 금지 — 불변식 12).
+    // [Phase T / R23] AC-06-2 — 2 → 3. 「적재 상태」 세 번째 줄(요약을 저장하지 못한 흐름)이
+    //   같은 형태로 붙으면서 이 구획의 "(정상)" 개수가 하나 늘었다. 「디스크 사용량」 구획에는
+    //   "(정상)" 을 붙이지 않으므로 이 수는 여전히 「적재 상태」 구획만 센다.
     const normals = await screen.findAllByText('(정상)');
-    expect(normals).toHaveLength(2);
+    expect(normals).toHaveLength(3);
     // T-16 — 리셋 안내 상시.
     expect(
       screen.getByText(/서버를 재시작하면 0부터 다시 세요 — 재시작 후 0 은 정상이에요/),
@@ -492,5 +521,128 @@ describe('DataManagementSection — 적재 상태 카운터 (R21/AC-03-1)', () =
     mockStatusWithCounters(0, 3);
     renderSection();
     expect(await screen.findByText('3개')).toBeInTheDocument();
+  });
+});
+
+// ── [Phase T / R23] AC-06-2 · AC-07-1 · AC-07-2 — 요약 실패 흐름 + 「디스크 사용량」 구획 ──────
+//
+// R23/AC-06-2 verbatim: "화면 「적재 상태」에 **세 번째 줄**이 뜬다. 값이 0 이 아니면 `(정상)` 이
+//   **안 붙는다.**"
+// R23/AC-07-1 verbatim: "DB 크기와 회수 가능 공간이 **버튼을 누르지 않아도** 상태 응답에 실린다."
+// R23/AC-07-2 verbatim: "★ 두 값은 **「적재 상태」와 별도 구획**에 표시된다(§7 — 기존 도움말 문장이
+//   이 두 값에 대해 거짓이 되는 것을 막는다)." (사용자 명시 비협상 결정)
+// 정방향 동사(shows*/displays*/keeps*) — 반대 방향 lock-in 동사 0건 (EXT-003 가드).
+describe('DataManagementSection — 요약 실패 흐름 · 디스크 사용량 (R23/AC-06-2, AC-07-1/2)', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** 위 describe 의 factory 와 같은 형태 — status 응답만 바꾼다(다른 endpoint 는 비대상). */
+  function mockStatus(
+    deferred: number,
+    dbSizeBytes = 1_073_741_824,
+    freePageBytes = 41_943_040,
+  ): void {
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url =
+        typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes('/v1/maintenance/status')) {
+        return Promise.resolve(
+          jsonResponse({
+            paused: false,
+            pausedAt: null,
+            sqliteBusyEncountered: 0,
+            sqliteBusyDropped: 0,
+            traceSummaryDeferred: deferred,
+            dbSizeBytes,
+            freePageBytes,
+          }),
+        );
+      }
+      return Promise.resolve(jsonResponse({ error: 'unexpected' }, 500));
+    });
+  }
+
+  it('showsZeroDeferredSummaryWithNormalBadge — 0 은 "0건 (정상)" (T-R23-01/02)', async () => {
+    mockStatus(0);
+    renderSection();
+    // ⚠️ 0 은 훅의 `?? 0` 폴백 값과 같아서, 응답이 도착하기 전에도 "0건" 이 보인다.
+    //    응답이 실제로 도착했다는 것을 폴백과 값이 다른 자리(DB 크기)로 먼저 확인한 뒤 단언한다.
+    await screen.findByText('1 GB');
+    // T-R23-01 — 라벨이 단위를 밝힌다(흐름 = 건). 위 두 줄은 횟수·청크 수라 셋이 서로 다르다.
+    expect(screen.getByText('요약을 저장하지 못한 흐름')).toBeInTheDocument();
+    expect(screen.getByText('0건')).toBeInTheDocument();
+  });
+
+  it('showsDeferredSummaryCountWithoutNormalBadge — 1 은 "1건" (정상 병기 없음, T-R23-03)', async () => {
+    mockStatus(1);
+    renderSection();
+    expect(await screen.findByText('1건')).toBeInTheDocument();
+    // 이 값이 0 이 아니면 "(정상)" 은 나머지 두 줄(경합 0회 · 청크 0개)에만 붙는다.
+    expect(screen.getAllByText('(정상)')).toHaveLength(2);
+  });
+
+  it('displaysThousandsSeparatedDeferredCount — 1234 → "1,234건" (toLocaleString)', async () => {
+    mockStatus(1234);
+    renderSection();
+    expect(await screen.findByText('1,234건')).toBeInTheDocument();
+  });
+
+  it('showsDiskUsageInItsOwnSection — 「디스크 사용량」이 「적재 상태」와 다른 구획에 뜬다 (AC-07-2 비협상)', async () => {
+    mockStatus(0);
+    renderSection();
+
+    // 신설 구획 — 제목 + 두 라벨 + 전용 도움말이 한 덩어리 안에 있다.
+    // 제목은 응답 전에도 그려지므로, 값이 도착한 뒤에 구획을 잡는다.
+    await screen.findByText('1 GB');
+    const diskTitle = screen.getByText('디스크 사용량');
+    const diskBlock = diskTitle.parentElement as HTMLElement;
+    expect(within(diskBlock).getByText('DB 크기')).toBeInTheDocument();
+    expect(within(diskBlock).getByText('회수 가능한 빈 공간')).toBeInTheDocument();
+    expect(within(diskBlock).getByText('1 GB')).toBeInTheDocument();
+    expect(within(diskBlock).getByText('40 MB')).toBeInTheDocument();
+    expect(within(diskBlock).getByText(/DB 파일에서 바로 읽는 값이라/)).toBeInTheDocument();
+
+    // ★ 두 구획이 갈려 있다는 것이 이 라운드의 비협상 결정이다.
+    //   인메모리 도움말("재시작하면 0부터 다시 세요")이 디스크 구획 안에 있으면
+    //   그 문장이 DB 에서 읽는 두 값에 대해 거짓이 된다 — 그것을 막는 단언이다.
+    expect(within(diskBlock).queryByText(/서버 메모리에만 있는 숫자라/)).toBe(null);
+
+    // 반대 방향도 같다 — 「적재 상태」 구획 안에 디스크 두 줄이 섞이지 않는다.
+    const ingestBlock = screen.getByText('적재 상태').parentElement as HTMLElement;
+    expect(within(ingestBlock).getByText('요약을 저장하지 못한 흐름')).toBeInTheDocument();
+    expect(within(ingestBlock).queryByText('DB 크기')).toBe(null);
+    expect(within(ingestBlock).queryByText('회수 가능한 빈 공간')).toBe(null);
+  });
+
+  it('showsZeroFreeSpaceAsPlainValue — 회수 가능한 빈 공간 0 → "0 B" (전체 삭제 직후 정상값)', async () => {
+    // 2026-08-13 운영 실측: 전체 삭제 + 최적화 뒤 freelist 가 0 이었다. 결함이 아니다.
+    mockStatus(0, 1_073_741_824, 0);
+    renderSection();
+    // DB 크기가 먼저 도착한 것을 확인해야 "0 B" 가 폴백이 아니라 응답 값임이 확정된다.
+    await screen.findByText('1 GB');
+    const diskBlock = screen.getByText('디스크 사용량').parentElement as HTMLElement;
+    expect(within(diskBlock).getByText('0 B')).toBeInTheDocument();
+  });
+
+  it('keepsExistingHelpTextAndButtonsUnchanged — 기존 도움말·라벨·버튼 3개 문구 무변경 (T-R23-09/10)', async () => {
+    mockStatus(0);
+    renderSection();
+
+    // T-R23-09 — 「적재 상태」 도움말 문면 그대로.
+    expect(
+      await screen.findByText(
+        /서버 메모리에만 있는 숫자라 서버를 재시작하면 0부터 다시 세요 — 재시작 후 0 은 정상이에요\. 청크 1개 ≈ 500 span 이에요\./,
+      ),
+    ).toBeInTheDocument();
+    // T-R23-10 — 기존 두 라벨 + 버튼 3개 문구.
+    expect(screen.getByText('적재 중 잠금 경합 (SQLITE_BUSY)')).toBeInTheDocument();
+    expect(screen.getByText('경합으로 저장하지 못한 청크')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '지난 데이터 정리' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '전체 삭제' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '최적화' })).toBeInTheDocument();
   });
 });

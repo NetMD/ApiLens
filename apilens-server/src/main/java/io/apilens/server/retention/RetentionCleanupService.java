@@ -15,11 +15,13 @@
  */
 package io.apilens.server.retention;
 
+import io.apilens.server.db.SqlitePragmas;
 import io.apilens.server.settings.SettingsService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -31,6 +33,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.OptionalLong;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Retention cleanup: deletes traces older than the resolved retention window,
@@ -106,8 +109,13 @@ public class RetentionCleanupService {
      *   <li><b>틀리는 방향</b>: 예산을 넘는 free page 는 <b>남는 쪽</b>으로 틀린다 (데이터가 지워지는
      *       쪽이 아니다). 안전한 방향이다.</li>
      *   <li><b>돌려준 공간은 영구가 아니다.</b> 트래픽이 늘면 파일이 다시 그만큼 자란다.</li>
-     *   <li>"예산을 얼마까지 키워도 되는가" 는 아래 관측 로그 3점이 쌓인 뒤 판정한다 —
-     *       <b>후속 관측 라운드</b> 몫이다.</li>
+     *   <li>"예산을 얼마까지 키워도 되는가" 는 아래 관측 로그 3점이 쌓인 뒤 판정한다.
+     *       // [Phase R23] R23/AC-08-6 — ★그 판정을 했다: <b>현행 5,000 유지</b>.
+     *       // 근거는 관측이다 — 2026-08-13 배포 이후 야간 실행 <b>7회</b>분의 {@code cleanup start} 로그에서
+     *       // 삭제 전 빈 페이지 수가 <b>4회는 0</b> 이었다. 예산이 모자라서 남는 상태가 아니라 회수할 것
+     *       // 자체가 없는 밤이 절반이라, 예산을 올려도 얻을 것이 없고 위 WAL 마진만 줄어든다.
+     *       // 다시 판정할 조건: 이 로그의 삭제 전 빈 페이지 수가 <b>예산에 붙어 있는 밤이 이어질 때</b>.
+     *       // 그때는 {@link #RECLAIM_WAL_BYTES_PER_PAGE} 를 다시 재고 트랜잭션 묶음 전환도 함께 본다.</li>
      * </ol>
      */
     static final int RETENTION_VACUUM_BUDGET_PAGES = 5_000;
@@ -137,7 +145,11 @@ public class RetentionCleanupService {
     static final long RECLAIM_WAL_BYTES_PER_PAGE = 20L * 1024L;
 
     /**
-     * ③ 한 밤에 후보로 삼는 고아 span 개수 상한.
+     * ③ 스윕 1회에 후보로 삼는 고아 span 개수 상한.
+     *
+     * <p>// [Phase R23] R23/AC-08-8 — 이 블록의 유예 단위 표기 3곳을 <b>스윕 실행 횟수 기준</b>으로
+     * // 통일했다. 사유: R23 이 스윕을 자체 스케줄로 떼어내 정리 실행 횟수와 스윕 실행 횟수가 갈렸다.
+     * // 같은 파일에서 한 낱말이 두 뜻으로 쓰이는 것을 막으려고 한 편집에서 다 고쳤다.
      *
      * <p>// [Phase R22] R22/AC-03-10 verbatim: "후보 개수 상한({@code ORPHAN_CANDIDATE_CAP})과 초과 시
      * // 동작이 정해져 있다. 초과분을 그 밤에 버려도 고아는 안 사라지므로 다음 밤에 다시 후보가 된다 —
@@ -146,12 +158,12 @@ public class RetentionCleanupService {
      * <p><b>왜 500 인가</b> — 새 근거를 발명하지 않고 {@link #RETENTION_DELETE_BATCH_SIZE} 의 기존 근거를
      * 그대로 따랐다: SQLite 파라미터 바인딩 한계(구버전 999)의 안전 마진. 스윕의 DELETE 두 문장이 각각
      * 최대 500개 자리표시자를 만드는데 같은 마진 안이다. 행 크기로도 상한이 된다 — span_id 는 W3C 규격
-     * 16자리 16진수라 500 × (16 + 구분자 1) ≈ <b>8.5 KB</b>. {@code settings} 한 행이 한 밤에 통째로 다시
+     * 16자리 16진수라 500 × (16 + 구분자 1) ≈ <b>8.5 KB</b>. {@code settings} 한 행이 스윕 1회에 통째로 다시
      * 쓰이므로, 이 상한이 "이상 상황 한 번이 영구적으로 큰 행을 남기는 것" 을 막는다.
      *
      * <p><b>이 상한이 못 하는 것</b> (막았다고 쓰지 않는다):
      * <ol>
-     *   <li>한 밤에 최대 500개만 후보가 된다. 고아가 5,000개인 밤이면 다 없애는 데 열흘 넘게 걸린다.</li>
+     *   <li>스윕 1회에 최대 500개만 후보가 된다. 고아가 5,000개인 밤이면 다 없애는 데 열흘 넘게 걸린다.</li>
      *   <li><b>틀리는 방향</b>: 못 잡은 고아는 <b>남는 쪽</b>이다 (지워지는 쪽이 아니다). 안전하다.</li>
      *   <li>후보 탐색이 상한에 걸리면 어젯밤 후보가 오늘 목록에서 빠질 수 있고, 그러면 그 span 은 삭제가
      *       한 주기 더 밀린다. 역시 남는 쪽이다.</li>
@@ -176,6 +188,22 @@ public class RetentionCleanupService {
      * 5-인자가 되어 server 테스트 5곳의 호출부가 전부 깨진다 (진입점 시그니처 불변 봉인).
      */
     private final OrphanCandidateStore candidates;
+
+    /**
+     * ③ [Phase R23] R23/AC-05-6 — 야간 스윕이 <b>마지막으로 끝난 시각</b>(epoch millis, 인메모리).
+     * 다음 스윕이 {@code now - 이 값} 을 {@code sinceLastNightlySweepMs} 로그 필드로 남겨,
+     * 누군가 {@code orphan-sweep-cron} 을 줄여 <b>유예가 깎이는 것을 보이게</b> 만든다.
+     *
+     * <p>★ <b>삭제 판정에는 쓰지 않는다</b>(I-09). 후보 행의 {@code updated_at} 을 <b>읽지도 않는다</b> —
+     * "판정에 안 쓴다" 보다 강한 상태다. DB 를 안 쓰는 이유가 하나 더 있다: [전체 삭제] 의 즉시 스윕이
+     * 후보 목록을 비우며 {@code updated_at} 을 갱신하는데, 여기서 재려는 것은 <b>야간 스윕 간격</b>이라
+     * 인메모리 쪽이 뜻이 더 정확하다.
+     *
+     * <p><b>한계</b>: 서버를 재시작하면 값이 없어 <b>첫 밤은 {@code unknown}</b> 이다.
+     * 0 = "아직 없음" 이고 센티넬 숫자(-1 등)를 만들지 않는다 — 로그 필드라 문자열로 충분하고,
+     * 센티넬을 만들면 표면 전염·상수화·표시 분기가 따라온다.
+     */
+    private final AtomicLong lastNightlySweepEndedAtMs = new AtomicLong(0L);
 
     @Autowired
     public RetentionCleanupService(JdbcTemplate jdbc, PlatformTransactionManager txManager,
@@ -519,16 +547,31 @@ public class RetentionCleanupService {
      */
     private void logFreelistBeforeDelete() {
         try {
-            log.info("cleanup start: freelistPagesBeforeDelete={}", readFreelistCount());
+            // [Phase R23] R23/AC-16-1/R23/AC-16-2 — 앞머리 `cleanup start: freelistPagesBeforeDelete=` 는
+            //   **고정**이고 필드는 뒤에만 덧붙인다(회수 예산 판정이 이 앞머리로 이뤄진다).
+            //   ★단위: pageCount 는 **개수**, pageSize 는 **바이트/페이지** — **곱해야 바이트**다.
+            // [Phase R23] R23/AC-16-3 — ★비교 경계: 이 시계열의 시작점은 **2026-08-13 전체 삭제 이후
+            //   재축적분**이다. 다음 라운드(v0.7.0)의 근거 값(SQL 원문 중복 등)은 **그 이전 DB 에서 잰
+            //   것**이라 **직접 빼면 안 된다.** 그리고 이 줄은 수동 [보관 기간 즉시 적용] 경로에서도
+            //   찍히므로(바로 위 주석), 시계열을 읽을 때는 스레드 이름 `[scheduling-1]` 로 걸러
+            //   야간 실행분만 남긴다.
+            log.info("cleanup start: freelistPagesBeforeDelete={} pageCount={} pageSize={}",
+                    readFreelistCount(), SqlitePragmas.pageCount(jdbc), SqlitePragmas.pageSize(jdbc));
         } catch (Exception e) {
+            // [Phase R23] R23/AC-16-5 — 값이 셋으로 늘어도 이 자체 try-catch 가 그대로 남는다:
+            //   관측 실패가 그날 정리를 막지 않는다.
             log.warn("freelist observation before delete failed — cleanup continues", e);
         }
     }
 
-    /** {@code PRAGMA freelist_count} — 회수 가능한 빈 페이지 수. 매핑 불가 시 0 (루프 미진입 = 안전한 방향). */
+    /**
+     * {@code PRAGMA freelist_count} — 회수 가능한 빈 페이지 수. 매핑 불가 시 0 (루프 미진입 = 안전한 방향).
+     *
+     * <p>// [Phase R23] R23/AC-07-3 — 본문만 {@link SqlitePragmas} 위임으로 바뀌었다.
+     * // 이름·가시성·호출부는 그대로다(소비처 diff 0).
+     */
     private long readFreelistCount() {
-        Long v = jdbc.queryForObject("PRAGMA freelist_count", Long.class);
-        return v == null ? 0L : v;
+        return SqlitePragmas.freelistCount(jdbc);
     }
 
     /**
@@ -608,7 +651,9 @@ public class RetentionCleanupService {
     // ══ [Phase R22] ③ 고아 span 2밤차 스윕 (신규 패턴 — 앵커 밀도 2배) ═════════════════════════
     //
     //  신규 패턴 #1 "다밤(多夜) 상태 기계". 상태가 코드가 아니라 **DB 한 행**(settings 의 내부 키)에
-    //  들어 있고, 한 밤에 한 칸씩만 움직인다. 다음 조사자가 상태 전이를 코드에서 못 읽고 헤매지 않도록
+    //  들어 있고, 스윕 1회에 한 칸씩만 움직인다([Phase R23] R23/AC-08-8 — 유예 단위를 스윕 실행
+    //  횟수 기준으로 한정. R23 이 스윕을 자체 스케줄로 떼어내 정리 실행 횟수와 갈렸다).
+    //  다음 조사자가 상태 전이를 코드에서 못 읽고 헤매지 않도록
     //  전이표를 여기 남긴다.
     //
     //    없음        → 1밤차 후보 : 쓰기 3단 candidates.write(todayOrphans \ toDelete)
@@ -623,30 +668,64 @@ public class RetentionCleanupService {
     //    (ㄲ) cleanup(long nowMs) 에 출처 플래그를 넘겨 분기하는 안은 **기각**됐다:
     //      (1) "실수로 true 를 넘기는" 경로가 열리고 (2) 공유 메서드가 출처별로 다르게 도는 첫 사례를 만들며
     //      (3) cleanup(long) 시그니처가 바뀌어 server 테스트 5곳의 호출부가 흔들린다.
-    //    대신 (ㄱ) 호출처 분리를 채택했다 — 아래 sweepOrphanSpansNightly() 의 호출처가
-    //    RetentionCleanupJob 단 하나인 것 자체가 강제 수단이다. 다음 라운드가 이 메서드를 cleanup() 안으로
-    //    옮기거나 플래그 분기를 되살리지 말 것.
+    //    대신 (ㄱ) 호출처 분리를 채택했다.
+    //  ★ [Phase R23] R23/AC-05-1 — 강제 수단이 바뀌었다. R22 때는 "호출처가 RetentionCleanupJob 단
+    //    하나인 것" 이 강제 수단이었는데, R23 이 그 호출을 빼고 스윕에 자체 스케줄을 줬다(정리 주기를
+    //    줄여도 고아 유예가 안 깎이게). 지금 강제하는 것은 **G-07 grep + 행위 테스트
+    //    OrphanSweepTest.keepsOrphansUntouchedWhenTheManualCleanupRunsTwice 한 쌍**이고,
+    //    그중 **정본은 행위 테스트**다 — 파일 단위 검색만으로는 이 봉인을 못 지킨다.
+    //  ★ 그래도 **패턴 #2 금지는 그대로다**: 다음 라운드가 이 메서드를 cleanup() 안으로 옮기거나
+    //    출처 플래그 분기를 되살리지 말 것. 분리한 스케줄을 다시 합치는 것도 같은 금지에 든다.
 
     /**
      * ③ 야간 전용 고아 span 스윕 — <b>이틀에 걸쳐 확인하고 지운다.</b>
      *
      * <p>// [Phase R22] R22/AC-03-2/R22/AC-03-3/R22/AC-03-7/R22/AC-03-11 — R22/AC-03-7 verbatim:
      * // "수동 <b>[지난 데이터 정리 / 보관 기간 즉시 적용]</b> 경로는 후보 상태를 <b>읽지도 쓰지도 않는다.</b>
-     * // ⇒ 이 버튼을 연달아 두 번 눌러도 고아 삭제는 0 이다. <b>"밤" = 야간 스케줄 실행 1회</b>다."
+     * // ⇒ 이 버튼을 연달아 두 번 눌러도 고아 삭제는 0 이다."
      * // <b>사용자 명시 비협상 결정</b>(U-1). CLAUDE.md '데이터 모델 (8개 테이블, 변경 신중히)' 인용.
+     * // ★ [Phase R23] R23/AC-05-1 — 그 문장의 <b>"밤" 은 이제 "스윕 스케줄 실행 1회"</b> 로 한정된다.
+     * // 정리와 스윕이 별개 스케줄 키로 갈렸으므로 정리 실행 횟수와 더 이상 같지 않다.
      *
-     * <p>★ <b>호출처는 {@link RetentionCleanupJob#runScheduled()} 단 하나다.</b> {@code MaintenanceController}
-     * 에서 후보 상태로 가는 <b>코드 경로가 아예 존재하지 않는다</b> — 플래그 분기가 아니라 구조적 부재다.
-     * 검증은 grep 한 줄로 끝난다 (G-07: MaintenanceController 안에 {@code sweepOrphan}/{@code OrphanCandidate}
-     * /{@code orphanCandidates} 0 hit — <b>비협상</b>).
+     * <p>★ [Phase R23] R23/AC-05-1/R23/AC-08-1/R23/AC-08-2 — <b>이 메서드는 자기 스케줄로 돈다</b>
+     * (키 {@code apilens.retention.orphan-sweep-cron}, 기본 04:00 — 정리와 같은 시각이지만 키가 별개다).
+     * 수동 경로가 후보 상태에 닿지 않는다는 결론을 지키는 <b>강제 수단은 다음 한 쌍</b>이다:
+     * <ol>
+     *   <li>G-07 grep — {@code MaintenanceController} 안에 {@code sweepOrphan}/{@code OrphanCandidate}
+     *       /{@code orphanCandidates} <b>0 hit</b>. 사정권은 <b>cleanup·purge·optimize·status 경로</b>다
+     *       (그 컨트롤러가 여는 표면 전부). <b>비협상</b>.</li>
+     *   <li>행위 테스트 {@code OrphanSweepTest.keepsOrphansUntouchedWhenTheManualCleanupRunsTwice}
+     *       — <b>이쪽이 정본</b>이다. <b>파일 단위 검색만으로는 이 봉인을 못 지킨다</b> — 다른 파일을 한 번
+     *       거쳐 부르면 grep 은 그대로 통과한다.</li>
+     * </ol>
      *
-     * <p>★ 이 메서드는 {@code cleanup()} 이 <b>반환한 뒤</b> 돈다. 그래서 스윕이 터져도 시각 기록·회수·
-     * 체크포인트·ANALYZE 는 이미 다 끝났다 — "시각 기록보다 뒤" 가 <b>구조로</b> 보장된다.
+     * <p>★ [Phase R23] R23/AC-05-3 — <b>정리와 스윕의 실행 순서는 결과를 바꾸지 않는다.</b>
+     * 정리는 {@code SELECT trace_id FROM traces} 로만 대상을 고르고 payloads → spans → traces 를 한
+     * 트랜잭션에서 지운다 ⇒ <b>고아 집합을 새로 만들지도 없애지도 못한다.</b> 그래서 어느 쪽이 먼저
+     * 돌든 그 밤의 고아 집합은 같다. 달라지는 것은 <b>비용뿐</b>이다 — 스윕이 먼저 돌면
+     * {@code detectOrphanSpans} 가 훑는 {@code spans} 행이 대략 2배가 된다(보관 기간 하루치가 아직
+     * 안 걷힌 상태). {@code traces.trace_id} 가 PRIMARY KEY 라 안쪽은 인덱스 조회다.
+     * ⚠️ <b>실행 순서에 기대는 문장을 남기지 않는다</b> — 두 스케줄의 순서는 미정이다
+     * (스케줄 스레드가 1개라 동시 실행은 구조로 배제된다 — {@link RetentionCleanupJob} 클래스 javadoc).
+     *
+     * <p>★ [Phase R23] R23/AC-05-5 — <b>이 메서드는 자기 {@code try-catch} 하나로 격리된다.</b>
+     * {@link RetentionCleanupJob} 이 감싸 주던 두 번째 그물은 R23 에서 호출과 함께 사라졌다.
+     * (같은 사실이 본문 {@code catch} 블록 옆에도 적혀 있다 — 넓은 서술은 여기, 정확한 한정은 그 자리다.)
+     *
+     * <p>★ [Phase R23] R23/AC-05-4 — <b>적용 범위 한계</b>: 유예를 <b>시간 기반으로 만든 것이 아니다.</b>
+     * 유예는 여전히 <b>"스윕 스케줄 실행 1회"</b> 이고, 누군가 {@code orphan-sweep-cron} 자체를 줄이면
+     * <b>유예는 똑같이 깎인다.</b> 달라진 것은 셋뿐이다 — ① 정리 주기를 줄이는 것만으로는 안 깎인다
+     * ② 키 이름이 자기가 무엇을 지배하는지 말한다 ③ 아래 {@code sinceLastNightlySweepMs} 로그가
+     * 깎임을 보이게 만든다. <b>"이제 안전하다" 로 읽지 말 것.</b>
      *
      * <p>★ <b>이 스윕이 고치지 못하는 것</b>: 스윕은 <b>증상을 치우는 것이지 원인을 고치는 것이 아니다.</b>
-     * 고아가 생기는 원인은 요약 upsert 실패({@code IngestService})이고, 이 라운드는 그것을 건드리지 않는다.
-     * <b>근본 해소는 후속 라운드</b> 몫이다. "고아 span 은 0 이다" 를 단정으로 쓰지 않는다.
+     * // [Phase R23] R23/AC-08-4 — ★현행화: 고아를 만드는 <b>가장 큰 원인</b>(요약 저장의 쓰기 승격 실패)은
+     * // <b>R23 에서 처리했다</b> — 요약 경로의 읽기 선행 트랜잭션을 걷어내 그 실패 경로 자체를 없앴다
+     * // ({@code IngestService.persistTrace}). 남는 것은 <b>다른 이유로 실패하는 요약</b>이 만드는 고아뿐이고
+     * // 그쪽은 여전히 이 스윕 몫이다. <b>"고아 span 은 0 이다" 를 단정으로 쓰지 않는다.</b>
      */
+    // [Phase R23] R23/AC-05-1 — 자체 스케줄. 기본값은 정리와 같은 04:00 이지만 **키가 별개**다.
+    @Scheduled(cron = "${apilens.retention.orphan-sweep-cron:0 0 4 * * *}")
     public void sweepOrphanSpansNightly() {
         try {
             // ── 트랜잭션 밖 (읽기) ──────────────────────────────────────────────
@@ -676,12 +755,23 @@ public class RetentionCleanupService {
                         ORPHAN_CANDIDATE_CAP);
             }
             // ★로그에 span_id 를 나열하지 않는다 — **개수만** 남긴다 (식별자 자체가 운영 정보다).
-            log.info("orphan sweep finished: deletedSpans={} deletedPayloads={} candidatesRecorded={}",
-                    deleted[1], deleted[0], nextCandidates.size());
+            // [Phase R23] R23/AC-05-6 — ★경과 시간은 **로그로만** 남긴다. 유예가 깎이는 것이 보이게
+            //   하려는 장치이고, **삭제 판정에는 쓰지 않는다**(후보 행의 updated_at 은 읽지도 않는다).
+            //   값이 없는 첫 실행은 `unknown` — 센티넬 숫자(-1 등)를 만들지 않는다(표면 전염 방지).
+            long sweepEndedAt = System.currentTimeMillis();
+            long previousEnd = lastNightlySweepEndedAtMs.get();
+            String sinceLastNightlySweepMs = previousEnd == 0L
+                    ? "unknown"
+                    : String.valueOf(sweepEndedAt - previousEnd);
+            log.info("orphan sweep finished: deletedSpans={} deletedPayloads={} candidatesRecorded={} sinceLastNightlySweepMs={}",
+                    deleted[1], deleted[0], nextCandidates.size(), sinceLastNightlySweepMs);
+            lastNightlySweepEndedAtMs.set(sweepEndedAt);
         } catch (Exception e) {
             // 후보 값이 깨져 있든, 탐색이 실패하든, 삭제가 실패하든 밖으로 안 나간다.
-            // Job 의 두 번째 try-catch 가 2겹째 그물이다.
-            log.error("orphan span sweep failed — cleanup itself already finished, will retry at next schedule", e);
+            // ★ [Phase R23] R23/AC-05-5 — 이 try-catch 는 이제 **유일한 코드 그물**이다.
+            //   R22 때는 RetentionCleanupJob 의 두 번째 try-catch 가 2겹째였는데, R23 이 그 호출을 빼면서
+            //   함께 사라졌다. **"RetentionCleanupJob 이 감싸 주니 중복" 이라고 판단해 지우지 말 것.**
+            log.error("orphan span sweep failed — will retry at next schedule", e);
         }
     }
 

@@ -15,6 +15,7 @@
  */
 package io.apilens.server.retention;
 
+import io.apilens.server.db.SqlitePragmas;
 import io.apilens.server.ingest.IngestPauseState;
 import io.apilens.server.ingest.IngestService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -137,7 +138,8 @@ public class MaintenanceController {
      */
     // [Phase R17] FR-05 (M-4) — maintenance @Operation 신설.
     // [Phase R20] R20/AC-10-1 — SQLITE_BUSY 카운터 2필드 additive 확장(기존 두 필드 불변).
-    @Operation(summary = "유지보수 상태 조회 — paused 여부·pausedAt echo (cap 경과 시 자가 재개 반영) + SQLITE_BUSY 카운터(인메모리 — 재시작 시 0 복귀 정상)")
+    // [Phase R23] R23/AC-06-1/R23/AC-07-1 — 3필드 additive 확장(4 → 7, 기존 4필드 불변).
+    @Operation(summary = "유지보수 상태 조회 — paused 여부·pausedAt echo (cap 경과 시 자가 재개 반영) + SQLITE_BUSY 카운터·요약 실패 카운터(인메모리 — 재시작 시 0 복귀 정상) + DB 크기·회수 가능 빈 공간(바이트, 관측 실패 시 0)")
     @GetMapping("/v1/maintenance/status")
     public MaintenanceStatusResponse status() {
         return statusSnapshot();
@@ -177,8 +179,30 @@ public class MaintenanceController {
      * (R17 확정 설계 불변, 기준선은 logs/apilens.log 누적 비교).
      */
     private MaintenanceStatusResponse statusSnapshot() {
+        // [Phase R23] R23/AC-07-1 — 버튼을 누르지 않아도 보이는 DB 크기·회수 가능 공간.
+        //   ★이 메서드의 성질이 바뀐다: 지금까지 status 는 DB 를 안 쳤는데, 이제 **헤더 상수 3개를 읽는다**
+        //   (테이블 스캔·인덱스 탐색 0). 화면 폴링이 15초라 시간당 720회 헤더 읽기다.
+        // [Phase R23] ★관측 실패가 제어 표면을 깨뜨리지 않게 한다 — pause()·resume() 은 **부작용을 이미
+        //   적용한 뒤** 이 응답을 조립한다. 조립 중 DB 예외로 500 이 나가면 사용자는 "일시정지 실패" 로
+        //   읽지만 실제로는 적용된 상태라 화면과 서버가 어긋난다. 그래서 관측값만 0 으로 접고 WARN 을 남긴다.
+        //   같은 규율이 RetentionCleanupService 의 `cleanup continues` 로그에 이미 쓰이고 있다.
+        //   ⚠️ 0 폴백은 화면에 `0 B` 로 뜬다 — `0 B` 는 곱셈 자리 오류일 수도, PRAGMA 실패일 수도 있다.
+        //   둘을 가르는 것은 아래 WARN 로그다.
+        long dbSizeBytes = 0L;
+        long freePageBytes = 0L;
+        try {
+            long pageSize = SqlitePragmas.pageSize(jdbc);
+            dbSizeBytes = SqlitePragmas.pageCount(jdbc) * pageSize;
+            freePageBytes = SqlitePragmas.freelistCount(jdbc) * pageSize;
+        } catch (Exception e) {
+            dbSizeBytes = 0L;
+            freePageBytes = 0L;
+            log.warn("maintenance status size observation failed — reporting 0 bytes; pause/resume itself is unaffected", e);
+        }
         return new MaintenanceStatusResponse(pauseState.isPaused(), pauseState.pausedAt(),
-                ingestService.sqliteBusyEncounteredCount(), ingestService.sqliteBusyDroppedCount());
+                ingestService.sqliteBusyEncounteredCount(), ingestService.sqliteBusyDroppedCount(),
+                ingestService.traceSummaryDeferredCount(),
+                dbSizeBytes, freePageBytes);
     }
 
     /**
@@ -198,14 +222,14 @@ public class MaintenanceController {
         return new MaintenanceResult(deletedTraces, freedBytes, dbSizeBytes, busy);
     }
 
+    // [Phase R23] R23/AC-07-3 — 아래 두 메서드는 **본문만** SqlitePragmas 위임으로 바뀌었다.
+    //   이름·가시성·호출부는 그대로다(소비처 diff 0). PRAGMA 문자열은 이제 저장소에 한 곳뿐이다.
     private long readPageCount() {
-        Long v = jdbc.queryForObject("PRAGMA page_count", Long.class);
-        return v == null ? 0L : v;
+        return SqlitePragmas.pageCount(jdbc);
     }
 
     private long readPageSize() {
-        Long v = jdbc.queryForObject("PRAGMA page_size", Long.class);
-        return v == null ? 0L : v;
+        return SqlitePragmas.pageSize(jdbc);
     }
 
     /** SettingsController 와 동형 — IllegalArgumentException → 400 {@code { "error": ... }}. */

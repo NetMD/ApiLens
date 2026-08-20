@@ -29,7 +29,7 @@ function mockApi(paused: boolean): FetchLog {
     const url =
       typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
     if (url.includes('/v1/maintenance/status')) {
-      return Promise.resolve(jsonResponse({ paused, pausedAt: paused ? 1_730_000_000_000 : null, sqliteBusyEncountered: 0, sqliteBusyDropped: 0 }));
+      return Promise.resolve(jsonResponse({ paused, pausedAt: paused ? 1_730_000_000_000 : null, sqliteBusyEncountered: 0, sqliteBusyDropped: 0, traceSummaryDeferred: 0, dbSizeBytes: 1_442_205_696, freePageBytes: 179_621_888 }));
     }
     if (url.includes('/v1/traces')) {
       log.tracesCalls += 1;

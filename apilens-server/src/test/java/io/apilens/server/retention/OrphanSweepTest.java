@@ -316,12 +316,53 @@ class OrphanSweepTest {
         service.sweepOrphanSpansNightly();   // 1밤차 — 상한만큼만 후보
 
         assertEquals(RetentionCleanupService.ORPHAN_CANDIDATE_CAP, storedCandidates().size(),
-                "한 밤에 상한을 넘는 후보를 기록하지 않는다");
+                "스윕 1회에 상한을 넘는 후보를 기록하지 않는다");
         assertEquals(over, countOrphanSpans(), "1밤차라 아직 삭제 0");
 
         service.sweepOrphanSpansNightly();   // 2밤차 — 상한만큼 삭제
         assertEquals(over - RetentionCleanupService.ORPHAN_CANDIDATE_CAP, countOrphanSpans(),
                 "초과분은 사라지지 않고 남는다 (다음 밤에 다시 후보가 된다 — 안전한 방향)");
+    }
+
+    // ─── 후보 목록 **쓰기** 방어 (SEC-R22-02 · R23/AC-08-3) ──────────────────
+
+    /**
+     * [Phase R23] R23/AC-08-3 — 후보 목록 <b>쓰기</b> 방어에 테스트가 하나도 없던 자리를 메운다
+     * (SEC-R22-02 이월). 읽기 쪽 방어는 위 두 테스트가 이미 잠그고 있었지만, 쓰기 쪽 거부 조건은
+     * 지우더라도 아무 테스트도 안 깨지는 상태였다.
+     *
+     * <p><b>쉼표가 든 id 는 목록에서 버린다</b> — 저장 형식이 쉼표로 이은 문자열이라, 값 안에 쉼표가
+     * 섞이면 <b>두 id 가 하나로 합쳐지거나 하나가 둘로 쪼개진다.</b> 그러면 다음 밤의 교집합이
+     * 엉뚱한 span 을 가리킬 수 있다. 버리는 방향이라 <b>틀려도 안전한 쪽</b>이다(안 지우고 남는다).
+     */
+    @Test
+    void keepsOnlyCommaFreeIdsWhenWritingTheCandidateList() {
+        OrphanCandidateStore store = new OrphanCandidateStore(jdbc);
+
+        store.write(List.of("clean-1", "bad,id", "clean-2"));
+
+        assertEquals(List.of("clean-1", "clean-2"), storedCandidates(),
+                "쉼표가 든 조각만 빠지고 나머지는 그대로 저장된다");
+    }
+
+    /**
+     * [Phase R23] R23/AC-08-3 — 길이 상한(64자)을 넘는 id 도 <b>쓰기 시점에</b> 버린다.
+     * span_id 는 W3C 규격 16자리 16진수라 64 는 넉넉한 상계다. 이 방어가 없으면 비정상 값 하나가
+     * {@code settings} 한 행을 비대하게 만든 채 영구히 남는다.
+     *
+     * <p>⚠️ 이 거부가 만드는 그늘은 별건으로 남아 있다 — 64자를 넘는 span_id 를 가진 고아는 후보가
+     * 되지 못해 영원히 안 지워진다(적재 입력 검증을 여는 라운드 몫). 여기서 잠그는 것은
+     * <b>쓰기 방어가 살아 있다</b>는 사실뿐이다.
+     */
+    @Test
+    void keepsOnlyIdsWithinTheLengthLimitWhenWritingTheCandidateList() {
+        OrphanCandidateStore store = new OrphanCandidateStore(jdbc);
+        String tooLong = "f".repeat(65);   // 상한 64 를 한 글자 넘긴다
+
+        store.write(List.of("short-1", tooLong, "short-2"));
+
+        assertEquals(List.of("short-1", "short-2"), storedCandidates(),
+                "상한을 넘는 조각만 빠지고 나머지는 그대로 저장된다");
     }
 
     // ─── fixture helpers ────────────────────────────────────────────────────

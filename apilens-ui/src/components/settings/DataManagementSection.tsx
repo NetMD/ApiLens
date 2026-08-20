@@ -34,7 +34,16 @@ export function DataManagementSection(): ReactNode {
   const toast = useToast();
   // [Phase R15] AC-B2-1 — 현재 일시정지 상태(버튼 라벨·유도 텍스트 분기). 공유 queryKey ['maintenance','status'].
   // [R21/AC-03-1] + 적재 상태 카운터 2종 (MaintenanceStatusView 확장 경유 — BL-07 뷰 병목 해소).
-  const { paused, sqliteBusyEncountered, sqliteBusyDropped } = useMaintenanceStatus();
+  // [Phase T / R23] AC-06-2/AC-07-1 — 요약 저장 실패 흐름 수 + DB 크기 · 회수 가능한 빈 공간 3종 추가.
+  //   ⚠️ 새 세 값은 어떤 disabled 식에도 들어가지 않는다 — 읽기 전용 표시 전용이다(설계 §8.2 비협상).
+  const {
+    paused,
+    sqliteBusyEncountered,
+    sqliteBusyDropped,
+    traceSummaryDeferred,
+    dbSizeBytes,
+    freePageBytes,
+  } = useMaintenanceStatus();
 
   // ① cleanup 인라인 확인 단계 노출 여부 (가벼운 확인 — 같은 자리에서 [확인]/[취소]).
   const [confirmingCleanup, setConfirmingCleanup] = useState(false);
@@ -195,11 +204,62 @@ export function DataManagementSection(): ReactNode {
                 )}
               </dd>
             </div>
+            {/* [Phase T / R23] AC-06-2 (T-R23-01/02/03) — 세 번째 줄: 요약을 저장하지 못한 흐름.
+                왜 여기인가: 인메모리 카운터라 아래 도움말("재시작하면 0부터 다시 세요")이 그대로 참이다.
+                위 두 줄만 있으면 흐름이 통째로 사라진 밤에도 화면이 "경합은 있었지만 유실은 없다" 로
+                읽혀서 거짓 안심을 준다 — 세 번째 줄이 그 자리를 메운다(설계 §2.5-A · 사용자 명시 비협상 결정).
+                단위는 위 두 줄과 또 다르다 — 횟수 / 청크 수 / 흐름 수(건). 라벨이 그것을 밝힌다(T-15 선례). */}
+            <div className="flex items-baseline justify-between gap-4">
+              {/* T-R23-01 */}
+              <dt className="text-xs text-stone-500">요약을 저장하지 못한 흐름</dt>
+              {/* T-R23-02/03 — 0 은 "(정상)" 병기, 0 이 아니면 병기 없음 (결핍 어휘 금지 — 불변식 12). */}
+              <dd className="font-mono text-sm text-stone-900">
+                {traceSummaryDeferred === 0 ? (
+                  <>
+                    0건 <span className="font-sans text-xs text-stone-500">(정상)</span>
+                  </>
+                ) : (
+                  `${traceSummaryDeferred.toLocaleString()}건`
+                )}
+              </dd>
+            </div>
           </dl>
           {/* T-16 — 리셋 안내 (1차 출처 = BE MaintenanceStatusResponse javadoc "재시작 시 0"). */}
           <p className="text-xs text-stone-500">
             서버 메모리에만 있는 숫자라 서버를 재시작하면 0부터 다시 세요 — 재시작 후 0 은
             정상이에요. 청크 1개 ≈ 500 span 이에요.
+          </p>
+        </div>
+
+        {/* [Phase T / R23] AC-07-2 (T-R23-04~08) — 「디스크 사용량」 별도 구획 신설 (읽기 전용 — 컨트롤 0).
+            ★★ 위 「적재 상태」와 합치지 않습니다. 사용자 명시 비협상 결정(설계 §2.5-A / §8.2).
+            사유: 위 구획 도움말은 "서버 메모리에만 있는 숫자라 재시작하면 0부터 다시 센다" 인데,
+            이 두 값은 DB 파일에서 바로 읽는 값이라 재시작해도 0 이 되지 않습니다. 같은 구획에 넣으면
+            그 도움말이 이 두 줄에 대해 거짓이 되고, 이 라운드가 없애려는 「거짓 안심」을 새로 심습니다.
+            골격은 위 구획과 같은 형태(위 경계선 + 제목 + 목록)를 그대로 씁니다.
+            순서 = 「적재 상태」 → 「디스크 사용량」 → ① 지난 데이터 정리 (정리 동작 전에 보는 값이라).
+            표기는 lib/format.ts 의 formatBytes 재사용 — 새 바이트 표기 함수 0 (T-R23-07). */}
+        <div className="flex flex-col gap-2 border-t border-stone-200 pt-4">
+          {/* T-R23-04 */}
+          <p className="text-sm font-medium text-stone-900">디스크 사용량</p>
+          <dl className="space-y-1">
+            <div className="flex items-baseline justify-between gap-4">
+              {/* T-R23-05 */}
+              <dt className="text-xs text-stone-500">DB 크기</dt>
+              <dd className="font-mono text-sm text-stone-900">{formatBytes(dbSizeBytes)}</dd>
+            </div>
+            <div className="flex items-baseline justify-between gap-4">
+              {/* T-R23-06 */}
+              <dt className="text-xs text-stone-500">회수 가능한 빈 공간</dt>
+              {/* 0 이어도 결함이 아닙니다 — 전체 삭제 + 최적화 직후에는 정상값입니다(2026-08-13 운영 실측).
+                  그래서 여기에는 결핍 어휘를 붙이지 않고 값만 그대로 보여 줍니다. */}
+              <dd className="font-mono text-sm text-stone-900">{formatBytes(freePageBytes)}</dd>
+            </div>
+          </dl>
+          {/* T-R23-08 — 이 구획 전용 도움말. 위 구획 도움말과 갈라져야 하는 바로 그 문장입니다. */}
+          <p className="text-xs text-stone-500">
+            DB 파일에서 바로 읽는 값이라 서버를 재시작해도 그대로예요. 빈 공간은 새로 쌓이는
+            데이터가 다시 채우기 때문에 낮 동안 줄어들어요 — 0 이어도 정상이에요.
           </p>
         </div>
 

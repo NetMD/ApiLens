@@ -60,8 +60,12 @@ export async function optimizeDatabase(): Promise<MaintenanceResult> {
 /**
  * [Phase R15] AC-A3-1 — GET /v1/maintenance/status — 현재 일시정지 상태 폴링(즉답, timeout 미지정 — 기본 동작).
  *
- * 응답 = MaintenanceStatusResponse ({ paused, pausedAt, sqliteBusyEncountered, sqliteBusyDropped })
- * (R21/AC-06-1 — G-03 필드 열거 현행화). 인증 보호 경로(키 설정 시 토큰 자동 첨부 — client.ts buildHeaders).
+ * 응답 = MaintenanceStatusResponse ({ paused, pausedAt, sqliteBusyEncountered, sqliteBusyDropped,
+ *   traceSummaryDeferred, dbSizeBytes, freePageBytes })
+ * ([Phase T / R23] AC-06-1/AC-07-1 — 4 → 7필드 additive 확장에 맞춰 필드 열거 현행화.
+ *  사용자 명시 비협상 결정(추가만 허용 — 기존 4필드 이름·타입·순서 불변). 설계 §4.1 / 불변식 I-11.
+ *  ⚠️ 이 주석은 계약을 베낀 자리라 BE record 가 넓어지면 같은 편집에서 함께 갱신한다 — R21 이 세운 규약).
+ * 인증 보호 경로(키 설정 시 토큰 자동 첨부 — client.ts buildHeaders).
  */
 export async function getMaintenanceStatus(signal?: AbortSignal): Promise<MaintenanceStatusResponse> {
   // exactOptionalPropertyTypes 정합 — signal 은 정의된 경우만 전달(listServices 동형).

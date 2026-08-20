@@ -53,7 +53,7 @@ function mockApi(): void {
     const url =
       typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
     if (url.includes('/v1/maintenance/status')) {
-      return Promise.resolve(jsonResponse({ paused: false, pausedAt: null, sqliteBusyEncountered: 0, sqliteBusyDropped: 0 }));
+      return Promise.resolve(jsonResponse({ paused: false, pausedAt: null, sqliteBusyEncountered: 0, sqliteBusyDropped: 0, traceSummaryDeferred: 0, dbSizeBytes: 1_442_205_696, freePageBytes: 179_621_888 }));
     }
     if (url.includes('/v1/services')) {
       return Promise.resolve(jsonResponse({ services: SERVICES }));

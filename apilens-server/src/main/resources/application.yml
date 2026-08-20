@@ -20,7 +20,7 @@ spring:
   # PRAGMA 는 URL 쿼리 파라미터로 — 풀의 모든 connection 생성 시점에 적용됨 (Design §2-A2):
   #   journal_mode=WAL      ingest 쓰기가 UI 읽기를 막지 않게 (persistent — 매 connection 재실행 무해)
   #   synchronous=NORMAL    WAL 권장 조합
-  #   busy_timeout=5000     writer 경합 시 5초 대기 (connection 수준 — URL 적용이 유일하게 안전)
+  #   busy_timeout=10000    writer 경합 시 10초 대기 (connection 수준 — URL 적용이 유일하게 안전)
   # auto_vacuum 은 URL 로 넣지 않는다 (실측 — DbPragmaTest V-06 봉인): sqlite-jdbc 3.47.1 의
   #   SQLiteConfig.Pragma 에 AUTO_VACUUM 이 없어 URL 파라미터가 silent drop 된다.
   #   INCREMENTAL 전환(신규/기존 DB 공통)은 StartupDbInitializer 가 동일 connection 에서
@@ -89,6 +89,12 @@ apilens:
     days: 30
     # cleanup 실행 시각 (Spring cron 6필드, 기본 매일 04:00). settings(DB) 노출 안 함 — yml 전용 (Design §2-A1).
     cleanup-cron: "0 0 4 * * *"
+    # [Phase R23] R23/AC-05-1 — 고아 span 스윕의 **자체** 실행 시각. 기본값은 위 cleanup-cron 과 같은
+    #   04:00 이지만 키가 별개다 — 정리 주기만 줄여도 고아 유예가 깎이지 않게 하기 위해서다.
+    #   ⚠️ 유예 자체는 여전히 "스윕 실행 횟수" 기준이다(첫 실행에 후보로 적고 다음 실행에도 여전히
+    #   고아인 것만 지운다). 이 값을 줄이면 유예는 똑같이 깎인다 — 줄이면 스윕 종료 로그의
+    #   sinceLastNightlySweepMs 가 짧아지는 것으로 보인다.
+    orphan-sweep-cron: "0 0 4 * * *"
 
 logging:
   # [Phase R17] FR-03 — stdout 전용 → 파일화. SQLITE_BUSY 유실 카운터의 WARN 이 여기 누적돼

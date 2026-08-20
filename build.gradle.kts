@@ -27,7 +27,11 @@ allprojects {
     //   이 의도라는 사실은 CHANGELOG.md 가 적는다.
     //   ⚠️ db/migration 안의 v0.6.0 문자열도 무접촉이다 — 한 글자만 고쳐도 Flyway 체크섬 불일치로
     //   운영 DB 기동이 실패한다. 버전 리터럴 일괄 치환을 이 저장소에서 하지 말 것.
-    version = "0.6.1"
+    // [Phase R23] R23/AC-17-1 — 0.6.1 → 0.6.2 (patch: server 전용 정비 — 요약 저장 경합 해소 +
+    //   진단 로그 + 고아 유예를 정리 주기에서 분리 + 관측 표면 상시화). 위 두 ⚠️ 는 이번에도 그대로다:
+    //   AgentMain 의 AGENT_VERSION 은 "0.6.0" 고정이고 그 자리에 사유 주석도 달지 않는다.
+    //   db/migration 은 주석 한 글자도 손대지 않는다.
+    version = "0.6.2"
 }
 
 subprojects {

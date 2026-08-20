@@ -44,7 +44,7 @@ jobs:
 
       # 3. 배포 산출물 2종 선별(bootJar + agent jar; plain/sources 제외) + UI 임베드 검증
       #    libs 에는 boot/plain/sources jar 가 공존하므로 plain·sources 를 명시 제외하고
-      #    [R12 D3 / DG-03] 글롭 매칭 개수 = 1 을 단언한다 — 0개(미산출)도 2개 이상(stale
+      #    글롭 매칭 개수 = 1 을 단언한다 — 0개(미산출)도 2개 이상(stale
       #    혼입·선별 실패)도 즉시 실패가 검출기. 첫 항목 자르기(head)로 임의 선택하지 않는다.
       - name: Stage & verify release artifacts
         run: |

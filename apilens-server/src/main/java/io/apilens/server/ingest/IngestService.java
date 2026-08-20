@@ -83,6 +83,17 @@ public class IngestService {
     private final AtomicLong sqliteBusyEncountered = new AtomicLong();
     private final AtomicLong sqliteBusyDropped = new AtomicLong();
 
+    // [Phase R23] R23/AC-06-1 — 요약(traces 한 행)을 저장하지 못한 **흐름**의 누적 개수. 인메모리이고
+    //   생성자 인자가 아니다(V-02 4-인자 봉인 유지). 단위가 위 두 카운터와 다르다 —
+    //   encountered = 경합 횟수 · dropped = 유실된 청크 수(청크 ≈ 500 span) · deferred = 흐름 수.
+    //   재시작 시 0 복귀는 정상(스키마 무변경 — DB 저장 안 함).
+    private final AtomicLong traceSummaryDeferred = new AtomicLong();
+
+    // [Phase R23] R23/AC-01-1 — 요약 실패 WARN 에 싣는 근본 예외 메시지의 길이 상한(문자).
+    //   이 문자열은 **외부(드라이버)가 정한 값**이라 통제 대상이다. 상한이 없으면 회전 로그 한 줄을
+    //   지배해 유실률 기준선 대조가 끊긴다. 개행 제거와 한 쌍이다(가짜 로그 줄 삽입 차단).
+    private static final int ROOT_MESSAGE_MAX_CHARS = 512;
+
     // [Phase R17] FR-01 — 청크 크기 상수(EXT-003 매직넘버 상수화). OQ-C 확정값(span 개수).
     private static final int SPAN_CHUNK_SIZE = 500;
 
@@ -167,19 +178,44 @@ public class IngestService {
             try {
                 // [Phase R17] FR-01 — 요약은 청크 루프 밖 1회. upsertTraceSummary 는 spans 테이블을 재집계하므로
                 //   부분 적재라도 커밋된 span 만 반영한다(GT-10, G-10 SQL diff 0). 순서 역전 시 O(N²)+lock 점유로 목적 붕괴.
-                chunkTx.executeWithoutResult(status -> upsertTraceSummary(traceId, spans, receivedAt));
+                // [Phase R23] R23/AC-02-1 — ★트랜잭션 래핑을 걷어냈다(자동커밋 직접 호출).
+                //   왜: 이 트랜잭션은 **읽기가 먼저**였다(집계 SELECT → 대표 span SELECT → INSERT OR REPLACE).
+                //   WAL 은 첫 읽기에서 스냅샷을 잡으므로, 그 사이 다른 커넥션이 커밋하면 쓰기 승격이
+                //   **대기 없이 즉시** 실패한다(스냅샷 충돌). 자동커밋이 되면 승격이라는 단계 자체가 없어져
+                //   그 실패 경로가 사라진다. 대신 세 문장이 각각 다른 스냅샷을 보므로
+                //   **집계 null 가드가 반드시 함께 있어야 한다**(upsertTraceSummary 안 — R23/AC-02-2).
+                upsertTraceSummary(traceId, spans, receivedAt);
             } catch (DataAccessException e) {
-                if (isSqliteBusy(e)) {
+                boolean busy = isSqliteBusy(e);
+                if (busy) {
                     sqliteBusyEncountered.incrementAndGet();
                 }
                 // 요약 실패는 span 유실 아님(이미 커밋) → dropped 증가 안 함.
                 // [Phase R22] R22/AC-05-1 — 이전 서술("다음 ingest 가 재집계로 자가치유")은 **오진단**이었다.
                 //   자가치유는 **같은 trace_id 로 span 이 더 올 때만** 일어난다(upsertTraceSummary 가
                 //   traceId 를 받는다). 마지막 청크에서 실패하면 다음이 안 오고 **영구 고아 span** 이 된다.
-                //   그 고아는 야간 스윕(RetentionCleanupService.sweepOrphanSpansNightly)이 이틀에 걸쳐
-                //   확인해 지운다. ★근본 해소(요약 upsert 실패 자체)는 후속 라운드 몫이다.
-                log.warn("trace summary deferred (self-heal only if more spans arrive for this trace): traceId={} cause={}",
-                        traceId, e.getClass().getSimpleName());
+                // [Phase R23] R23/AC-08-4 — ★현행화: 고아를 만드는 **가장 큰 원인**(읽기가 먼저인 트랜잭션의
+                //   쓰기 승격 실패)은 R23 에서 없앴다. 남는 것은 다른 이유로 실패하는 요약뿐이고, 그렇게
+                //   생긴 고아는 야간 스윕(RetentionCleanupService.sweepOrphanSpansNightly)이 자체 스케줄
+                //   (apilens.retention.orphan-sweep-cron)로 돌며 이틀에 걸쳐 확인해 지운다.
+                //   "고아 span 은 0 이다" 를 단정으로 쓰지 않는다.
+                traceSummaryDeferred.incrementAndGet();
+                // [Phase R23] R23/AC-01-2/R23/AC-01-5 — ★앞머리 토큰 `trace summary deferred` 는 **고정**이다.
+                //   이 문자열이 운영 로그 7일치를 대조하는 기준점이라 바꾸면 과거와의 대조가 끊긴다.
+                //   (지금까지 이 사실은 코드 어디에도 없고 운영 기록에만 있었다 — R23 이 코드에 남긴다.)
+                //   새 필드는 **뒤에만** 덧붙인다.
+                // [Phase R23] R23/AC-01-3 — errorCode·sqlState 는 **이번 사안의 판정 근거가 아니다**
+                //   (실측 errorCode=5 · SQLState=null 로 평범한 잠금 경합과 값이 같다). 다른 종류의
+                //   실패(CONSTRAINT=19 · FULL=13)를 가를 때만 쓴다. 원인을 가르는 것은 rootMessage 다.
+                Throwable root = rootCauseOf(e);
+                SQLException sql = deepestSqlException(e);
+                log.warn("trace summary deferred (self-heal only if more spans arrive for this trace): traceId={} cause={}"
+                                + " rootCause={} rootMessage={} errorCode={} sqlState={} busy={} deferredTotal={}",
+                        traceId, e.getClass().getSimpleName(),
+                        root.getClass().getName(), sanitizeForLog(root.getMessage()),
+                        sql == null ? -1 : sql.getErrorCode(),
+                        sql == null ? null : sql.getSQLState(),
+                        busy, traceSummaryDeferred.get());
             }
         }
         // [Phase H] AC-06-3 — D-02 경로 B (자동 등록). 사용자 명시 비협상 결정.
@@ -226,6 +262,63 @@ public class IngestService {
 
     public long sqliteBusyDroppedCount() {
         return sqliteBusyDropped.get();
+    }
+
+    /**
+     * [Phase R23] R23/AC-06-1 — 요약을 저장하지 못한 누적 <b>흐름 수</b> (status 표면 + 테스트 관측용).
+     * 위 두 게터와 같은 형태로 노출한다(생성자 인자 아님 — V-02 4-인자 봉인 무관).
+     * 인메모리라 재시작 시 0 복귀가 정상이고, 기준선은 logs/apilens.log 누적 비교다.
+     */
+    public long traceSummaryDeferredCount() {
+        return traceSummaryDeferred.get();
+    }
+
+    /**
+     * [Phase R23] R23/AC-01-1 — cause 사슬의 <b>맨 끝</b> 예외. 감싼 클래스 이름
+     * ({@code TransientDataAccessResourceException} 등)만으로는 원인을 못 가르기 때문에 필요하다.
+     *
+     * <p>이 메서드와 {@link #deepestSqlException} · {@link #sanitizeForLog} 은 <b>절대 던지지 않는다</b> —
+     * 로그를 만드는 도중의 예외가 catch 블록을 빠져나가면 host-throw-0 이 깨진다(I-07).
+     * 자기 참조 cause 로 무한 순회하지 않도록 {@code c != c.getCause()} 로 끊는다(isSqliteBusy 와 같은 관용구).
+     */
+    private static Throwable rootCauseOf(Throwable t) {
+        Throwable root = t;
+        while (root.getCause() != null && root.getCause() != root) {
+            root = root.getCause();
+        }
+        return root;
+    }
+
+    /**
+     * [Phase R23] R23/AC-01-4 — cause 사슬에서 <b>가장 깊은</b> {@link SQLException}. 없으면 null.
+     * {@code org.sqlite.*} 를 import 하지 않는다 — JDK 표준 타입만으로 코드·상태값을 읽을 수 있고,
+     * 드라이버는 runtimeOnly 라 main 에서 import 하면 컴파일이 깨진다(I-08).
+     */
+    private static SQLException deepestSqlException(Throwable t) {
+        SQLException found = null;
+        for (Throwable c = t; c != null && c != c.getCause(); c = c.getCause()) {
+            if (c instanceof SQLException se) {
+                found = se;
+            }
+        }
+        return found;
+    }
+
+    /**
+     * [Phase R23] §5.2 — 외부가 정한 문자열을 로그 한 줄에 실을 때의 위생 처리.
+     * ① 개행({@code \r} {@code \n})을 공백으로 바꾼다 — 가짜 로그 줄 삽입 차단(로그 인젝션).
+     *   이 WARN 이 유실률 기준선의 앵커라 <b>한 줄 단위</b>가 깨지면 대조가 틀린다.
+     * ② {@value #ROOT_MESSAGE_MAX_CHARS} 자를 넘으면 잘라 내고 잘렸음을 표시한다.
+     */
+    private static String sanitizeForLog(String raw) {
+        if (raw == null) {
+            return null;
+        }
+        String oneLine = raw.replace('\r', ' ').replace('\n', ' ');
+        if (oneLine.length() <= ROOT_MESSAGE_MAX_CHARS) {
+            return oneLine;
+        }
+        return oneLine.substring(0, ROOT_MESSAGE_MAX_CHARS) + "[truncated]";
     }
 
     /**
@@ -457,6 +550,24 @@ public class IngestService {
                         """,
                 traceId
         );
+
+        // [Phase R23] R23/AC-02-2/R23/AC-02-3 — ★집계 null 가드. R23 이 트랜잭션을 걷어낸 뒤로
+        //   위 두 SELECT 는 **서로 다른 스냅샷**을 볼 수 있다. 집계는 비었는데(MIN/MAX 가 NULL)
+        //   대표 span 조회는 행을 보는 순서가 새로 열리고, 그때 아래 역참조가 NPE 를 던진다.
+        //   NPE 는 호출부의 catch(DataAccessException) 을 **빠져나가 적재 500** 이 된다(I-07 위반).
+        //   ★0 으로 채우지 않는다 — 시작 시각이 1970년인 가짜 흐름이 생긴다. 저장 자체를 건너뛴다.
+        //   ★이 건너뛰기는 가드 누락이 아니라 **정상 경로**다: 예외를 안 던지고 요약 행도 안 만드는 것이 답이다.
+        //   COUNT(*) 인 span_count·service_count 는 SQLite 에서 NULL 이 되지 않으므로 가드 대상이 아니다.
+        //   자리 선택: **두 번째 SELECT 뒤**다. spans 가 진짜로 비어 있는 경우는 위 rootInfo 조회의
+        //   EmptyResultDataAccessException 이 먼저 받으므로 **오늘 동작이 한 바이트도 안 바뀐다**.
+        if (aggregate.get("min_start") == null || aggregate.get("max_end") == null) {
+            traceSummaryDeferred.incrementAndGet();
+            // 앞머리 토큰은 위 WARN 과 같다(R23/AC-01-2). 사유는 reason 필드로 갈린다.
+            log.warn("trace summary deferred (self-heal only if more spans arrive for this trace): traceId={}"
+                            + " reason=empty-aggregate deferredTotal={}",
+                    traceId, traceSummaryDeferred.get());
+            return;
+        }
 
         long startTime = ((Number) aggregate.get("min_start")).longValue();
         long endTime = ((Number) aggregate.get("max_end")).longValue();

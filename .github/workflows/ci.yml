@@ -13,7 +13,7 @@ jobs:
   # ============================================================
   # Job 1: backend-test
   #   Gradle clean test (matrix JDK 21 primary + JDK 25 smoke)
-  #   PM §9.1 #17 "5종 명령 게이트 + relocate clean" 라인 매핑
+  #   빌드·테스트·shadow jar relocate 검증을 한 job 에 묶는다
   # ============================================================
   backend-test:
     name: Backend (Gradle / JDK ${{ matrix.jdk }})
@@ -23,9 +23,9 @@ jobs:
       matrix:
         include:
           - jdk: '21'
-            smoke: false  # primary build target (G-01)
+            smoke: false  # 기본 빌드 대상 — 이 JDK 에서 실패하면 CI 실패
           - jdk: '25'
-            smoke: true   # runtime smoke (Phase E3 R7 인용)
+            smoke: true   # 상위 JDK 런타임 확인용 — 실패해도 CI 는 계속(아래 continue-on-error)
     steps:
       - uses: actions/checkout@v4
 
@@ -63,7 +63,7 @@ jobs:
       - name: Verify shadow jar relocate clean (D-01 인용)
         run: |
           # apilens-agent 의 shadow jar 안에 raw bytebuddy / jackson 클래스 0 hit 검증
-          # [R12 D3 / DG-03] 글롭 매칭 1개 단언 — 0개(미산출)/2개 이상(stale 혼입) 즉시 실패
+          # 글롭 매칭 1개 단언 — 0개(미산출)/2개 이상(stale 혼입) 즉시 실패
           mapfile -t AGENT_JARS < <(find apilens-agent/build/libs -name 'apilens-agent*.jar' -not -name '*sources*' -not -name '*plain*' | sort)
           if [ ${#AGENT_JARS[@]} -ne 1 ]; then
             echo "ERROR: agent shadow jar 매칭 개수 비정상 (${#AGENT_JARS[@]}) — 정확히 1개여야 합니다: ${AGENT_JARS[*]:-'(none)'}"
@@ -80,8 +80,8 @@ jobs:
             echo "ERROR: raw com.fasterxml.jackson.* classes leaked into shadow jar (D-01 violation)."
             exit 1
           fi
-          # relocated 패키지 (io/apilens/agent/shaded/bytebuddy/) 존재 확인 (G-20 인용)
-          # [Phase R18] V-1 — WARN → FAIL 승급: 미산출 = 빌드 불완전(relocate 미발생) → 즉시 실패.
+          # relocated 패키지 (io/apilens/agent/shaded/bytebuddy/) 존재 확인
+          # 미산출 = 빌드 불완전(relocate 미발생) → 경고가 아니라 즉시 실패.
           if ! grep -q '^io/apilens/agent/shaded/bytebuddy/' /tmp/agent-jar-entries.txt; then
             echo "ERROR: relocated bytebuddy entries not found — shadow jar relocate did not happen (V-1 FAIL)."
             exit 1
@@ -89,11 +89,11 @@ jobs:
           echo "OK: shadow jar relocate clean."
         continue-on-error: ${{ matrix.smoke }}
 
-      # [Phase R18] V-1 (FR-05 C-3) — javap -v 로 우리 클래스의 public API 에 raw(비-relocate)
-      #   jackson/bytebuddy 참조가 0 임을 봉인. jar 엔트리 grep(위 step)은 raw '클래스 파일'만 잡지만,
+      # javap -v 로 우리 클래스의 public API 에 raw(비-relocate)
+      #   jackson/bytebuddy 참조가 0 임을 확인한다. jar 엔트리 grep(위 step)은 raw '클래스 파일'만 잡지만,
       #   이 step 은 우리 코드(io.apilens.agent.* / io.apilens.common.*, shaded 제외)의 constant pool·
       #   시그니처가 raw 패키지를 참조하지 않음(= relocate 누락 0)까지 검증한다. build script 단언 금지,
-      #   javap 직접 검증(NFR-01 · CLAUDE.md Build lessons §1).
+      #   javap 로 직접 검증한다(빌드 스크립트 안에서 단언하지 않는다).
       - name: Verify agent shadow jar javap relocate clean (V-1, no raw jackson/bytebuddy in our API)
         run: |
           mapfile -t AGENT_JARS < <(find apilens-agent/build/libs -name 'apilens-agent*.jar' -not -name '*sources*' -not -name '*plain*' | sort)
@@ -136,7 +136,7 @@ jobs:
   # ============================================================
   # Job 2: frontend-build
   #   Node 20 + npm ci + lint + test + build
-  #   CLAUDE.md "UI 미빌드 시 server 는 경고만 띄우고 정상 기동" 보존
+  #   UI 를 아직 빌드하지 않아도 server 빌드는 경고만 남기고 계속된다
   # ============================================================
   frontend-build:
     name: Frontend (Node 20)
@@ -212,7 +212,7 @@ jobs:
       - name: Verify agent jar embedded + static embedded (D-02 인용)
         run: |
           ls -la apilens-server/build/libs/
-          # [R12 D3 / DG-03] 글롭 매칭 1개 단언 — 0개(미산출)/2개 이상(stale 혼입) 즉시 실패
+          # 글롭 매칭 1개 단언 — 0개(미산출)/2개 이상(stale 혼입) 즉시 실패
           mapfile -t SERVER_JARS < <(find apilens-server/build/libs -name 'apilens-server-*.jar' -not -name '*plain*' -not -name '*sources*' | sort)
           if [ ${#SERVER_JARS[@]} -ne 1 ]; then
             echo "ERROR: server bootJar 매칭 개수 비정상 (${#SERVER_JARS[@]}) — 정확히 1개여야 합니다: ${SERVER_JARS[*]:-'(none)'}"
@@ -226,7 +226,7 @@ jobs:
             exit 1
           fi
           echo "OK: agent jar embedded."
-          # static UI embed 검증 (apilens-ui 미빌드 시 경고만 — D-04 보존)
+          # static UI embed 검증 (apilens-ui 미빌드 시 경고만)
           if grep -q 'BOOT-INF/classes/static/' /tmp/server-jar-entries.txt; then
             echo "OK: static UI resources embedded."
           else

@@ -201,6 +201,33 @@ class MaintenanceControllerTest {
         jdbc.update("DELETE FROM payloads WHERE span_id LIKE 'bulk-%'");
     }
 
+    /**
+     * [Phase R23] R23/AC-08-5 — [전체 삭제] 도 회수한 만큼이 {@code freedBytes} 로 나온다.
+     *
+     * <p>★ 왜 <b>신설</b>인가: 위 {@code purgeReturns200AndDeletesEverything} 의
+     * {@code .freedBytes").exists()} 는 <b>그대로 둔다.</b> 그 테스트의 DB 는 Flyway 만 돌아
+     * {@code auto_vacuum = NONE} 이라 {@code incremental_vacuum} 이 no-op 이고, 같은 파일의
+     * {@code optimizeOnEmptyDbReturns200NoOpWithZeroFreed} 는 <b>{@code freedBytes == 0} 을 단언</b>한다 —
+     * 세 자리를 일괄로 {@code > 0} 으로 바꾸면 그 단언과 정면으로 부딪힌다.
+     * 그래서 <b>전제를 갖춘 전용 테스트를 따로</b> 만든다({@code cleanup} 쪽 본보기와 같은 모양).
+     */
+    @Test
+    void purgeReturnsFreedBytesAboveZeroWhenFreePagesWereReclaimed() throws Exception {
+        enableIncrementalAutoVacuum();
+        createFreePages(120, 40_000);
+        Long freeBefore = jdbc.queryForObject("PRAGMA freelist_count", Long.class);
+        assertEquals(true, freeBefore != null && freeBefore > 0,
+                "전제: 회수할 free page 가 실제로 생겨야 이 단언이 의미를 가진다");
+
+        String body = mockMvc.perform(post("/v1/maintenance/purge"))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+
+        long freedBytes = new ObjectMapper().readTree(body).get("freedBytes").asLong();
+        assertEquals(true, freedBytes > 0,
+                "회수한 만큼이 freedBytes 로 나온다 (실측 freedBytes=" + freedBytes + ")");
+    }
+
     @Test
     void purgeOnEmptyDbReturns200WithZeroDeleted() throws Exception {
         mockMvc.perform(post("/v1/maintenance/purge"))
@@ -374,6 +401,65 @@ class MaintenanceControllerTest {
                 .andExpect(jsonPath("$.paused").value(false))
                 .andExpect(jsonPath("$.sqliteBusyEncountered").value(0))
                 .andExpect(jsonPath("$.sqliteBusyDropped").value(0));
+    }
+
+    // ── [Phase R23] R23/AC-06-1/R23/AC-07-1 — 요약 실패 카운터 + 디스크 크기 3필드 ──
+
+    /**
+     * R23/AC-06-1 verbatim: "요약 저장 실패 횟수가 상태 응답에 실린다. 기존 4필드는 <b>이름·타입·순서·의미
+     * 무변경</b>, 뒤에만 더한다."
+     * R23/AC-07-1 verbatim: "DB 크기와 회수 가능 공간이 <b>버튼을 누르지 않아도</b> 상태 응답에 실린다."
+     *
+     * <p>★ 이 단언이 <b>화면 테스트로는 원리적으로 못 잡는 축</b>을 맡는다 — 화면 테스트는 픽스처로 값을
+     * 직접 고정해 넣으므로 "서버가 틀린 숫자를 보내는가" 를 알 수 없다. 그래서 여기서 PRAGMA 를 직접 읽어
+     * <b>곱셈 결과와 값 대조</b>를 한다(단위: 페이지 수 × 바이트/페이지 = 바이트).
+     */
+    @Test
+    void reportsDeferredSummaryCountAndDiskSizesOnStatusWithExistingFieldsIntact() throws Exception {
+        long pageSize = requirePragma("PRAGMA page_size");
+        long pageCount = requirePragma("PRAGMA page_count");
+        long freelist = requirePragma("PRAGMA freelist_count");
+
+        mockMvc.perform(get("/v1/maintenance/status"))
+                .andExpect(status().isOk())
+                // 기존 4필드 — 이름·의미 그대로.
+                .andExpect(jsonPath("$.paused").value(false))
+                .andExpect(jsonPath("$.pausedAt").doesNotExist())
+                .andExpect(jsonPath("$.sqliteBusyEncountered").value(0))
+                .andExpect(jsonPath("$.sqliteBusyDropped").value(0))
+                // 뒤에 더한 3필드.
+                .andExpect(jsonPath("$.traceSummaryDeferred").value(0))
+                .andExpect(jsonPath("$.dbSizeBytes").value(pageCount * pageSize))
+                .andExpect(jsonPath("$.freePageBytes").value(freelist * pageSize));
+    }
+
+    /** R23/AC-07-1 — pause/resume echo 에도 세 필드가 동반한다(3 표면 단일 조립 검증). */
+    @Test
+    void reportsTheThreeNewFieldsOnPauseAndResumeEcho() throws Exception {
+        IngestPauseState pauseState = IngestPauseStateTestFactory.withClock(() -> 1_000L);
+        MockMvc mvc = mockMvcWith(pauseState);
+        long expectedDbSize = requirePragma("PRAGMA page_count") * requirePragma("PRAGMA page_size");
+
+        mvc.perform(post("/v1/maintenance/pause"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.paused").value(true))
+                .andExpect(jsonPath("$.traceSummaryDeferred").value(0))
+                .andExpect(jsonPath("$.dbSizeBytes").value(expectedDbSize))
+                .andExpect(jsonPath("$.freePageBytes").exists());
+
+        mvc.perform(post("/v1/maintenance/resume"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.paused").value(false))
+                .andExpect(jsonPath("$.traceSummaryDeferred").value(0))
+                .andExpect(jsonPath("$.dbSizeBytes").value(expectedDbSize))
+                .andExpect(jsonPath("$.freePageBytes").exists());
+    }
+
+    /** PRAGMA 값을 직접 읽는다 — 응답의 숫자를 <b>서버가 계산한 값</b>과 대조하기 위해서다. */
+    private long requirePragma(String pragma) {
+        Long v = jdbc.queryForObject(pragma, Long.class);
+        org.junit.jupiter.api.Assertions.assertNotNull(v, pragma + " 결과 없음 — 전제 붕괴");
+        return v;
     }
 
     /**

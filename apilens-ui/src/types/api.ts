@@ -191,25 +191,40 @@ export interface MaintenanceResult {
 /**
  * [Phase R15] AC-A3-1/AC-A3-2 — GET/POST /v1/maintenance/{status,pause,resume} 공통 응답
  * (BE MaintenanceStatusResponse record 1:1).
- *   { "paused": true, "pausedAt": 1730000000000, "sqliteBusyEncountered": 0, "sqliteBusyDropped": 0 }
- *   { "paused": false, "pausedAt": null, "sqliteBusyEncountered": 3, "sqliteBusyDropped": 1 }
+ *   { "paused": true, "pausedAt": 1730000000000, "sqliteBusyEncountered": 0, "sqliteBusyDropped": 0,
+ *     "traceSummaryDeferred": 0, "dbSizeBytes": 1442205696, "freePageBytes": 179621888 }
+ *   { "paused": false, "pausedAt": null, "sqliteBusyEncountered": 1, "sqliteBusyDropped": 0,
+ *     "traceSummaryDeferred": 1, "dbSizeBytes": 1442205696, "freePageBytes": 179621888 }
  * BE 가 paused=false 시 pausedAt=null 보장(echo 일관성). MaintenanceResult 와 별도 타입(이종 반환 회피).
  * 사용자 명시 비협상 결정(D03 in-memory 상태). CLAUDE.md '아키텍처 핵심 원칙' (수신 일시정지 단일 기능).
  *
+ * [Phase T / R23] AC-06-1/AC-07-1 — 3필드 additive 확장(4 → 7). 기존 4필드의 이름·타입·순서·의미는
+ *   불변이고 뒤에만 더한다(사용자 명시 비협상 결정 — 응답 계약 "추가만 허용", 설계 §4.1 / 불변식 I-11).
+ *
  * [S-64] BE↔FE 식별자 타입 1:1 대조: BE MaintenanceStatusResponse record(io.apilens.server.retention)
  *   = `record MaintenanceStatusResponse(boolean paused, Long pausedAt, long sqliteBusyEncountered,
- *      long sqliteBusyDropped)` (R21 설계 §2.6 실측 — R20 카운터 2필드 확장 반영, G-01).
+ *      long sqliteBusyDropped, long traceSummaryDeferred, long dbSizeBytes, long freePageBytes)`
+ *   (R23 설계 §4.1 계약 표 — 7필드 순서 고정).
  *   - paused : boolean → boolean
  *   - pausedAt : Long(박싱, null 가능, epoch millis) → number | null (Jackson null 직렬화).
  *   - sqliteBusyEncountered : long(primitive — 항상 직렬화) → number. 적재 중 SQLITE_BUSY 를 만난 누적 횟수.
  *   - sqliteBusyDropped : long(primitive) → number. 경합으로 유실된 누적 청크 수(청크 ≈ 500 span).
- *   카운터 2종은 BE in-memory — 서버 재시작 시 0 복귀가 정상 (BE javadoc "재시작 시 0", T-16 출처).
+ *   - traceSummaryDeferred : long(primitive) → number. 요약을 저장하지 못한 누적 흐름 수.
+ *   - dbSizeBytes : long(primitive) → number. 페이지 수 × 페이지 크기 = 바이트.
+ *   - freePageBytes : long(primitive) → number. 빈 페이지 수 × 페이지 크기 = 바이트.
+ *   ⚠️ 단위가 서로 다르다 — 횟수 / 청크 수 / 흐름 수 / 바이트 (뭉개면 오독, T-15 선례).
+ *   카운터 3종(3·4·5번)은 BE in-memory — 서버 재시작 시 0 복귀가 정상 (BE javadoc "재시작 시 0", T-16 출처).
+ *   6·7번은 DB 파일에서 PRAGMA 로 읽는 값이라 재시작해도 0 이 되지 않는다 — 성질이 달라서
+ *   화면 구획도 갈라 놓았다(설계 §2.5-A 비협상). PRAGMA 읽기 실패 시에만 BE 가 0 으로 폴백한다(설계 §2.4-D).
  */
 export interface MaintenanceStatusResponse {
   paused: boolean;
   pausedAt: number | null; // epoch millis. BE Long → number | null.
   sqliteBusyEncountered: number; // R21/AC-03-1 — long primitive 라 항상 직렬화, `?` 불요.
   sqliteBusyDropped: number; // R21/AC-03-1 — 단위는 청크 수 (횟수 아님 — 100배 오독 주의, T-15).
+  traceSummaryDeferred: number; // R23/AC-06-1 — 단위는 흐름 수(건). 인메모리 — 재시작 시 0 복귀 정상.
+  dbSizeBytes: number; // R23/AC-07-1 — 바이트. PRAGMA page_count × page_size (BE 조립).
+  freePageBytes: number; // R23/AC-07-1 — 바이트. PRAGMA freelist_count × page_size. 0 도 정상값.
 }
 
 /** 마스킹 룰 타입 — V1 rule_type 컬럼 값 그대로. */
