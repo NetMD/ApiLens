@@ -145,9 +145,30 @@ class SettingsApiTest {
         }
     }
 
+    /**
+     * [Phase R24] R24/FR-09 — 허용 목록 밖 키 두 종류를 한 시험이 함께 본다.
+     * <ol>
+     *   <li>{@code foo.bar} — 아무 데도 안 쓰는 키.</li>
+     *   <li>{@code retention.orphanCandidates} — ★<b>내부 저장용 키라서 바깥에서 쓰기 금지</b>다.
+     *       없는 키가 아니다: {@code OrphanCandidateStore} 가 {@code KEY_ORPHAN_CANDIDATES} 로 선언하고
+     *       야간 고아 정리가 그 키로 {@code settings} 에 직접 쓴다. 그 클래스 javadoc 이
+     *       「{@code ALLOWED_KEYS} 에 넣지 않는다 — 사용자에게 노출되지 않는 내부 상태」라고 이미 적어 뒀다.
+     *       허용 목록을 넓히면 사용자가 PUT 으로 내부 상태를 덮어쓸 수 있게 된다.</li>
+     * </ol>
+     *
+     * <p>★<b>게이트는 바깥에서 들어오는 쓰기 진입점에만 건다.</b> {@code OrphanCandidateStore} 의 내부
+     * 쓰기는 {@code SettingsRegistry.validate} 를 안 거치므로 <b>그대로 통과해야 한다</b> —
+     * 막으면 야간 고아 정리가 깨진다. 이 라운드가 하는 일은 <b>이미 있는 게이트에 시험을 얹는 것</b>뿐이고
+     * {@code SettingsRegistry} · {@code OrphanCandidateStore} 는 한 줄도 바꾸지 않는다.
+     */
     @Test
     void returns400ForUnknownKeyWithAllowedKeyList() throws Exception {
         mockMvc.perform(put("/v1/settings").contentType(JSON).content("{\"foo.bar\": 1}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error", containsString("allowed: retention.days")));
+
+        mockMvc.perform(put("/v1/settings").contentType(JSON)
+                        .content("{\"retention.orphanCandidates\": \"\"}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error", containsString("allowed: retention.days")));
     }

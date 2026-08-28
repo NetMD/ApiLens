@@ -416,9 +416,24 @@ class MaintenanceControllerTest {
      */
     @Test
     void reportsDeferredSummaryCountAndDiskSizesOnStatusWithExistingFieldsIntact() throws Exception {
+        // [Phase R24] R24/FR-07 — ★순서가 하중을 받는다: enableIncrementalAutoVacuum() 안의 VACUUM 이
+        //   빈 페이지를 0 으로 되돌린다. PRAGMA 읽기보다 **앞**에 두지 않으면 freelist 가 0 이 되어
+        //   기대값도 0 이 되고, dbSizeBytes 단언까지 함께 깨진다.
+        //   헬퍼를 쪼개지 말 것 — PRAGMA 와 VACUUM 은 같은 connection 이어야 반영된다
+        //   (enableIncrementalAutoVacuum 의 javadoc 이 이미 적어 둔 사실이다).
+        enableIncrementalAutoVacuum();
+        createFreePages(120, 40_000);
+
         long pageSize = requirePragma("PRAGMA page_size");
         long pageCount = requirePragma("PRAGMA page_count");
         long freelist = requirePragma("PRAGMA freelist_count");
+
+        // [Phase R24] R24/FR-07 — ★기대값이 0 이 될 수 있는 자리라 전제를 먼저 세운다.
+        //   그리고 **이웃 값을 함께 본다**: 제품 코드는 두 값을 하나의 catch 로 함께 0 으로 접는다
+        //   (MaintenanceController.statusSnapshot 의 관측 실패 폴백). 한쪽만 보면 관측 실패로 생긴 0 과
+        //   진짜 0 을 못 가른다 — 그래서 pageCount 와 freelist 를 **둘 다** 0 초과로 세운 뒤 대조한다.
+        assertEquals(true, pageCount > 0, "전제: dbSizeBytes 기대값이 0 이면 대조가 0 == 0 이 된다");
+        assertEquals(true, freelist > 0, "전제: freePageBytes 기대값이 0 이면 대조가 0 == 0 이 된다");
 
         mockMvc.perform(get("/v1/maintenance/status"))
                 .andExpect(status().isOk())

@@ -136,12 +136,11 @@ jobs:
   # ============================================================
   # Job 2: frontend-build
   #   Node 20 + npm ci + lint + test + build
-  #   UI 를 아직 빌드하지 않아도 server 빌드는 경고만 남기고 계속된다
+  #   빌드 산출물(dist)을 통합 job 으로 넘긴다 — 통합 job 이 화면 자원을 임베드해야 하기 때문이다
   # ============================================================
   frontend-build:
     name: Frontend (Node 20)
     runs-on: ubuntu-latest
-    continue-on-error: true   # release 직전 강화 예정
     steps:
       - uses: actions/checkout@v4
 
@@ -172,30 +171,57 @@ jobs:
         if: steps.ui-check.outputs.ui_present == 'true'
         working-directory: apilens-ui
         run: npm run lint
-        continue-on-error: true
 
       - name: npm run test
         if: steps.ui-check.outputs.ui_present == 'true'
         working-directory: apilens-ui
         run: npm run test
-        continue-on-error: true
 
       - name: npm run build
         if: steps.ui-check.outputs.ui_present == 'true'
         working-directory: apilens-ui
         run: npm run build
 
+      - name: Upload UI dist
+        if: steps.ui-check.outputs.ui_present == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-dist
+          path: apilens-ui/dist
+          # 빈 아티팩트가 조용히 올라가면 통합 job 이 원인 없이 빨개진다 — 없으면 여기서 실패시킨다.
+          if-no-files-found: error
+          retention-days: 1
+
   # ============================================================
   # Job 3: integration-build
-  #   server bootJar + agent embed + static embed 검증
-  #   server bootJar (apilens-server-<ver>.jar) 안에 agent jar / static 임베드 확인
+  #   릴리스 경로와 같은 명령으로 돌고, agent jar / 화면 자원 임베드를 단언한다
+  #   태그를 밀기 전에 릴리스 경로와 같은 실패를 만난다
   # ============================================================
   integration-build:
-    name: Integration (server bootJar + agent embed)
+    name: Integration (clean build + agent/UI embed)
     runs-on: ubuntu-latest
     needs: [backend-test, frontend-build]
     steps:
       - uses: actions/checkout@v4
+
+      - name: Download UI dist
+        uses: actions/download-artifact@v4
+        with:
+          name: ui-dist
+          path: apilens-ui/dist
+
+      # embedUi 가 읽는 경로는 apilens-server/build.gradle.kts 의
+      # rootProject.file("apilens-ui/dist") 하나뿐이다. 내려받기 경로가 어긋나면 Gradle 이
+      # 화면 없이 빌드해 뒤 단계가 "임베드 안 됨"으로 실패하는데, 그 메시지만으로는
+      # 원인이 경로인지 빌드인지 안 갈린다. 그래서 Gradle 앞에서 먼저 본다.
+      - name: Verify UI dist landed where embedUi reads it
+        run: |
+          if [ ! -f apilens-ui/dist/index.html ]; then
+            echo "ERROR: apilens-ui/dist/index.html 이 없습니다 — 아티팩트 내려받기 경로를 확인하세요."
+            ls -la apilens-ui || true
+            exit 1
+          fi
+          echo "OK: apilens-ui/dist/index.html present."
 
       - name: Setup JDK 21
         uses: actions/setup-java@v4
@@ -206,8 +232,10 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
 
-      - name: Build server bootJar
-        run: ./gradlew :apilens-server:bootJar
+      # 릴리스 경로(release.yml)와 **같은 명령**이다. 시험이 backend-test 와 겹치지만 그 중복이 목적이다 —
+      # 릴리스 부하를 태그 앞으로 당긴다. `-x test` 를 붙이면 "같은 모양" 이 깨지므로 붙이지 않는다.
+      - name: Clean build (same command as the release path)
+        run: ./gradlew clean build
 
       - name: Verify agent jar embedded + static embedded (D-02 인용)
         run: |
@@ -226,9 +254,11 @@ jobs:
             exit 1
           fi
           echo "OK: agent jar embedded."
-          # static UI embed 검증 (apilens-ui 미빌드 시 경고만)
-          if grep -q 'BOOT-INF/classes/static/' /tmp/server-jar-entries.txt; then
+          # static UI embed 단언 — 릴리스 경로의 하드 단언과 같은 항목을 본다.
+          if grep -q 'BOOT-INF/classes/static/index.html' /tmp/server-jar-entries.txt; then
             echo "OK: static UI resources embedded."
           else
-            echo "::warning::static/ directory not embedded. apilens-ui not yet built (CLAUDE.md D-04 보존)."
+            echo "ERROR: static/index.html not embedded in server bootJar."
+            echo "  apilens-ui/dist 가 Gradle 실행 전에 놓였는지, embedUi 가 건너뛰지 않았는지 보세요."
+            exit 1
           fi

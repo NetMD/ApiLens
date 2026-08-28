@@ -26,11 +26,15 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.RowCallbackHandler;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.sql.SQLException;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -112,6 +116,23 @@ public class IngestService {
     private static final String AGENT_HELLO_OPERATION = "agent.startup";
     private static final String AGENT_VERSION_ATTRIBUTE = "apilens.agent.version";
 
+    // [Phase R24] R24/FR-05 — 끊겼다 이어진 구간을 로그 한 줄로 남기는 임계.
+    //   ★이 값 **미만**의 공백에서는 아무 줄도 안 찍는다. 그리고 이것은 **일이 벌어진 뒤에 남기는
+    //   기록**이지 경보가 아니다 — 끊겨 있는 동안에는 어디에도 안 뜨고, 다시 수신이 들어와야 드러난다.
+    //   ★TraceQueryRepository.computeHealthStatus 의 5분·30분 경계와 무관한 전용 값이다.
+    //   그 두 값은 사용자 명시 비협상 결정이라 참조도 재사용도 하지 않는다 — 그래서 그 두 상수의
+    //   이름을 여기에 적지도 않는다(회귀 가드가 이름으로 세는 자리라 인용 자체가 거짓 hit 가 된다).
+    private static final long RESUME_GAP_THRESHOLD_MS = 600_000L; // 10 minutes
+
+    // [Phase R24] R24/FR-05 — 사람이 읽는 시각 표기. ISO_LOCAL_DATE_TIME / LocalDateTime.toString() 은
+    //   초가 0 이면 ":00" 을 생략해 자릿수가 들쭉날쭉해진다(JDK 규격). 그래서 형식을 고정한다.
+    private static final DateTimeFormatter RESUME_TS_FORMAT =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss");
+
+    // [Phase R24] R24/FR-05 — 괄호 표기용 나눗셈 상수(밀리초 → 일). 사람이 자릿수를 가늠하는 용도이고
+    //   계산에 쓰는 수치가 아니다(계산에 쓰는 것은 gapMs 하나뿐 — logIngestResumedIfGap javadoc 참조).
+    private static final double MILLIS_PER_DAY = 86_400_000.0;
+
     // [Phase R17] EXT-003 anchor — V-02 생성자 4-인자 불변(사용자 명시 비협상 결정).
     //   협력자(트랜잭션 관리자·카운터)는 생성자 인자가 아니라 내부 필드/본문으로 얻는다.
     //   R13 287a7e7 회귀 진원지(생성자 변경이 agent 통합테스트 컴파일 파손) 재발 차단.
@@ -132,6 +153,12 @@ public class IngestService {
     public IngestResponse ingest(IngestRequest request) {
         validate(request);
         long receivedAt = System.currentTimeMillis();
+
+        // [Phase R24] R24/FR-05/R24/AC-02-6 — ★반드시 persistTrace 루프보다 **앞**이다.
+        //   persistTrace 의 마지막 문장이 upsertServiceRegistration 이고, 그 UPSERT 의
+        //   `last_seen_at = excluded.last_seen_at` 이 직전 값을 같은 문장에서 덮는다.
+        //   순서가 역전되면 읽을 값이 이미 사라져 이 기능이 통째로 무력화된다.
+        logIngestResumedIfGap(request, receivedAt);
 
         Map<String, List<Span>> byTrace = request.spans().stream()
                 .collect(Collectors.groupingBy(Span::traceId));
@@ -319,6 +346,93 @@ public class IngestService {
             return oneLine;
         }
         return oneLine.substring(0, ROOT_MESSAGE_MAX_CHARS) + "[truncated]";
+    }
+
+    /**
+     * [Phase R24] R24/FR-05 — 수신이 한동안 없다가 다시 들어오면 그 구간을 로그 한 줄로 남긴다.
+     *
+     * <p>★<b>이것은 일이 벌어진 뒤에 남기는 기록이지 경보가 아니다.</b> 수집기 프로세스가 아예
+     * 없던 구간은 <b>다시 켜진 뒤에야</b> 드러나고, 끊긴 동안에는 아무 데도 안 뜬다 —
+     * 표면을 만들어 주는 주체가 그 프로세스이기 때문이다. 「끊기면 알려 준다」로 읽으면 거짓이다.
+     *
+     * <p>안 찍히는 것이 정상인 경우가 셋이다: ① 직전 수신 시각이 없다(첫 등록 · NULL)
+     * ② 공백이 {@link #RESUME_GAP_THRESHOLD_MS} 미만이다 ③ 이 요청에 쓸 만한 서비스 이름이 없다.
+     *
+     * <p><b>단위</b>: {@code services.last_seen_at} 과 {@code gapMs} 는 둘 다 <b>epoch/경과 밀리초</b>다.
+     * {@code lastSeenBefore} 는 <b>사람이 읽는 시각 표기</b>이고 원본은 밀리초다.
+     * 괄호 안의 {@code (3.83d)} 는 <b>사람이 자릿수를 가늠하라고 덧붙인 것이지 계산에 쓰는 값이 아니다</b> —
+     * 계산에 쓰는 수치는 {@code gapMs} 하나뿐이다. 10분 같은 짧은 공백은 {@code (0.01d)} 로 뜬다.
+     *
+     * <p>앞머리 토큰 {@code ingest resumed:} 는 <b>고정</b>이다 — 운영 로그 대조의 기준점이라
+     * 바꾸면 과거와의 대조가 끊긴다. 새 필드는 <b>뒤에만</b> 덧붙인다
+     * (같은 규율이 {@code trace summary deferred} 에 이미 걸려 있다).
+     *
+     * <p><b>로그 인젝션</b>: 마지막 {@code service=} 값은 agent 가 보내는 값이라 서버 통제 밖이다.
+     * 이 라운드는 그 값을 {@link #sanitizeForLog} 로 <b>감싸지 않는다</b> — 처방 선택(감싸기 vs 형식 강제)이
+     * 아직 결정되지 않았고, 한쪽을 지금 고르면 다른 쪽으로 갈 때 되돌릴 작업이 되기 때문이다.
+     * ⚠️ 그래서 이 파일에는 <b>감싼 줄(요약 실패 WARN)과 안 감싼 줄(이 줄)이 공존한다</b> —
+     * 빠뜨린 것이 아니라 결정을 기다리는 중이다. 감싸는 쪽으로 정해지면 이 자리 1회 호출로 끝난다.
+     *
+     * <p>본문 전체가 {@code try-catch(Throwable)} 안이다 — <b>호스트로 예외가 새지 않는다</b> 는
+     * 사용자 명시 비협상 결정이고, 이 자리는 {@code upsertServiceRegistration} 의 catch <b>밖</b>이라
+     * 가드를 따로 둔다(같은 규율의 두 번째 자리). CLAUDE.md '아키텍처 핵심 원칙'
+     * (Agent 자체 장애가 호스트 앱에 영향 0) 인용.
+     */
+    private void logIngestResumedIfGap(IngestRequest request, long receivedAt) {
+        try {
+            Set<String> names = request.spans().stream()
+                    .map(Span::serviceName)
+                    .filter(s -> s != null && !s.isBlank())
+                    .collect(Collectors.toSet());
+            if (names.isEmpty()) {
+                // validate() 가 공백 serviceName 을 이미 거르므로 ingest() 경로로는 안 닿는다.
+                // 그래도 둔다 — 이 메서드가 다른 자리에서 불릴 때의 방어다.
+                return;
+            }
+            // 행마다 부를 처리기를 **타입을 적어** 지역 변수로 둔다 — jdbc.query 의 2인자 오버로드가
+            // 셋(RowMapper/RowCallbackHandler/ResultSetExtractor)이라 무형 람다는 어느 것으로 갈지
+            // 읽는 사람이 갈라야 한다. 여기서 원하는 것은 값을 모으지 않는 순회다.
+            RowCallbackHandler onRow = rs -> {
+                String name = rs.getString("service_name");
+                if (!names.contains(name)) {
+                    return;
+                }
+                // sqlite-jdbc 는 작은 정수를 Integer 로 돌려줄 수 있어 (Long) 캐스트가
+                // ClassCastException 이 된다(TraceQueryRepository.findServicesWithHealth 가 이미 겪은 실측).
+                if (rs.getObject("last_seen_at") == null) {
+                    return; // 첫 등록 = 직전 값 없음 → 안 찍는 것이 정상
+                }
+                long lastSeenAt = rs.getLong("last_seen_at");
+                if (!isResumeGap(lastSeenAt, receivedAt)) {
+                    return;
+                }
+                long gapMs = receivedAt - lastSeenAt;
+                log.info("ingest resumed: lastSeenBefore={} gapMs={} ({}d) service={}",
+                        RESUME_TS_FORMAT.format(Instant.ofEpochMilli(lastSeenAt)
+                                .atZone(ZoneId.systemDefault())),
+                        gapMs,
+                        String.format(Locale.ROOT, "%.2f", gapMs / MILLIS_PER_DAY),
+                        name);
+            };
+            // 바인딩 파라미터 0개 — 외부 입력이 SQL 에 닿지 않는다. services 는 서비스당 1행인
+            // 작은 표라 무-WHERE 1문이 IN 목록(SQLite 변수 999 한도)보다 싸고 안전하다.
+            jdbc.query("SELECT service_name, last_seen_at FROM services", onRow);
+        } catch (Throwable t) {
+            // 호스트 throw 0 / 수신 흐름 영향 0 — silent log + skip.
+            log.warn("ingest resume gap check skipped due to {}: {}",
+                    t.getClass().getSimpleName(), t.getMessage());
+        }
+    }
+
+    /**
+     * [Phase R24] R24/FR-05 — 끊김 판정. <b>순수 함수라 시간 소스를 주입할 필요가 없다</b>:
+     * 비결정 입력({@code now})이 이미 {@code receivedAt} 파라미터로 들어온다(생성자 4-인자 봉인 유지).
+     * 경계는 <b>이상</b>({@code >=}) 이다. 음수 공백(시계 역행·미래 값)은 판정 false —
+     * 안 찍는 쪽이 안전한 방향이다.
+     */
+    static boolean isResumeGap(long lastSeenAt, long receivedAt) {
+        long gapMs = receivedAt - lastSeenAt;
+        return gapMs >= RESUME_GAP_THRESHOLD_MS;
     }
 
     /**
