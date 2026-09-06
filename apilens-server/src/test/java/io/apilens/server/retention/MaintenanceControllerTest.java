@@ -43,6 +43,7 @@ import java.nio.file.Path;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
@@ -165,7 +166,7 @@ class MaintenanceControllerTest {
         enableIncrementalAutoVacuum();
         createFreePages(120, 40_000);
         Long freeBefore = jdbc.queryForObject("PRAGMA freelist_count", Long.class);
-        assertEquals(true, freeBefore != null && freeBefore > 0,
+        assertTrue(freeBefore != null && freeBefore > 0,
                 "전제: 회수할 free page 가 실제로 생겨야 이 단언이 의미를 가진다");
 
         String body = mockMvc.perform(post("/v1/maintenance/cleanup"))
@@ -173,7 +174,7 @@ class MaintenanceControllerTest {
                 .andReturn().getResponse().getContentAsString();
 
         long freedBytes = new ObjectMapper().readTree(body).get("freedBytes").asLong();
-        assertEquals(true, freedBytes > 0,
+        assertTrue(freedBytes > 0,
                 "예산 루프가 회수한 만큼이 freedBytes 로 나온다 (실측 freedBytes=" + freedBytes + ")");
     }
 
@@ -216,7 +217,7 @@ class MaintenanceControllerTest {
         enableIncrementalAutoVacuum();
         createFreePages(120, 40_000);
         Long freeBefore = jdbc.queryForObject("PRAGMA freelist_count", Long.class);
-        assertEquals(true, freeBefore != null && freeBefore > 0,
+        assertTrue(freeBefore != null && freeBefore > 0,
                 "전제: 회수할 free page 가 실제로 생겨야 이 단언이 의미를 가진다");
 
         String body = mockMvc.perform(post("/v1/maintenance/purge"))
@@ -224,7 +225,7 @@ class MaintenanceControllerTest {
                 .andReturn().getResponse().getContentAsString();
 
         long freedBytes = new ObjectMapper().readTree(body).get("freedBytes").asLong();
-        assertEquals(true, freedBytes > 0,
+        assertTrue(freedBytes > 0,
                 "회수한 만큼이 freedBytes 로 나온다 (실측 freedBytes=" + freedBytes + ")");
     }
 
@@ -432,8 +433,8 @@ class MaintenanceControllerTest {
         //   그리고 **이웃 값을 함께 본다**: 제품 코드는 두 값을 하나의 catch 로 함께 0 으로 접는다
         //   (MaintenanceController.statusSnapshot 의 관측 실패 폴백). 한쪽만 보면 관측 실패로 생긴 0 과
         //   진짜 0 을 못 가른다 — 그래서 pageCount 와 freelist 를 **둘 다** 0 초과로 세운 뒤 대조한다.
-        assertEquals(true, pageCount > 0, "전제: dbSizeBytes 기대값이 0 이면 대조가 0 == 0 이 된다");
-        assertEquals(true, freelist > 0, "전제: freePageBytes 기대값이 0 이면 대조가 0 == 0 이 된다");
+        assertTrue(pageCount > 0, "전제: dbSizeBytes 기대값이 0 이면 대조가 0 == 0 이 된다");
+        assertTrue(freelist > 0, "전제: freePageBytes 기대값이 0 이면 대조가 0 == 0 이 된다");
 
         mockMvc.perform(get("/v1/maintenance/status"))
                 .andExpect(status().isOk())
@@ -448,26 +449,38 @@ class MaintenanceControllerTest {
                 .andExpect(jsonPath("$.freePageBytes").value(freelist * pageSize));
     }
 
-    /** R23/AC-07-1 — pause/resume echo 에도 세 필드가 동반한다(3 표면 단일 조립 검증). */
+    /**
+     * R23/AC-07-1 — pause/resume echo 에도 세 필드가 동반한다(3 표면 단일 조립 검증).
+     *
+     * <p>// [Phase R25] AC-25-08-3 — ★{@code freePageBytes} 두 자리가 <b>값이 있다는 것만</b> 보고 있었다.
+     * // 빈 DB 에서는 그 값이 0 이라 "관측 실패로 접힌 0" 과 "진짜 0" 을 못 가른다 — 위 status 시험이
+     * // 이미 쓰는 처방(전제를 먼저 세우고 서버가 계산한 값과 대조)을 그대로 가져온다.
+     * // pause/resume 은 회수를 돌리지 않으므로 여기서는 삭제로 free page 를 만들기만 하면 된다.
+     * // 시험 전용 변경이라 되돌리는 단위를 안 더럽힌다.
+     */
     @Test
     void reportsTheThreeNewFieldsOnPauseAndResumeEcho() throws Exception {
+        createFreePages(120, 40_000);
         IngestPauseState pauseState = IngestPauseStateTestFactory.withClock(() -> 1_000L);
         MockMvc mvc = mockMvcWith(pauseState);
-        long expectedDbSize = requirePragma("PRAGMA page_count") * requirePragma("PRAGMA page_size");
+        long pageSize = requirePragma("PRAGMA page_size");
+        long expectedDbSize = requirePragma("PRAGMA page_count") * pageSize;
+        long freelist = requirePragma("PRAGMA freelist_count");
+        assertTrue(freelist > 0, "전제: freePageBytes 기대값이 0 이면 대조가 0 == 0 이 된다");
 
         mvc.perform(post("/v1/maintenance/pause"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.paused").value(true))
                 .andExpect(jsonPath("$.traceSummaryDeferred").value(0))
                 .andExpect(jsonPath("$.dbSizeBytes").value(expectedDbSize))
-                .andExpect(jsonPath("$.freePageBytes").exists());
+                .andExpect(jsonPath("$.freePageBytes").value(freelist * pageSize));
 
         mvc.perform(post("/v1/maintenance/resume"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.paused").value(false))
                 .andExpect(jsonPath("$.traceSummaryDeferred").value(0))
                 .andExpect(jsonPath("$.dbSizeBytes").value(expectedDbSize))
-                .andExpect(jsonPath("$.freePageBytes").exists());
+                .andExpect(jsonPath("$.freePageBytes").value(freelist * pageSize));
     }
 
     /** PRAGMA 값을 직접 읽는다 — 응답의 숫자를 <b>서버가 계산한 값</b>과 대조하기 위해서다. */

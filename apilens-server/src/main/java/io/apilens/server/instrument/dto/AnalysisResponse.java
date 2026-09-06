@@ -46,16 +46,25 @@ public record AnalysisResponse(
      * <p>비율은 0.0~1.0 실수 도메인이다. 100 을 곱한 값을 담지 않는다 — 어느 자리는 실수로,
      * 어느 자리는 백분율로 다루면 100배 틀리고 경고가 아예 안 뜬다.
      *
+     * <p>// [Phase R25] AC-25-05-1/AC-25-05-2 — 필드 하나가 <b>뒤에</b> 늘었다(추가만 — 기존 네 필드의
+     * // 이름·타입은 안 건드린다). 순위 표의 {@code payloadBytes} 는 <b>참조당 그대로</b>이고(UD-4),
+     * // 같은 본문을 한 번만 센 값은 이 요약 자리에만 나온다.
+     *
      * @param totalSpans           구간 안 span 수
      * @param totalTraces          구간 안 trace 수
      * @param avgSpansPerTrace     trace 당 평균 span 수 (분모 0이면 0.0)
      * @param singleSpanTraceRatio span 이 하나뿐인 trace 의 비율 (0.0~1.0, 분모 0이면 0.0)
+     * @param uniquePayloadBytes   구간 안에서 <b>같은 본문을 한 번만</b> 센 바이트 합.
+     *                             옛 형태 행은 행마다 별개 본문으로 세므로 올린 뒤 약 이틀간 실제보다 크게 나온다
+     *                             (틀리는 방향은 절감이 덜 되어 보이는 안전한 쪽 —
+     *                             {@code InstrumentAnalysisRepository.aggregateUniquePayloadBytes} javadoc 참조)
      */
     public record Summary(
             long totalSpans,
             long totalTraces,
             double avgSpansPerTrace,
-            double singleSpanTraceRatio
+            double singleSpanTraceRatio,
+            long uniquePayloadBytes
     ) {
     }
 

@@ -179,6 +179,24 @@ public class RetentionCleanupService {
      */
     static final int ORPHAN_PURGE_MAX_ROUNDS = 20;
 
+    /**
+     * [Phase R25] AC-25-01-5 — 본문 정리 한 회전에 지우는 본문 행 수.
+     *
+     * <p>값의 근거: {@link #RETENTION_DELETE_BATCH_SIZE} 와 달리 자리표시자를 만들지 않는 서브쿼리
+     * 삭제라 SQLite 변수 한도와 무관하다. 그래서 한 회전을 더 크게 잡아 회전 수를 줄인다.
+     */
+    static final int PAYLOAD_BODY_GC_BATCH_SIZE = 1_000;
+
+    /**
+     * [Phase R25] AC-25-01-5 — 본문 정리 회전 수 상한(= 한 실행 최대 {@code 50 × 1,000} = 50,000행).
+     *
+     * <p><b>왜 50 인가</b>: 하룻밤 대상 상한 실측 <b>18,028행</b>(2026-09-05 15:33 측정)의 2.8배다.
+     *
+     * <p>★<b>상한의 목적은 완주 보장이 아니라 쓰기 잠금 시간의 상한</b>이다. 도달하면 경고를 남기고
+     * <b>다음 실행이 잇는다</b> — 정리가 스캔 방식이라 밀려도 대상이 안 사라진다(멱등).
+     */
+    static final int PAYLOAD_BODY_GC_MAX_ROUNDS = 50;
+
     private final JdbcTemplate jdbc;
     private final TransactionTemplate tx;
     private final SettingsService settingsService;
@@ -250,6 +268,10 @@ public class RetentionCleanupService {
         // 배치 3단 DELETE 루프 (cleanup/purgeAll 공통) — cutoff 지정 = 만료분만 삭제.
         CleanupResult result = deleteInBatches(OptionalLong.of(cutoffMs));
 
+        // [Phase R25] AC-25-01-5/AC-25-01-8 — ★finalizeMaintenance **앞**에 놓는다(purgeAll 쪽 전례와 대칭).
+        //   예외는 자체 try-catch 가 흡수하므로 아래 finalizeMaintenance 는 어떤 경우에도 실행된다.
+        gcUnreferencedPayloadBodies();
+
         finalizeMaintenance(nowMs);
 
         log.info("retention cleanup finished: deletedTraces={} batches={} cutoffMs={}",
@@ -275,6 +297,10 @@ public class RetentionCleanupService {
         //   같은 실행의 ① 회수가 함께 돌려주기 때문이다. 예외는 자체 try-catch 가 흡수하므로
         //   아래 finalizeMaintenance 는 어떤 경우에도 실행된다.
         purgeOrphanSpansImmediately();
+
+        // [Phase R25] AC-25-01-5 — 고아 스윕이 payload 행을 지운 **뒤**라, 그 스윕이 만든 고아 본문까지
+        //   같은 실행에서 걷힌다. 야간 경로와 대칭이고 실패 격리도 같다(자체 try-catch).
+        gcUnreferencedPayloadBodies();
 
         finalizeMaintenance(now);
 
@@ -422,6 +448,92 @@ public class RetentionCleanupService {
             deletedTraces += traceIds.size();
         }
         return new CleanupResult(batches, deletedTraces);
+    }
+
+    /**
+     * [Phase R25] AC-25-01-5/AC-25-01-6/AC-25-01-8 — 아무 {@code payloads} 행도 안 가리키는 본문을 지운다.
+     *
+     * <p><b>참조 개수를 세어 두지 않는다.</b> spans 의 덮어쓰기 삽입 · 청크 delete-then-insert ·
+     * 배치 DELETE 가 계수를 <b>조용히</b> 어긋나게 하고, 어긋난 계수는 시험이 못 잡는다. 스캔 방식은 느리지만
+     * <b>틀릴 수 없고</b>, 대상 표가 수만 행이라 인덱스({@code idx_payloads_body_hash}) 조회로 싸게 끝난다.
+     *
+     * <p><b>독립 실패 구간</b>: 예외를 밖으로 안 던진다. {@code finalizeMaintenance} 는 <b>어떤 경우에도</b>
+     * 돈다 — 야간의 시각 기록·회수·WAL·통계가 이 정리의 실패로 사라지지 않고, 수동 경로가 500 을 내지 않는다.
+     * 같은 파일의 {@code purgeOrphanSpansImmediately} 와 <b>같은 모양</b>이다.
+     *
+     * <p><b>멱등</b>: 스캔 방식이라 다시 돌아도 안전하다. 실패한 밤 몫은 다음 밤에 지워진다.
+     *
+     * <p>★<b>한계 그 자리에</b>: 회전 상한 도달은 <b>실패가 아니다.</b> 막지 않고 경고를 남기고 다음 실행이
+     * 잇는다. 그래서 "아무도 안 가리키는 본문 0" 을 밖에서 재서 0 이 아닐 때는 <b>먼저 로그를 보고</b>
+     * 이 정리가 돌았는지 확인한 뒤 다시 재야 한다.
+     *
+     * <p>★이 메서드는 {@code spans} 도 {@code payloads} 행도 <b>건드리지 않는다.</b> 그래서 고아 스윕의
+     * 봉인(수동 경로가 후보 상태를 읽지도 쓰지도 않는다)과 <b>애초에 만나지 않는다</b> —
+     * 이름·필드·로그 낱말도 그 봉인이 세는 것과 겹치지 않게 골랐다.
+     */
+    private void gcUnreferencedPayloadBodies() {
+        gcUnreferencedPayloadBodies(PAYLOAD_BODY_GC_BATCH_SIZE, PAYLOAD_BODY_GC_MAX_ROUNDS);
+    }
+
+    /**
+     * 위 메서드의 본문. 회전 크기·상한을 인자로 받는 <b>package-private</b> 갈래는 시험이 상한 도달 갈래를
+     * 실제로 밟기 위한 자리다(상수값으로는 50,000행을 만들어야 해서 실물 시험이 불가능하다).
+     * 운영 경로는 언제나 위 무인자 호출이고, 생성자 인자는 늘리지 않는다(진입점 시그니처 불변 봉인).
+     */
+    void gcUnreferencedPayloadBodies(int batchSize, int maxRounds) {
+        try {
+            long started = System.nanoTime();
+            int deleted = 0;
+            int rounds = 0;
+            // [v0.7.0 첫 밤 관측 · 2026-09-06] 첫 야간 정리에서 이 루프의 한 회전이 159,959 ms 걸렸는데
+            //   (deleted=0 · rounds=0), DB 사본에서 같은 문장은 같은 드라이버로 7~15 ms, 동시 writer 4개
+            //   아래서도 108 ms 였다. 즉 시간은 문장이 아니라 tx.execute 안의 다른 자리(커넥션 확보·begin ·
+            //   커밋·체크포인트 시도)에 있는데 요약 한 줄(elapsedMs)로는 어디인지 가를 수 없었다.
+            //   그래서 회전마다 세 구간을 따로 잰다 — acquireMs(tx 진입→콜백 시작 = 커넥션 확보 + begin) ·
+            //   statementMs(DELETE 한 문장) · commitMs(콜백 끝→tx 반환 = 커밋 + 체크포인트 시도).
+            //   아래 요약 줄(deleted/rounds/elapsedMs)은 공개 문서가 인용하므로 문면을 바꾸지 않는다.
+            log.info("payload body gc start: batchSize={} maxRounds={}", batchSize, maxRounds);
+            while (rounds < maxRounds) {
+                if (rounds > 0) {
+                    sleepQuietly(BATCH_YIELD_MS);   // 회전 사이 양보 — 배치 루프와 같은 관례.
+                }
+                long roundStarted = System.nanoTime();
+                long[] marks = new long[2];   // [0] 콜백 시작(커넥션·begin 확보 뒤) · [1] DELETE 반환
+                // ★DELETE ... LIMIT 은 SQLite 컴파일 옵션(SQLITE_ENABLE_UPDATE_DELETE_LIMIT)에 의존한다.
+                //   옵션에 안 기대는 **서브쿼리 LIMIT** 형태로 쓴다 — 드라이버가 바뀌어도 뜻이 안 흔들린다.
+                Integer n = tx.execute(status -> {
+                    marks[0] = System.nanoTime();
+                    int changed = jdbc.update("""
+                            DELETE FROM payload_bodies
+                            WHERE body_hash IN (
+                                SELECT b.body_hash FROM payload_bodies b
+                                WHERE NOT EXISTS (SELECT 1 FROM payloads p WHERE p.body_hash = b.body_hash)
+                                LIMIT ?
+                            )
+                            """, batchSize);
+                    marks[1] = System.nanoTime();
+                    return changed;
+                });
+                long roundEnded = System.nanoTime();
+                log.info("payload body gc round: round={} deleted={} acquireMs={} statementMs={} commitMs={}",
+                        rounds, n == null ? 0 : n,
+                        (marks[0] - roundStarted) / 1_000_000L,
+                        (marks[1] - marks[0]) / 1_000_000L,
+                        (roundEnded - marks[1]) / 1_000_000L);
+                if (n == null || n == 0) {
+                    break;
+                }
+                deleted += n;
+                rounds++;
+            }
+            if (rounds >= maxRounds) {
+                log.warn("payload body gc stopped at the round cap: rounds={} — the next run continues", rounds);
+            }
+            log.info("payload body gc: deleted={} rounds={} elapsedMs={}",
+                    deleted, rounds, (System.nanoTime() - started) / 1_000_000L);
+        } catch (Exception e) {
+            log.error("payload body gc failed — the delete itself succeeded, the next run picks it up", e);
+        }
     }
 
     /**
@@ -698,6 +810,11 @@ public class RetentionCleanupService {
      *       — <b>이쪽이 정본</b>이다. <b>파일 단위 검색만으로는 이 봉인을 못 지킨다</b> — 다른 파일을 한 번
      *       거쳐 부르면 grep 은 그대로 통과한다.</li>
      * </ol>
+     *
+     * <p>// [Phase R25] AC-25-01-6 — R25 가 이 파일에 더한 <b>본문 정리</b>({@code gcUnreferencedPayloadBodies})는
+     * // 위 봉인의 사정권 <b>밖</b>이다: {@code payload_bodies} 표만 지우고 {@code spans} 도 {@code payloads}
+     * // 행도 건드리지 않으며, 후보 상태를 읽지도 쓰지도 않는다. 그 메서드의 이름·필드·로그 낱말도
+     * // 위 두 강제 수단이 세는 것과 겹치지 않게 골랐다(0 hit 판정의 뜻을 안 흐리려고).
      *
      * <p>★ [Phase R23] R23/AC-05-3 — <b>정리와 스윕의 실행 순서는 결과를 바꾸지 않는다.</b>
      * 정리는 {@code SELECT trace_id FROM traces} 로만 대상을 고르고 payloads → spans → traces 를 한

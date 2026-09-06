@@ -343,6 +343,87 @@ class InstrumentAnalysisRepositoryTest {
         assertEquals(2, capped.size(), "the LIMIT bounds how many classes come back");
     }
 
+    // ─── [Phase R25] Q1d — 구간 안 「고유 본문 합」 (AC-25-05-1·AC-25-05-2·AC-25-05-5) ──
+
+    /**
+     * TS-R25-30 — AC-25-05-1 원문: "분석 요약에 <b>같은 본문을 한 번만 센 바이트 합</b>을 한 줄 더한다."
+     *
+     * <p>새 형태 행 둘이 같은 본문을 가리키면 저장소에 실제로 남는 것은 <b>한 벌</b>이다. 참조당 합
+     * (순위표)은 둘을 다 더하고, 이 값은 한 번만 더한다 — 두 숫자가 <b>달라지는 것이 이 기능의 목적</b>이다.
+     *
+     * <p>기준선 픽스처의 payload 세 건(100 · 200 · 50)은 서로 다른 본문이라 옛 형태로 350 을 그대로 낸다.
+     */
+    @Test
+    void countsASharedBodyOnceInTheUniqueBytesSum() {
+        String shared = "z".repeat(80);
+        insertNewFormPayload("s1", shared);
+        insertNewFormPayload("s2", shared);
+
+        // 전제: 두 행이 실제로 같은 지문을 가리킨다(빈 DB 에서 0 == 0 으로 통과하는 것을 막는다).
+        assertEquals(1, count("SELECT COUNT(*) FROM payload_bodies"),
+                "전제: 같은 본문이라 본문 표에는 한 벌만 있어야 한다");
+        assertEquals(2, count("SELECT COUNT(*) FROM payloads WHERE body_hash IS NOT NULL"),
+                "전제: 그 한 벌을 가리키는 행은 실제로 둘이어야 한다");
+
+        long unique = repository.aggregateUniquePayloadBytes(SERVICE, FROM_MS, TO_MS);
+        long perReference = repository.aggregatePayloadsByClass(SERVICE, FROM_MS, TO_MS, CAP).stream()
+                .mapToLong(InstrumentAnalysisRepository.PayloadRow::payloadBytes).sum();
+
+        assertEquals(350L + 80L, unique, "공유 본문은 한 번만 센다 (350 + 80)");
+        assertEquals(350L + 160L, perReference, "참조당 합은 둘 다 센다 (350 + 80 + 80)");
+    }
+
+    /**
+     * TS-R25-31 — 옛 형태 행은 <b>행마다 별개 본문</b>으로 센다. 질의 javadoc 이 적은 한계 그대로다.
+     *
+     * <p>★올린 뒤 약 이틀간 이 값이 <b>실제보다 크게</b> 나온다. 틀리는 방향은 "절감이 덜 되어 보이는
+     * 안전한 쪽" 이고, 옛 행이 사라지면 저절로 정확해진다. 이 시험은 그 사실을 <b>숫자로</b> 고정한다 —
+     * 다음 라운드가 열쇠를 바꾸면 여기가 빨개져서 문서와 코드가 같이 움직인다.
+     */
+    @Test
+    void countsEachOldFormRowSeparatelyEvenWhenTheBodiesAreIdentical() {
+        String same = "w".repeat(70);
+        insertPayload("s1", 70L, 70L, 0);   // 옛 형태 — 본문이 행 안에 있고 지문이 없다
+        insertPayload("s2", 70L, 70L, 0);   // 같은 내용이지만 지문이 없어 묶이지 않는다
+        assertEquals(70, same.length(), "픽스처 길이 확인 — ASCII 라 글자 수 = 바이트 수");
+
+        // 전제: 이 시험이 보는 행이 실제로 전부 옛 형태다(지문 없음 + 본문 있음).
+        //   기준선 픽스처는 창 밖·다른 서비스 몫까지 5건을 심는다 — 그래서 전체 수가 아니라
+        //   "새 형태가 하나도 없다" 로 전제를 세운다. 여기에 지문이 하나라도 있으면 아래 대조가 뜻을 잃는다.
+        assertEquals(0, count("SELECT COUNT(*) FROM payloads WHERE body_hash IS NOT NULL"),
+                "전제: 새 형태 행이 하나도 없어야 이 갈래를 밟는다");
+        assertEquals(2, count("SELECT COUNT(*) FROM payloads WHERE body IS NOT NULL"
+                        + " AND length(CAST(body AS BLOB)) = 70"),
+                "전제: 같은 내용의 옛 형태 행이 실제로 둘 심어져야 한다");
+
+        long unique = repository.aggregateUniquePayloadBytes(SERVICE, FROM_MS, TO_MS);
+
+        assertEquals(350L + 140L, unique,
+                "옛 행은 같은 내용이어도 행마다 별개로 센다 (350 + 70 + 70) — 420 이 아니다");
+    }
+
+    /**
+     * TS-R25-32 — 순위표의 {@code payloadBytes} 는 <b>참조당 그대로</b>다(UD-4 — 사용자 확정).
+     *
+     * <p>새 값은 요약 자리에만 나온다. 순위표까지 고유 기준으로 바꾸면 "이 클래스를 빼면 얼마나 주나"
+     * 라는 표의 뜻이 달라진다 — 그 표는 <b>참조를 지우는 것</b>의 효과를 재는 자리이기 때문이다.
+     */
+    @Test
+    void keepsTheRankingBytesPerReferenceWhenBodiesAreShared() {
+        String shared = "z".repeat(80);
+        insertNewFormPayload("s1", shared);
+        insertNewFormPayload("s1", shared);
+
+        assertEquals(1, count("SELECT COUNT(*) FROM payload_bodies"),
+                "전제: 본문 표에는 한 벌만 있다");
+
+        Map<String, InstrumentAnalysisRepository.PayloadRow> payloads = payloadRowsByClass();
+
+        assertEquals(4L, payloads.get(CONTROLLER).payloadCount(), "기준선 2건 + 이번 2건");
+        assertEquals(300L + 160L, payloads.get(CONTROLLER).payloadBytes(),
+                "UD-4: 순위표는 참조당 합을 그대로 낸다 (공유해도 두 번 센다)");
+    }
+
     // ─── helper ─────────────────────────────────────────────────────────────
 
     private Map<String, InstrumentAnalysisRepository.SpanRow> spanRowsByClass() {
@@ -409,5 +490,45 @@ class InstrumentAnalysisRepositoryTest {
                         VALUES (?, 'out', 'application/json', ?, ?, ?)
                         """,
                 spanId, "x".repeat((int) bodyBytes), declaredBytes, truncated);
+    }
+
+    /**
+     * [Phase R25] 새 형태 payload 픽스처 — 본문은 {@code payload_bodies} 에 한 벌, 행에는 지문만.
+     *
+     * <p>기존 {@link #insertPayload(String, long)} 계열은 <b>옛 형태</b>(본문이 행 안)를 만든다.
+     * 그 헬퍼를 안 고치는 것이 이 라운드의 방침이다 — 그 통과가 곧 폴백의 증거이기 때문이다.
+     *
+     * <p>본문은 ASCII 로만 준다(글자 수 = 바이트 수).
+     */
+    private void insertNewFormPayload(String spanId, String body) {
+        int bytes = body.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+        jdbc.update("INSERT OR IGNORE INTO payload_bodies (body_hash, body, body_bytes, first_seen_at)"
+                + " VALUES (?, ?, ?, ?)", sha256Hex(body), body, bytes, 1_000L);
+        jdbc.update("""
+                        INSERT INTO payloads (span_id, direction, content_type, body, size_bytes,
+                                              truncated, body_hash)
+                        VALUES (?, 'out', 'application/json', NULL, ?, 0, ?)
+                        """,
+                spanId, bytes, sha256Hex(body));
+    }
+
+    private int count(String sql) {
+        Integer c = jdbc.queryForObject(sql, Integer.class);
+        return c == null ? 0 : c;
+    }
+
+    private static String sha256Hex(String value) {
+        try {
+            byte[] digest = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            StringBuilder hex = new StringBuilder(digest.length * 2);
+            for (byte b : digest) {
+                hex.append(Character.forDigit((b >> 4) & 0xF, 16));
+                hex.append(Character.forDigit(b & 0xF, 16));
+            }
+            return hex.toString();
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
+        }
     }
 }

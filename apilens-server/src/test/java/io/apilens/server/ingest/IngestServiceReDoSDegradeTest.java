@@ -115,8 +115,17 @@ class IngestServiceReDoSDegradeTest {
         return c == null ? 0 : c;
     }
 
+    /**
+     * [Phase R25] AC-25-03-4 — 저장된 본문을 읽는 단일 자리. R25 부터 새 행은 {@code payloads.body} 가
+     * 비어 있고 실물은 {@code payload_bodies} 에 있다. 읽기 SQL 은
+     * {@code TraceQueryRepository.findPayloads} 와 같은 모양이라 옛 행도 그대로 읽힌다.
+     */
     private String payloadBody(String spanId) {
-        return jdbc.queryForObject("SELECT body FROM payloads WHERE span_id = ?", String.class, spanId);
+        return jdbc.queryForObject(
+                "SELECT COALESCE(pb.body, p.body) FROM payloads p "
+                        + "LEFT JOIN payload_bodies pb ON pb.body_hash = p.body_hash "
+                        + "WHERE p.span_id = ?",
+                String.class, spanId);
     }
 
     private int payloadTruncated(String spanId) {

@@ -31,12 +31,16 @@ import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.sql.SQLException;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -133,6 +137,27 @@ public class IngestService {
     //   계산에 쓰는 수치가 아니다(계산에 쓰는 것은 gapMs 하나뿐 — logIngestResumedIfGap javadoc 참조).
     private static final double MILLIS_PER_DAY = 86_400_000.0;
 
+    // ══ [Phase R25] 본문 내용주소 저장 + SQL 원문 인터닝 (V6·V7) ═══════════════════════════════
+    //
+    // [Phase R25] AC-25-02-5 — 예약 속성 키. 사용자 명시 비협상 결정(UD-2 + CXP-3 세 규칙).
+    //   ⚠️ 이 키가 놓이는 attributes 맵은 **인증 없는 입구가 채우는 그릇과 같다**
+    //   (AuthWhitelist 가 POST /v1/spans 를 통과시키고 validate() 는 속성 키를 거르지 않는다).
+    //   그래서 세 규칙이 함께 든다: ⓐ apilens. 접두 ⓑ 원문 우선 ⓒ 밖에서 이 키를 이미 차지했으면
+    //   그 span 은 인터닝하지 않고 원문 그대로 저장한다(새 도피 규약을 만들지 않는다).
+    //   CLAUDE.md 'Span attribute 키 명세' 인용 — apilens. 이름 공간은 이미 쓰는 자리다
+    //   (같은 파일의 AGENT_VERSION_ATTRIBUTE = "apilens.agent.version").
+    //   ★이 두 상수는 <b>쓰기와 읽기가 공유하는 유일한 거주지</b>다. 읽는 쪽(TraceQueryRepository)이 자기
+    //   문자열을 따로 들면 두 벌이 갈려 한쪽만 고치는 순간 SQL 이 조용히 사라진다 — 그래서 public 이다.
+    public static final String STMT_REF_ATTRIBUTE = "apilens.stmt.ref";
+
+    // [Phase R25] AC-25-02-7 — 인터닝 대상은 이 한 키뿐이다. db.parameters 등 다른 키로 넓히지 않는다:
+    //   다른 키는 값이 다양해 인터닝 이득이 없고, 넓히면 예약 키가 늘어 계약 표면이 커진다.
+    public static final String DB_STATEMENT_ATTRIBUTE = "db.statement";
+
+    // [Phase R25] AC-25-01-2 — IN (?, …) 목록 한 번에 묶는 최대 개수. SQLite 의 바인딩 변수 한도(구버전 999)
+    //   안쪽 안전 마진이고, 같은 파일의 SPAN_CHUNK_SIZE·RetentionCleanupService 의 500 관례와 같은 값이다.
+    private static final int HASH_IN_CHUNK_SIZE = 500;
+
     // [Phase R17] EXT-003 anchor — V-02 생성자 4-인자 불변(사용자 명시 비협상 결정).
     //   협력자(트랜잭션 관리자·카운터)는 생성자 인자가 아니라 내부 필드/본문으로 얻는다.
     //   R13 287a7e7 회귀 진원지(생성자 변경이 agent 통합테스트 컴파일 파손) 재발 차단.
@@ -183,7 +208,12 @@ public class IngestService {
                     // [Phase R17] V-03/G-09 — insertSpans 의 INSERT OR REPLACE spans SQL 문자열·컬럼 diff 0.
                     insertSpans(chunk);           // A5 비협상: SQL·REPLACE 시맨틱 무변경, 호출 인자만 청크로.
                     deletePayloadsForChunk(chunk); // [Phase R17] OQ-A — payload 멱등 가드(재적재 중복 0).
-                    insertPayloads(chunk);        // [Phase R17] V-03/G-09 — INSERT INTO payloads SQL 문자열 diff 0.
+                    // [Phase R17] V-03/G-09 — INSERT INTO payloads SQL 문자열 diff 0.
+                    // [Phase R25] AC-25-08-5 — ★위 봉인을 이 라운드가 **재개방했다**. 지우지 않고 이력으로 남긴다:
+                    //   payloads 에 body_hash 열이 늘어 INSERT 문의 컬럼 목록이 필연으로 바뀐다(V6).
+                    //   바로 위 insertSpans 쪽 봉인은 **그대로 유효하다** — spans 의 SQL 문자열·컬럼은
+                    //   한 글자도 안 바뀌고 메서드 본문에 사전 패스 한 줄이 늘 뿐이다.
+                    insertPayloads(chunk);
                 });
                 committedAny = true;
             } catch (DataAccessException e) {
@@ -195,8 +225,10 @@ public class IngestService {
                 // 이 청크 + 남은 청크를 유실로 집계(지연 상한 위해 break — 지속 경합 시 남은 청크도 어차피 실패).
                 int remaining = (int) Math.ceil((double) (total - start) / SPAN_CHUNK_SIZE);
                 sqliteBusyDropped.addAndGet(remaining);
+                // [Phase R25] AC-25-04-1/AC-25-04-2/AC-25-04-3 — traceId 는 인증 없는 입구가 정한 값이라
+                //   위생 처리한다(개행 제거 + 길이 상한). 앞머리 문구와 필드 이름은 안 바꾼다.
                 log.warn("SQLITE_BUSY drop: traceId={} chunkIdx={} droppedChunks={} busy={} cause={} encounteredTotal={} droppedTotal={}",
-                        traceId, idx, remaining, busy, e.getClass().getSimpleName(),
+                        sanitizeForLog(traceId), idx, remaining, busy, e.getClass().getSimpleName(),
                         sqliteBusyEncountered.get(), sqliteBusyDropped.get());
                 break; // 요청 지연을 ~1 busy_timeout 으로 제한(남은 청크 시도 안 함).
             }
@@ -236,9 +268,10 @@ public class IngestService {
                 //   실패(CONSTRAINT=19 · FULL=13)를 가를 때만 쓴다. 원인을 가르는 것은 rootMessage 다.
                 Throwable root = rootCauseOf(e);
                 SQLException sql = deepestSqlException(e);
+                // [Phase R25] AC-25-04-1 — traceId 도 감싼다. 같은 줄의 rootMessage 는 R23 부터 이미 감싸져 있다.
                 log.warn("trace summary deferred (self-heal only if more spans arrive for this trace): traceId={} cause={}"
                                 + " rootCause={} rootMessage={} errorCode={} sqlState={} busy={} deferredTotal={}",
-                        traceId, e.getClass().getSimpleName(),
+                        sanitizeForLog(traceId), e.getClass().getSimpleName(),
                         root.getClass().getName(), sanitizeForLog(root.getMessage()),
                         sql == null ? -1 : sql.getErrorCode(),
                         sql == null ? null : sql.getSQLState(),
@@ -368,10 +401,11 @@ public class IngestService {
      * (같은 규율이 {@code trace summary deferred} 에 이미 걸려 있다).
      *
      * <p><b>로그 인젝션</b>: 마지막 {@code service=} 값은 agent 가 보내는 값이라 서버 통제 밖이다.
-     * 이 라운드는 그 값을 {@link #sanitizeForLog} 로 <b>감싸지 않는다</b> — 처방 선택(감싸기 vs 형식 강제)이
-     * 아직 결정되지 않았고, 한쪽을 지금 고르면 다른 쪽으로 갈 때 되돌릴 작업이 되기 때문이다.
-     * ⚠️ 그래서 이 파일에는 <b>감싼 줄(요약 실패 WARN)과 안 감싼 줄(이 줄)이 공존한다</b> —
-     * 빠뜨린 것이 아니라 결정을 기다리는 중이다. 감싸는 쪽으로 정해지면 이 자리 1회 호출로 끝난다.
+     * // [Phase R25] AC-25-04-1/AC-25-04-2 — ★<b>결정이 났다: 감싸는 쪽이다.</b> R24 까지 이 자리는
+     * // "처방 선택이 아직 결정되지 않았다" 는 이유로 비어 있었고, 그래서 이 파일에 감싼 줄과 안 감싼 줄이
+     * // 공존했다. R25 가 인증 없는 입구와 그 예외 경로의 로그 인자를 <b>전수</b>로 {@link #sanitizeForLog}
+     * // 로 감쌌다 — 새 클래스도 공용 도구도 만들지 않고 <b>이미 같은 파일에 있는 것</b>을 쓴다.
+     * // 앞머리 문구와 필드 이름은 안 바꾼다(과거 기록 대조의 기준점).
      *
      * <p>본문 전체가 {@code try-catch(Throwable)} 안이다 — <b>호스트로 예외가 새지 않는다</b> 는
      * 사용자 명시 비협상 결정이고, 이 자리는 {@code upsertServiceRegistration} 의 catch <b>밖</b>이라
@@ -412,15 +446,18 @@ public class IngestService {
                                 .atZone(ZoneId.systemDefault())),
                         gapMs,
                         String.format(Locale.ROOT, "%.2f", gapMs / MILLIS_PER_DAY),
-                        name);
+                        // [Phase R25] AC-25-04-1 — ★줄 맨 끝이라 개행이 들면 뒤 줄이 통째로 위조된다.
+                        sanitizeForLog(name));
             };
             // 바인딩 파라미터 0개 — 외부 입력이 SQL 에 닿지 않는다. services 는 서비스당 1행인
             // 작은 표라 무-WHERE 1문이 IN 목록(SQLite 변수 999 한도)보다 싸고 안전하다.
             jdbc.query("SELECT service_name, last_seen_at FROM services", onRow);
         } catch (Throwable t) {
             // 호스트 throw 0 / 수신 흐름 영향 0 — silent log + skip.
+            // [Phase R25] AC-25-04-1 — 예외 메시지는 외부 값이 흘러드는 2차 채널이다(드라이버가 입력값을
+            //   그대로 실어 준다). 클래스 이름은 서버 통제 안이라 대상이 아니다.
             log.warn("ingest resume gap check skipped due to {}: {}",
-                    t.getClass().getSimpleName(), t.getMessage());
+                    t.getClass().getSimpleName(), sanitizeForLog(t.getMessage()));
         }
     }
 
@@ -496,8 +533,9 @@ public class IngestService {
         } catch (Throwable t) {
             // D-02 비협상 + R6 회귀 차단: services UPSERT 실패는 silent log + skip.
             // 호스트 throw 0 / 트랜잭션 전체 rollback 0.
+            // [Phase R25] AC-25-04-1 — 예외 메시지 2차 채널(위 resume gap 자리와 같은 처방).
             log.warn("services UPSERT skipped due to {}: {}",
-                    t.getClass().getSimpleName(), t.getMessage());
+                    t.getClass().getSimpleName(), sanitizeForLog(t.getMessage()));
         }
     }
 
@@ -554,8 +592,17 @@ public class IngestService {
     /**
      * [Phase R12] AC-A5-1 — spans batchUpdate 1회. SQL 문자열·컬럼·INSERT OR REPLACE
      * 시맨틱은 v0.1 단건 버전과 동일 (G-12 — REPLACE 시맨틱 무변경).
+     *
+     * <p>// [Phase R25] AC-25-02-1/AC-25-02-3 — SQL 원문 인터닝의 <b>사전 패스</b> 한 줄이 앞에 붙는다.
+     * // 아래 spans 쓰기 문장의 <b>SQL 문자열·컬럼은 한 글자도 안 바뀐다</b> —
+     * // 참조를 전용 열이 아니라 {@code attributes_json} 안 예약 키에 두기로 한 결정(UD-2)의 결과다.
+     * // ★이 설명에 그 문장의 첫 낱말들을 그대로 옮겨 적지 않는다 — 그것을 세는 가드(R25 봉인 SQL 축)가
+     * // 자기를 설명하는 주석을 먼저 물어 "바뀌었다" 로 읽힌다. 가리킬 때는 축 이름으로만 쓴다.
+     * // 사전 패스와 참조 쓰기는 <b>같은 청크 트랜잭션 안</b>이라 그 트랜잭션이 되감기면 원문 행과
+     * // 참조가 <b>함께</b> 사라진다(유령 참조가 구조로 불가능 — 프로세스 캐시를 만들지 않는 이유다).
      */
     private void insertSpans(List<Span> spans) {
+        persistStatements(spans);   // [Phase R25] AC-25-02-3 — 참조되는 행을 먼저, 참조를 나중에.
         List<Object[]> rows = spans.stream()
                 .map(span -> new Object[]{
                         span.spanId(),
@@ -584,9 +631,17 @@ public class IngestService {
     /**
      * [Phase R12] AC-A5-1 — payloads 마스킹 적용 후 batchUpdate 1회.
      * 마스킹은 저장 전 1회 적용 구조 그대로 (BL-06 — 기존 payload 재마스킹 경로 없음).
+     *
+     * <p>// [Phase R25] AC-25-01-1/AC-25-01-2 — 본문을 행에 담지 않고 <b>가리키기만</b> 한다.
+     * // {@code body} 자리에는 {@code null} 을 싣고 {@code body_hash} 를 한 칸 더 싣는다.
+     * // 지문 대상은 <b>마스킹을 거치고 가드로 자른 뒤의 저장 바이트 그대로</b>다
+     * // (mask → guard → hash 순서 — 사용자 명시 비협상 결정. 마스킹 전 원문은 어디에도 안 남는다).
      */
     private void insertPayloads(List<Span> spans) {
         List<Object[]> rows = new ArrayList<>();
+        // [Phase R25] AC-25-01-4 — 이 청크의 **서로 다른 지문**만 모은다(같은 본문이 여러 번 와도 한 벌).
+        //   LinkedHashMap 이라 삽입 순서가 유지돼 batch 순서가 실행마다 흔들리지 않는다.
+        Map<String, BodyRef> bodies = new LinkedHashMap<>();
         for (Span span : spans) {
             if (span.payloads() == null) {
                 continue;
@@ -601,36 +656,206 @@ public class IngestService {
                     maskedBody = maskingHolder.current().mask(payload.body(), payload.contentType());
                 } catch (RegexTimeoutException e) {
                     maskedBody = REDOS_DEGRADE_BODY;
+                    // [Phase R25] AC-25-04-1/D-R25-22 — ★이 줄 하나가 인자 **둘**을 싣는다(줄 7 · 인자 8).
+                    //   spanId 는 계측기가, contentType 은 호스트 앱 응답 헤더가 정하는 값이라 둘 다 통제 밖이다.
                     log.warn("ReDoS deadline exceeded; payload degraded to full mask: spanId={} contentType={}",
-                            span.spanId(), payload.contentType());
+                            sanitizeForLog(span.spanId()), sanitizeForLog(payload.contentType()));
                 }
                 // [Phase R13] AC-A1-1/AC-A1-2/AC-A1-5 — D-03 server-side truncate 가드.
                 // 한도 초과 시 잘라 저장 + truncated=1. agent 가 정상 흐름에서 먼저 자르므로 보통 idle(안전망).
                 PayloadGuard.Result guarded = PayloadGuard.guard(maskedBody, ingestProperties.maxPayloadBytes());
+                // [Phase R25] AC-25-01-2/AC-25-01-3 — 지문은 **저장되는 값** 에서 뽑는다(guard 결과).
+                //   본문이 없는 행(계측이 값을 못 잡은 빈 자리표)은 지문도 null 이고 본문 표에 아무것도
+                //   안 만든다 — 정상 입력이지 위반이 아니다. 빈 문자열("")은 평범한 값이라 특별 취급하지 않는다.
+                String storedBody = guarded.body();
+                String bodyHash = storedBody == null ? null : sha256Hex(storedBody);
+                if (bodyHash != null) {
+                    bodies.putIfAbsent(bodyHash,
+                            new BodyRef(storedBody, storedBody.getBytes(StandardCharsets.UTF_8).length));
+                }
                 rows.add(new Object[]{
                         span.spanId(),
                         payload.direction().name().toLowerCase(Locale.ROOT),
                         payload.contentType(),
-                        // 한도 초과면 절단 본문, 아니면 mask 결과 그대로 (무손실).
-                        guarded.body(),
+                        // [Phase R25] AC-25-01-1 — 본문 자리는 언제나 null 이다. 실물은 payload_bodies 에 있고
+                        //   읽는 쪽이 COALESCE(pb.body, p.body) 로 되돌린다(옛 행은 p.body 로 읽힌다).
+                        null,
                         // size_bytes: server 가 절단했을 때만 mask 결과의 원본 byte 로 재계산해 덮어씀.
                         // 미발동 시 agent 가 보낸 sizeBytes 신뢰 — "자르기 전 원본 크기" 의미 보존 (AC-A1-5, D-A3).
                         guarded.truncated() ? guarded.sizeBytes() : payload.sizeBytes(),
                         // truncated: server 가 잘랐거나(신규) agent 가 이미 잘랐으면(기존) 1 — OR 보존 (AC-A1-5).
-                        (guarded.truncated() || payload.truncated()) ? 1 : 0
+                        (guarded.truncated() || payload.truncated()) ? 1 : 0,
+                        bodyHash
                 });
             }
         }
         if (rows.isEmpty()) {
             return;
         }
+        // [Phase R25] AC-25-01-1 — ★본문 표를 **먼저** 쓴다(같은 트랜잭션 안). 참조가 먼저 생기는 코드는
+        //   외래키가 꺼져 있어도 읽는 사람이 안전을 의심하게 만든다.
+        persistPayloadBodies(bodies);
         jdbc.batchUpdate(
                 """
-                        INSERT INTO payloads (span_id, direction, content_type, body, size_bytes, truncated)
-                        VALUES (?, ?, ?, ?, ?, ?)
+                        INSERT INTO payloads (span_id, direction, content_type, body, size_bytes, truncated, body_hash)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
                         """,
                 rows
         );
+    }
+
+    /** [Phase R25] 한 청크 안에서만 사는 본문 값 묶음(지문 → 본문·바이트 수). 프로세스 캐시가 아니다. */
+    private record BodyRef(String body, int bytes) {
+    }
+
+    /**
+     * [Phase R25] AC-25-01-1/AC-25-01-4/AC-25-01-7 — 본문 표 쓰기. <b>이 청크에 새로 나온 지문만</b> 넣는다.
+     *
+     * <p>멱등이 <b>구조로</b> 성립한다: {@code body_hash} 가 PRIMARY KEY 이고 {@code INSERT OR IGNORE} 라
+     * 같은 본문이 몇 번을 다시 와도 표에는 아무 일도 안 일어난다. 그래서 이 경로에 <b>새 DELETE 를 추가하지
+     * 않는다</b> — 기존 {@code deletePayloadsForChunk} 의 delete-then-insert 봉인을 한 글자도 안 건드린다.
+     *
+     * <p>★<b>지문 충돌 대조의 한계</b>(막았다고 쓰지 않는다): 이미 있는 지문의 {@code body_bytes} 가 다르면
+     * 경고만 남기고 <b>먼저 있던 본문을 지킨다</b>. 이 대조는 <b>크기가 다를 때만</b> 안다 — 크기가 같고
+     * 내용만 다른 충돌은 못 잡는다. 틀리는 방향은 <b>안전한 쪽</b>(먼저 것 보존)이다.
+     */
+    private void persistPayloadBodies(Map<String, BodyRef> bodies) {
+        if (bodies.isEmpty()) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        List<String> hashes = new ArrayList<>(bodies.keySet());
+        List<Object[]> toInsert = new ArrayList<>();
+        // 이미 있는 지문을 청크당 SELECT 로 한 번에 걷어낸다 — payload 마다 조회하지 않는다.
+        Map<String, Long> existing = new LinkedHashMap<>();
+        for (int start = 0; start < hashes.size(); start += HASH_IN_CHUNK_SIZE) {
+            List<String> slice = hashes.subList(start, Math.min(start + HASH_IN_CHUNK_SIZE, hashes.size()));
+            jdbc.query(
+                    "SELECT body_hash, body_bytes FROM payload_bodies WHERE body_hash IN ("
+                            + placeholders(slice.size()) + ")",
+                    (RowCallbackHandler) rs -> existing.put(rs.getString("body_hash"), rs.getLong("body_bytes")),
+                    slice.toArray());
+        }
+        for (Map.Entry<String, BodyRef> e : bodies.entrySet()) {
+            Long storedBytes = existing.get(e.getKey());
+            if (storedBytes != null) {
+                if (storedBytes != e.getValue().bytes()) {
+                    log.warn("payload body hash collision: hash={} storedBytes={} incomingBytes={}",
+                            e.getKey(), storedBytes, e.getValue().bytes());
+                }
+                continue;   // 덮지 않는다 — 먼저 있던 본문을 지킨다.
+            }
+            toInsert.add(new Object[]{ e.getKey(), e.getValue().body(), e.getValue().bytes(), now });
+        }
+        if (toInsert.isEmpty()) {
+            return;   // 넣을 것이 없으면 문장을 아예 안 돌린다(같은 본문이 다시 오면 아무 일도 안 일어난다).
+        }
+        jdbc.batchUpdate(
+                """
+                        INSERT OR IGNORE INTO payload_bodies (body_hash, body, body_bytes, first_seen_at)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                toInsert
+        );
+    }
+
+    /**
+     * [Phase R25] AC-25-02-1/AC-25-02-3 — SQL 원문 표 쓰기. 이 청크의 서로 다른 원문을 모아
+     * <b>전부</b> {@code INSERT OR IGNORE} 한다 — 이미 있는 행은 SQLite 가 그냥 지나간다.
+     *
+     * <p>★[v0.7.0 첫 밤 정정 · 2026-09-06] 처음 구현은 {@link #persistPayloadBodies} 처럼 "있는 것을
+     * {@code SELECT} 로 먼저 걷어내고 없는 것만 넣는" 모양이었다. 그 {@code SELECT} 가 <b>청크 트랜잭션의
+     * 첫 문장</b>이 되면서 v0.6.3 에 없던 수신 유실이 났다(첫 야간 정리 4분 동안 108 청크):
+     * <ul>
+     *   <li>SQLite(WAL) 는 트랜잭션이 <b>읽기로 시작</b>하면 읽기 스냅샷을 잡고, 그 뒤 처음 쓰려 할 때
+     *       그 사이 다른 writer 가 커밋했으면 {@code busy_timeout} 을 부르지 않고 <b>즉시</b>
+     *       {@code SQLITE_BUSY} 를 돌려준다(스냅샷이 낡아 기다려도 소용없기 때문).</li>
+     *   <li>v0.6.3 의 첫 문장은 {@code INSERT OR REPLACE INTO spans}(쓰기)라 잠금을 먼저 잡고 10초를
+     *       기다렸다. 야간 정리 배치가 ≈290 ms 마다 커밋하는 동안 읽기-먼저 청크는 전부 즉시 실패했다.</li>
+     * </ul>
+     * 그래서 이 메서드는 <b>읽지 않는다</b>. 원문은 작고(수십 종 · 수 KB) 청크마다 다시 보내도 비용이 없다.
+     * 본문 쪽({@link #persistPayloadBodies})의 {@code SELECT} 는 {@code insertSpans} 의 쓰기 <b>뒤</b>에 돌아
+     * 트랜잭션이 이미 쓰기 잠금을 쥔 상태라 같은 문제가 없다 — 그 자리는 그대로 둔다.
+     * ★청크 트랜잭션의 첫 문장은 언제나 쓰기여야 한다 — 이 앞에 {@code SELECT} 를 넣지 말 것
+     * (시험 {@code SqlStatementInterningTest#chunkTransactionStartsWithAWriteStatement} 가 지킨다).
+     *
+     * <p>대조할 크기 값이 없으므로 충돌 경고도 없다 — <b>원문 자체가 열쇠</b>라 같은 지문이면 같은 원문이다.
+     *
+     * <p>★{@code apilens.stmt.ref} 를 <b>밖에서 이미 채워 보낸</b> span 은 여기서도 건너뛴다
+     * (AC-25-02-5 ⓒ — 그 span 은 원문 그대로 저장된다).
+     */
+    private void persistStatements(List<Span> spans) {
+        Map<String, String> statements = new LinkedHashMap<>();
+        for (Span span : spans) {
+            String raw = internableStatementOf(span.attributes());
+            if (raw != null) {
+                statements.putIfAbsent(sha256Hex(raw), raw);
+            }
+        }
+        if (statements.isEmpty()) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        List<Object[]> toInsert = new ArrayList<>(statements.size());
+        for (Map.Entry<String, String> e : statements.entrySet()) {
+            toInsert.add(new Object[]{ e.getKey(), e.getValue(), now });
+        }
+        // 읽기 없이 바로 쓴다 — 청크 트랜잭션의 첫 문장이 쓰기라야 busy_timeout 이 산다(위 javadoc).
+        jdbc.batchUpdate(
+                """
+                        INSERT OR IGNORE INTO sql_statements (stmt_hash, statement, first_seen_at)
+                        VALUES (?, ?, ?)
+                        """,
+                toInsert
+        );
+    }
+
+    /**
+     * [Phase R25] AC-25-02-5/AC-25-02-7 — 이 span 에서 인터닝할 SQL 원문. 대상이 아니면 {@code null}.
+     *
+     * <p>세 가지를 <b>한자리에서</b> 판정해 쓰기 경로와 사전 패스가 같은 답을 내게 한다:
+     * <ol>
+     *   <li>{@code db.statement} 가 <b>{@code String} 일 때만</b> 대상이다 — 밖에서 오는 JSON 은 어떤 타입이든 올 수 있다.</li>
+     *   <li>예약 키를 <b>밖에서 이미 차지</b>했으면 손대지 않는다(원문 그대로 저장 — 새 도피 규약을 안 만든다).</li>
+     *   <li>속성이 없거나 비었으면 대상이 아니다.</li>
+     * </ol>
+     */
+    private static String internableStatementOf(Map<String, Object> attributes) {
+        if (attributes == null || attributes.isEmpty()) {
+            return null;
+        }
+        if (attributes.containsKey(STMT_REF_ATTRIBUTE)) {
+            return null;
+        }
+        Object raw = attributes.get(DB_STATEMENT_ATTRIBUTE);
+        return raw instanceof String s ? s : null;
+    }
+
+    /**
+     * [Phase R25] AC-25-01-2 — 지문 계산의 <b>단일 위임 진입점</b>. SHA-256 → 소문자 16진수 64자.
+     *
+     * <p>새 클래스도 새 의존성도 만들지 않는다 — JDK 표준({@code MessageDigest})만 쓰고, 같은 파일의
+     * {@code sanitizeForLog} 전례를 따라 {@code private static} 헬퍼 하나로 둔다.
+     * {@code SHA-256} 은 JDK 규격이 반드시 제공하는 알고리즘이라 아래 catch 는 도달하지 않는다.
+     */
+    private static String sha256Hex(String value) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(StandardCharsets.UTF_8));
+            StringBuilder hex = new StringBuilder(digest.length * 2);
+            for (byte b : digest) {
+                hex.append(Character.forDigit((b >> 4) & 0xF, 16));
+                hex.append(Character.forDigit(b & 0xF, 16));
+            }
+            return hex.toString();
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 is required by the JDK spec but is missing", e);
+        }
+    }
+
+    /** [Phase R25] {@code ?, ?, ...} — 개수만 문자열로 만든다(값은 언제나 바인딩). */
+    private static String placeholders(int count) {
+        return String.join(", ", java.util.Collections.nCopies(count, "?"));
     }
 
     private void upsertTraceSummary(String traceId, List<Span> batchSpans, long receivedAt) {
@@ -677,9 +902,10 @@ public class IngestService {
         if (aggregate.get("min_start") == null || aggregate.get("max_end") == null) {
             traceSummaryDeferred.incrementAndGet();
             // 앞머리 토큰은 위 WARN 과 같다(R23/AC-01-2). 사유는 reason 필드로 갈린다.
+            // [Phase R25] AC-25-04-1 — traceId 위생 처리(같은 앞머리 토큰의 다른 갈래 — 위 WARN 과 한 쌍).
             log.warn("trace summary deferred (self-heal only if more spans arrive for this trace): traceId={}"
                             + " reason=empty-aggregate deferredTotal={}",
-                    traceId, traceSummaryDeferred.get());
+                    sanitizeForLog(traceId), traceSummaryDeferred.get());
             return;
         }
 
@@ -712,12 +938,29 @@ public class IngestService {
         );
     }
 
+    /**
+     * [Phase R25] AC-25-02-1/AC-25-02-2 — 속성 직렬화. <b>순수 함수로 남는다</b>(DB 접근 0) —
+     * 표 쓰기는 {@link #persistStatements} 사전 패스가 이미 끝냈다.
+     *
+     * <p>★<b>원본 맵을 안 고친다.</b> 대상이면 <b>복사본</b>에서 {@code db.statement} 를 빼고
+     * 예약 키에 지문을 넣는다. 이유가 둘이다 — 시험 픽스처가 {@code Map.of(...)}(불변)이고,
+     * 같은 맵을 {@code extractAgentVersions} 도 읽는다.
+     *
+     * <p>조기 반환은 <b>그대로 앞에</b> 둔다 — 속성이 없거나 빈 span 에서 헛일이 돌지 않는다.
+     */
     private String serializeAttributes(Map<String, Object> attributes) {
         if (attributes == null || attributes.isEmpty()) {
             return null;
         }
+        Map<String, Object> toStore = attributes;
+        String internable = internableStatementOf(attributes);
+        if (internable != null) {
+            toStore = new LinkedHashMap<>(attributes);
+            toStore.remove(DB_STATEMENT_ATTRIBUTE);
+            toStore.put(STMT_REF_ATTRIBUTE, sha256Hex(internable));
+        }
         try {
-            return mapper.writeValueAsString(attributes);
+            return mapper.writeValueAsString(toStore);
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("failed to serialize span attributes", e);
         }

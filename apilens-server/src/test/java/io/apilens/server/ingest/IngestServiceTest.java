@@ -89,6 +89,31 @@ class IngestServiceTest {
         return new IngestService(jdbc, maskingHolder, mapper, new IngestProperties(maxBytes));
     }
 
+    /**
+     * [Phase R25] AC-25-03-4 — 저장된 본문을 읽는 <b>단일 자리</b>.
+     *
+     * <p>R25 부터 새 행은 {@code payloads.body} 가 비어 있고 실물은 {@code payload_bodies} 에 있다.
+     * 그 열을 직접 읽던 자리가 <b>한꺼번에 빨개지는 것이 정상</b>이고, 이 헬퍼로 고치는 것이
+     * 새 경로의 첫 시험이다 — 여기가 초록이면 "본문이 표에서 되돌아온다" 가 증명된다.
+     * 읽기 SQL 은 {@code TraceQueryRepository.findPayloads} 와 같은 모양이라 옛 행도 그대로 읽힌다.
+     */
+    private String storedBodyOf(String spanId) {
+        return jdbc.queryForObject(
+                "SELECT COALESCE(pb.body, p.body) FROM payloads p "
+                        + "LEFT JOIN payload_bodies pb ON pb.body_hash = p.body_hash "
+                        + "WHERE p.span_id = ?",
+                String.class, spanId);
+    }
+
+    /** 위와 같은 되돌리기 + {@code size_bytes}·{@code truncated} 는 payloads 행에서 그대로 읽는다. */
+    private Map<String, Object> storedPayloadOf(String spanId) {
+        return jdbc.queryForMap(
+                "SELECT COALESCE(pb.body, p.body) AS body, p.size_bytes, p.truncated FROM payloads p "
+                        + "LEFT JOIN payload_bodies pb ON pb.body_hash = p.body_hash "
+                        + "WHERE p.span_id = ?",
+                spanId);
+    }
+
     @AfterEach
     void cleanup() throws Exception {
         if (dbFile != null) {
@@ -153,8 +178,7 @@ class IngestServiceTest {
         );
         service.ingest(new IngestRequest(List.of(span)));
 
-        String storedBody = jdbc.queryForObject(
-                "SELECT body FROM payloads WHERE span_id = ?", String.class, "s1");
+        String storedBody = storedBodyOf("s1");
         assertNotNull(storedBody);
         assertFalse(storedBody.contains("hunter2"), "raw password leaked: " + storedBody);
         assertTrue(storedBody.contains("***"));
@@ -280,8 +304,7 @@ class IngestServiceTest {
         );
         limited.ingest(new IngestRequest(List.of(span)));
 
-        Map<String, Object> p = jdbc.queryForMap(
-                "SELECT body, size_bytes, truncated FROM payloads WHERE span_id = ?", "s-trunc");
+        Map<String, Object> p = storedPayloadOf("s-trunc");
         // AC-A1-1: 한도까지 잘라 저장 + truncated=1
         assertEquals("0123456789", p.get("body"), "앞 10 byte 만 저장");
         assertEquals(1, ((Number) p.get("truncated")).intValue(), "server 절단 → truncated=1");
@@ -301,8 +324,7 @@ class IngestServiceTest {
         );
         service.ingest(new IngestRequest(List.of(span)));
 
-        Map<String, Object> p = jdbc.queryForMap(
-                "SELECT body, size_bytes, truncated FROM payloads WHERE span_id = ?", "s-small");
+        Map<String, Object> p = storedPayloadOf("s-small");
         assertEquals("hello", p.get("body"), "한도 이하 — 원본 무손실");
         assertEquals(0, ((Number) p.get("truncated")).intValue());
         assertEquals(5L, ((Number) p.get("size_bytes")).longValue(), "agent sizeBytes 신뢰 유지 (AC-A1-5)");
@@ -321,8 +343,7 @@ class IngestServiceTest {
         );
         service.ingest(new IngestRequest(List.of(span)));
 
-        Map<String, Object> p = jdbc.queryForMap(
-                "SELECT body, size_bytes, truncated FROM payloads WHERE span_id = ?", "s-agent-trunc");
+        Map<String, Object> p = storedPayloadOf("s-agent-trunc");
         assertEquals("short-body", p.get("body"), "한도 이하 — server 미절단");
         assertEquals(1, ((Number) p.get("truncated")).intValue(), "AC-A1-5: agent truncated=true 보존 (OR)");
         assertEquals(9999L, ((Number) p.get("size_bytes")).longValue(), "agent 원본 size_bytes 신뢰 유지");

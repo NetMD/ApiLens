@@ -229,10 +229,15 @@ public class InstrumentAnalysisRepository {
                 + "    " + CLASS_EXPR + "               AS class_name,\n"
                 + "    COUNT(*)                         AS payload_count,\n"
                 // [Phase R22] R22/AC-02-1 — 실제 저장 바이트. size_bytes(자르기 전 원본)가 아니다.
-                + "    COALESCE(SUM(length(CAST(p.body AS BLOB))), 0)   AS payload_bytes\n"
+                // [Phase R25] AC-25-03-2 — ★옛 형태 읽기 폴백 — 지우지 말 것.
+                //   올린 뒤 약 이틀(retention.days=1 + 04:00 정리)간 body_hash 가 없는 옛 행이 남는다.
+                //   이 갈래를 지우면 그 사이의 본문·SQL 이 **에러 없이 빈 값**으로 나온다(예외가 안 뜨므로 아무도 모른다).
+                //   정본 시험: LegacyRowFallbackTest.oldFormPayloadRowReadsTheSameAsNewForm
+                + "    COALESCE(SUM(COALESCE(pb.body_bytes, length(CAST(p.body AS BLOB)))), 0)   AS payload_bytes\n"
                 + "FROM traces t\n"
                 + "JOIN spans s    ON s.trace_id = t.trace_id\n"
                 + "JOIN payloads p ON p.span_id  = s.span_id\n"
+                + "LEFT JOIN payload_bodies pb ON pb.body_hash = p.body_hash\n"
                 + "WHERE t.service_name = ?\n"
                 + "  AND t.start_time  >= ?\n"
                 + "  AND t.start_time  <  ?\n"
@@ -247,6 +252,48 @@ public class InstrumentAnalysisRepository {
                         rs.getLong("payload_bytes")),
                 serviceName, fromMs, toMs, cap
         );
+    }
+
+    // ─── Q1d — 구간 안 고유 본문 합 ──────────────────────────────────────────
+
+    /**
+     * Bytes of the distinct payload bodies stored in the window ("고유 본문 합").
+     *
+     * <p>// [Phase R25] AC-25-05-1/AC-25-05-2/AC-25-05-5 — 순위표의 {@code payloadBytes} 는
+     * // <b>참조당 그대로</b> 두고(UD-4), 새 값은 요약 자리에만 나온다. 계산 창은 분석 창(1/6/24시간)과
+     * // <b>같다</b> — 한 화면에서 두 숫자를 비교하려면 분모가 같아야 한다.
+     *
+     * <p>★{@code aggregateSummary} 에 <b>합치지 않는다</b>: 요약 질의는 trace 단위로 묶으므로 거기에
+     * payload 를 결합하면 {@code span_cnt} 가 부풀어 오른다(같은 함정이 Q1a javadoc 에 이미 적혀 있다).
+     * 질의를 나누는 것이 이 파일의 기존 규약이다.
+     *
+     * <p><b>방향(in/out)을 열쇠에 안 넣는다</b> — 화면 라벨이 「고유 본문 합」이고 목적이 "저장소에 실제로
+     * 남는 바이트" 라, 같은 본문이 양쪽에 있어도 저장은 한 벌이다.
+     *
+     * <p>★<b>한계 그 자리에</b>: <b>옛 행은 행마다 별개 묶음</b>이라 개별 본문으로 센다
+     * ({@code 'row:' || payload_id} 열쇠). 그래서 올린 뒤 약 이틀간 이 값이 <b>실제보다 크게</b> 나온다.
+     * 틀리는 방향은 <b>절감이 덜 되어 보이는 안전한 쪽</b>이다. 옛 행이 사라지면 저절로 정확해진다.
+     *
+     * <p>본문이 없는 행은 값이 NULL 이라 {@code SUM} 이 건너뛴다(0 과 같은 결과).
+     */
+    public long aggregateUniquePayloadBytes(String serviceName, long fromMs, long toMs) {
+        String sql = """
+                SELECT COALESCE(SUM(u.b), 0) AS unique_payload_bytes
+                FROM (
+                    SELECT COALESCE(p.body_hash, 'row:' || p.payload_id)              AS k,
+                           MIN(COALESCE(pb.body_bytes, length(CAST(p.body AS BLOB)))) AS b
+                    FROM traces t
+                    JOIN spans s    ON s.trace_id = t.trace_id
+                    JOIN payloads p ON p.span_id  = s.span_id
+                    LEFT JOIN payload_bodies pb ON pb.body_hash = p.body_hash
+                    WHERE t.service_name = ?
+                      AND t.start_time  >= ?
+                      AND t.start_time  <  ?
+                    GROUP BY k
+                ) u
+                """;
+        Long value = jdbc.queryForObject(sql, Long.class, serviceName, fromMs, toMs);
+        return value == null ? 0L : value;
     }
 
     // ─── Q2 — 제외 시뮬레이션 (재귀 CTE 정확 계산) ───────────────────────────
@@ -368,11 +415,18 @@ public class InstrumentAnalysisRepository {
         // Q3b — 제외 대상에 직접 달린 payload
         // [Phase R22] R22/AC-02-1/R22/AC-02-2 — Q1b(:207 부근)와 같은 식으로 교체. 두 곳이 어긋나면
         //   같은 화면의 "표 숫자" 와 "빼면 이렇게 돼요 숫자" 가 다른 기준으로 계산된다. 사용자 명시 결정(D-1).
+        // [Phase R25] AC-25-03-2 — ★옛 형태 읽기 폴백 — 지우지 말 것.
+        //   올린 뒤 약 이틀(retention.days=1 + 04:00 정리)간 body_hash 가 없는 옛 행이 남는다.
+        //   이 갈래를 지우면 그 사이의 본문·SQL 이 **에러 없이 빈 값**으로 나온다(예외가 안 뜨므로 아무도 모른다).
+        //   정본 시험: LegacyRowFallbackTest.oldFormPayloadRowReadsTheSameAsNewForm
+        //   ★위 aggregatePayloadsByClass 와 **같은 처방**이어야 한다 — 두 곳이 어긋나면 같은 화면의
+        //   "표 숫자" 와 "빼면 이렇게 돼요 숫자" 가 다른 기준이 된다(R22/D-1 이 이미 겪은 자리).
         String payloadSql = "SELECT COUNT(*) AS payload_count_delta,\n"
-                + "       COALESCE(SUM(length(CAST(p.body AS BLOB))), 0) AS payload_bytes_delta\n"
+                + "       COALESCE(SUM(COALESCE(pb.body_bytes, length(CAST(p.body AS BLOB)))), 0) AS payload_bytes_delta\n"
                 + "FROM traces t\n"
                 + "JOIN spans s    ON s.trace_id = t.trace_id\n"
                 + "JOIN payloads p ON p.span_id  = s.span_id\n"
+                + "LEFT JOIN payload_bodies pb ON pb.body_hash = p.body_hash\n"
                 + "WHERE t.service_name = ?\n"
                 + "  AND t.start_time  >= ?\n"
                 + "  AND t.start_time  <  ?\n"

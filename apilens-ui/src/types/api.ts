@@ -326,6 +326,11 @@ export interface PreviewResponse {
 //   rootRatio/avgSpansPerTrace/singleSpanTraceRatio = double → number
 //   className/excludeTarget = String → string / string | null
 //   fromMs/toMs/queriedAtMs = long(epoch millis) → number
+//   [Phase R25] uniquePayloadBytes = long(서버는 COALESCE(...,0) 이라 v0.7.0+ 응답에 **항상** 실린다)
+//     → 화면은 **선택 필드**로 받는다. 서버가 늘 준다고 필수로 적으면, 그 키가 없는 응답(구버전
+//       server jar · 시험 픽스처)이 왔을 때 undefined 가 그대로 바이트 표기로 흘러 화면이 깨진다.
+//       tsconfig.app.json:38 이 시험 파일을 타입 검사에서 빼므로 그 사고를 컴파일러가 못 잡는다.
+//     ★ `number | undefined` 로 적지 않는다 — exactOptionalPropertyTypes:true(tsconfig.app.json:26)
 // ────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -356,6 +361,20 @@ export interface InstrumentSummary {
   avgSpansPerTrace: number;
   /** 0.0~1.0 실수. 화면 표시 시점에만 100을 곱한다. */
   singleSpanTraceRatio: number;
+  /**
+   * [Phase R25] AC-25-05-1/AC-25-05-4/AC-25-05-6 (D-R25-13) — 분석 창 안에서 같은 본문을 한 번만 센
+   * 바이트 합. 필드 이름은 **사용자 명시 확정**이라 못 바꾼다.
+   * 출처: 프리브리프 `20260905_01_… (server minor · V6·V7).md` OQ-6 사용자 확정 · 기획 §5.1 표
+   * 「서버 응답 요약 필드 = uniquePayloadBytes … 사용자 확정 — 못 바꿈」.
+   * (CLAUDE.md 에는 이 필드를 규정하는 줄이 없어 CLAUDE.md 를 인용하지 않는다 — 없는 근거를 지어내지
+   *  않고 실제 확정 출처를 적는다.)
+   *
+   * ★**선택 필드**다. 값이 없으면(모름) 화면이 그 줄을 아예 안 그리고, 0 이면 `0 B` 로 그린다.
+   *   `exactOptionalPropertyTypes: true`(tsconfig.app.json:26) 라 `undefined` 를 명시 대입할 수 없다 —
+   *   값이 없으면 **키를 아예 넣지 않는다**.
+   * ★단위는 **저장된 바이트**(자르기 전 원본 크기가 아니다). 표시 변환은 lib/format.ts formatBytes 1곳.
+   */
+  uniquePayloadBytes?: number;
 }
 
 /** 순위 응답 items[] 요소 — 클래스 1개(또는 이름이 하나뿐인 계측을 묶은 고정 합계 행). */

@@ -151,17 +151,21 @@ class V4MigrationTest {
     }
 
     @Test
-    void recordsFourAppliedMigrations() {
+    void recordsAllAppliedMigrations() {
         migrateAll();
 
-        // V1~V5 가 모두 적용됐다는 것 자체가 "기존 파일 내용 무변경(체크섬 유지)" 의 증명이다.
+        // V1~V7 이 모두 적용됐다는 것 자체가 "기존 파일 내용 무변경(체크섬 유지)" 의 증명이다.
         // [Phase R20] R20/AC-03-4 — V5(service_instrument_configs) 추가로 4 → 5. V1~V4 파일은
         //   주석 한 글자도 무수정(불변식 7) — migrate 성공 자체가 체크섬 보존의 증명.
+        // [Phase R25] AC-25-08-1 — R25 가 V6(payload_bodies) · V7(sql_statements) 을 더해 5 → 7.
+        //   V1~V5 파일은 이번에도 주석 한 글자까지 무수정이다. 단언의 뜻은 안 바꿨다.
+        //   ★메서드 이름에서 숫자를 뺐다(recordsFourAppliedMigrations → recordsAllAppliedMigrations):
+        //   이름에 숫자를 넣은 것이 두 세대(4→5→7) 낡음의 원인이라, 빼면 다음에 또 낡지 않는다.
         Integer applied = jdbc.queryForObject(
                 "SELECT COUNT(*) FROM flyway_schema_history WHERE success = 1 AND version IS NOT NULL",
                 Integer.class);
         assertNotNull(applied);
-        assertEquals(5, applied.intValue(), "V1~V5 must all apply cleanly");
+        assertEquals(7, applied.intValue(), "V1~V7 must all apply cleanly");
     }
 
     private int count(String sql) {

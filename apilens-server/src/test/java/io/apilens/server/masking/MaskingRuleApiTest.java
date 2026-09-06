@@ -213,8 +213,7 @@ class MaskingRuleApiTest {
     void appliesToggleToSubsequentIngestWithoutRemaskingExistingPayloads() throws Exception {
         // 1) 토글 전 ingest — 주민번호 regex 룰(rule_id=1) 활성: 마스킹됨
         ingestService.ingest(new IngestRequest(List.of(spanWithSsnPayload("s-before", "t-before"))));
-        String maskedBody = jdbc.queryForObject(
-                "SELECT body FROM payloads WHERE span_id = ?", String.class, "s-before");
+        String maskedBody = storedBodyOf("s-before");
         assertNotNull(maskedBody);
         assertFalse(maskedBody.contains(SSN_RAW), "토글 전: 주민번호가 마스킹돼 저장돼야 한다 — " + maskedBody);
 
@@ -224,19 +223,30 @@ class MaskingRuleApiTest {
 
         // 3) 토글 후 ingest — 이후 분부터 미마스킹 (핫 리로드 반영)
         ingestService.ingest(new IngestRequest(List.of(spanWithSsnPayload("s-after", "t-after"))));
-        String rawBody = jdbc.queryForObject(
-                "SELECT body FROM payloads WHERE span_id = ?", String.class, "s-after");
+        String rawBody = storedBodyOf("s-after");
         assertNotNull(rawBody);
         assertTrue(rawBody.contains(SSN_RAW), "토글 후 신규 ingest 분은 룰 비활성이 반영돼야 한다 — " + rawBody);
 
         // 4) 기존 payload 재마스킹 없음 (BL-06): 토글 전 저장분은 그대로 마스킹 상태
-        String beforeStill = jdbc.queryForObject(
-                "SELECT body FROM payloads WHERE span_id = ?", String.class, "s-before");
+        String beforeStill = storedBodyOf("s-before");
         assertNotNull(beforeStill);
         assertFalse(beforeStill.contains(SSN_RAW), "기존 저장 payload 는 재마스킹/복원 경로가 없어야 한다");
     }
 
     // ─── helpers ─────────────────────────────────────────────────────────
+
+    /**
+     * [Phase R25] AC-25-03-4 — 저장된 본문을 읽는 단일 자리. R25 부터 새 행은 {@code payloads.body} 가
+     * 비어 있고 실물은 {@code payload_bodies} 에 있다. 읽기 SQL 은
+     * {@code TraceQueryRepository.findPayloads} 와 같은 모양이라 옛 행도 그대로 읽힌다.
+     */
+    private String storedBodyOf(String spanId) {
+        return jdbc.queryForObject(
+                "SELECT COALESCE(pb.body, p.body) FROM payloads p "
+                        + "LEFT JOIN payload_bodies pb ON pb.body_hash = p.body_hash "
+                        + "WHERE p.span_id = ?",
+                String.class, spanId);
+    }
 
     private static Span spanWithSsnPayload(String spanId, String traceId) {
         long now = System.currentTimeMillis();

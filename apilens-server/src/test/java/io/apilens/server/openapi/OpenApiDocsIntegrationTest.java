@@ -90,7 +90,7 @@ class OpenApiDocsIntegrationTest {
     private TestRestTemplate rest;
 
     /**
-     * T-INT-1 — 면제 + 스펙 자동생성 + 컨텍스트 로드 + build-info 배선(info.version=="0.6.3").
+     * T-INT-1 — 면제 + 스펙 자동생성 + 컨텍스트 로드 + build-info 배선(info.version 은 Gradle version 을 따른다).
      */
     @Test
     void returns200AndOpenApiSpecOnDocsWithoutToken() throws Exception {
@@ -108,7 +108,10 @@ class OpenApiDocsIntegrationTest {
         //   그대로면 문서에 실리는 버전이 조용히 낡는다.
         // [Phase R24] R24/AC-07-6 — bump(0.6.2 → 0.6.3) 동반 정정. 이 줄이 빨개진 것이 이번에도
         //   게이트가 살아 있다는 증거다(실측: expected 0.6.2 / actual 0.6.3 로 한 건 빨개진 뒤 정정).
-        assertEquals("0.6.3", info.get("version").asText(), "info.version must track the Gradle build version");
+        // [Phase R25] AC-25-08-2 — bump(0.6.3 → 0.7.0) 동반 정정. 이번에도 같은 모양으로 한 건 빨개진 뒤
+        //   고쳤다(실측: expected 0.6.3 / actual 0.7.0). ★위 머리 주석의 버전 리터럴은 지웠다 —
+        //   같은 값이 두 자리에 있으면 한 자리만 고치는 편집이 나머지를 조용히 낡게 만든다.
+        assertEquals("0.7.0", info.get("version").asText(), "info.version must track the Gradle build version");
         assertEquals("ApiLens API", info.get("title").asText());
     }
 

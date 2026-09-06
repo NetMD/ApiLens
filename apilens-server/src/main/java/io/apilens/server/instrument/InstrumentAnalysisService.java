@@ -66,6 +66,10 @@ public class InstrumentAnalysisService {
     static final int ANALYZE_GROUP_CAP = 2000;
 
     /** 축별 상위 N. 세 축 합집합 최대 150행 + 고정 합계 행 1 = 화면이 감당 가능한 크기. */
+    // [Phase R25] AC-25-06-1/AC-25-06-2/AC-25-06-3 — 값 50 은 그대로 둔다. 다시 볼 조건만 적는다.
+    // 다시 볼 조건(두 어휘로 적는다 — 로그에는 truncated 라는 낱말이 없다):
+    //   응답 truncated=true 이거나 로그의 totalClasses > returned 가 한 번이라도 찍히면 재판정.
+    //   관측: 2026-08-28 최대 41 · 2026-09-05 최대 35 (창 1/6/24h). 값 50 유지.
     static final int ANALYZE_TOP_N = 50;
 
     /** 재귀 깊이 상한. 실측 최대 트리 깊이의 4배 여유. */
@@ -115,6 +119,9 @@ public class InstrumentAnalysisService {
                     repository.aggregateSpansByClass(serviceName, fromMs, toMs, ANALYZE_GROUP_CAP);
             List<InstrumentAnalysisRepository.PayloadRow> payloadRows =
                     repository.aggregatePayloadsByClass(serviceName, fromMs, toMs, ANALYZE_GROUP_CAP);
+            // [Phase R25] AC-25-05-1/AC-25-05-5 — 요약 질의와 **같은 창**으로 따로 한 문장. 요약 질의에
+            //   합치면 trace 단위 묶음에 payload 가 결합돼 span_cnt 가 부풀어 오른다(Q1a javadoc).
+            long uniquePayloadBytes = repository.aggregateUniquePayloadBytes(serviceName, fromMs, toMs);
 
             Map<String, Merged> merged = merge(spanRows, payloadRows);
 
@@ -130,7 +137,8 @@ public class InstrumentAnalysisService {
                     summaryRow.totalSpans(),
                     summaryRow.totalTraces(),
                     ratio(summaryRow.totalSpans(), summaryRow.totalTraces()),
-                    ratio(summaryRow.singleSpanTraces(), summaryRow.totalTraces())
+                    ratio(summaryRow.singleSpanTraces(), summaryRow.totalTraces()),
+                    uniquePayloadBytes
             );
 
             int totalClasses = merged.size();

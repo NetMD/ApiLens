@@ -20,19 +20,27 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.apilens.common.SpanKind;
 import io.apilens.common.SpanStatus;
+import io.apilens.server.ingest.IngestService;
 import io.apilens.server.query.dto.PayloadDto;
 import io.apilens.server.query.dto.ServiceInfo;
 import io.apilens.server.query.dto.SpanDto;
 import io.apilens.server.query.dto.TraceSummary;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.RowCallbackHandler;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * JdbcTemplate-backed read repository for the query endpoints. Reads are not
@@ -42,9 +50,19 @@ import java.util.Optional;
 @Repository
 public class TraceQueryRepository {
 
+    private static final Logger log = LoggerFactory.getLogger(TraceQueryRepository.class);
+
     private static final TypeReference<Map<String, Object>> ATTRIBUTES_TYPE =
             new TypeReference<>() {
             };
+
+    // [Phase R25] AC-25-02-4 — IN (?, …) 목록을 한 번에 묶는 최대 개수. SQLite 바인딩 변수 한도(구버전 999)
+    //   안쪽 안전 마진이고, IngestService 쪽 같은 이름의 상수와 같은 값이다(관례 통일).
+    private static final int HASH_IN_CHUNK_SIZE = 500;
+
+    // [Phase R25] AC-25-04-1 — 로그 한 줄에 싣는 외부 문자열의 길이 상한(문자).
+    //   IngestService 의 ROOT_MESSAGE_MAX_CHARS 와 같은 값이다.
+    private static final int LOG_VALUE_MAX_CHARS = 512;
 
     private final JdbcTemplate jdbc;
     private final ObjectMapper mapper;
@@ -141,8 +159,24 @@ public class TraceQueryRepository {
         }
     }
 
+    /**
+     * [Phase R25] AC-25-02-4 — <b>밖으로 나가는 응답이 지금과 같은 모양이다.</b> span 속성의
+     * {@code db.statement} 는 여전히 SQL 문자열이고, 화면·문서·계측기는 한 줄도 안 바뀐다.
+     *
+     * <p>되돌리기는 <b>행 매퍼가 아니라 이 반환 지점</b>에서 한다. {@code parseAttributes} 는
+     * 행 하나를 받는 함수라 그 안에서는 지문을 모을 수 없다 — 모아서 {@code IN} 한 문장으로 가져와야
+     * span 마다 조회하는 일이 안 생긴다.
+     *
+     * <p>// ★옛 형태 읽기 폴백 — 지우지 말 것.
+     * //   올린 뒤 약 이틀(retention.days=1 + 04:00 정리)간 예약 키가 없고 SQL 원문을 속성에 그대로
+     * //   담은 옛 span 행이 남는다. 그 행은 아래 후처리를 <b>그냥 지나가야</b> 한다.
+     * //   이 갈래를 지우면 그 사이의 SQL 이 <b>에러 없이 빈 값</b>으로 나온다(예외가 안 뜨므로 아무도 모른다).
+     * //   정본 시험: SqlStatementInterningTest.readsOldFormSpanRowsThatStillCarryTheStatementInline
+     * //   ★이 자리의 정본 시험은 payload 쪽(LegacyRowFallbackTest)이 <b>아니다</b> — 여기서 되돌리는 것은
+     * //   본문이 아니라 SQL 원문이라, payload 시험은 이 갈래를 지워도 초록으로 남는다.
+     */
     public List<SpanDto> findSpans(String traceId) {
-        return jdbc.query(
+        List<SpanDto> spans = jdbc.query(
                 """
                         SELECT span_id, parent_span_id, service_name, operation_name,
                                span_kind, start_time, end_time, status, attributes_json
@@ -153,6 +187,87 @@ public class TraceQueryRepository {
                 spanRowMapper(),
                 traceId
         );
+        return resolveStatementRefs(spans);
+    }
+
+    /**
+     * [Phase R25] AC-25-02-4/AC-25-02-6 — 예약 키에 든 지문을 SQL 원문으로 되돌린다.
+     *
+     * <p>지문이 <b>하나도 없으면 여기서 끝낸다</b> — 질의도 새 객체 생성도 없어 옛 형태만 있는 응답은
+     * 오늘과 바이트가 같다.
+     *
+     * <p>행마다의 규칙 셋:
+     * <ul>
+     *   <li>{@code db.statement} 가 이미 있으면 <b>그대로 통과</b>(원문 우선 — 밖에서 온 값을 안 덮는다).</li>
+     *   <li>지문이 풀리면 <b>새 맵</b>을 만들어 예약 키를 빼고 원문을 넣는다. {@code parseAttributes} 가
+     *       돌려준 맵을 고치지 않는다({@code Map.of()} 는 불변이다).</li>
+     *   <li>안 풀리면 <b>키를 그대로 두고</b> 경고 한 줄. 자리표 문자열로 채우지 않는다 —
+     *       밖에서 넣은 값일 수 있어 무손실이 우선이다.</li>
+     * </ul>
+     */
+    private List<SpanDto> resolveStatementRefs(List<SpanDto> spans) {
+        Set<String> refs = new LinkedHashSet<>();
+        for (SpanDto span : spans) {
+            Object ref = span.attributes().get(IngestService.STMT_REF_ATTRIBUTE);
+            if (ref instanceof String s && !s.isBlank()) {
+                refs.add(s);
+            }
+        }
+        if (refs.isEmpty()) {
+            return spans;
+        }
+        Map<String, String> resolved = new LinkedHashMap<>();
+        List<String> list = new ArrayList<>(refs);
+        for (int start = 0; start < list.size(); start += HASH_IN_CHUNK_SIZE) {
+            List<String> slice = list.subList(start, Math.min(start + HASH_IN_CHUNK_SIZE, list.size()));
+            jdbc.query(
+                    "SELECT stmt_hash, statement FROM sql_statements WHERE stmt_hash IN ("
+                            + String.join(", ", Collections.nCopies(slice.size(), "?")) + ")",
+                    (RowCallbackHandler) rs -> resolved.put(rs.getString("stmt_hash"), rs.getString("statement")),
+                    slice.toArray());
+        }
+        List<SpanDto> out = new ArrayList<>(spans.size());
+        for (SpanDto span : spans) {
+            Object ref = span.attributes().get(IngestService.STMT_REF_ATTRIBUTE);
+            if (!(ref instanceof String hash) || hash.isBlank()) {
+                out.add(span);
+                continue;
+            }
+            if (span.attributes().containsKey(IngestService.DB_STATEMENT_ATTRIBUTE)) {
+                out.add(span);   // 원문 우선 — 양쪽 키가 다 있으면 원문을 쓴다.
+                continue;
+            }
+            String statement = resolved.get(hash);
+            if (statement == null) {
+                // 못 푼 참조 — 키를 지우지 않고 그대로 통과시킨다(밖에서 넣은 값일 수 있다).
+                log.warn("unresolved statement ref: spanId={} ref={}",
+                        sanitizeForLog(span.spanId()), sanitizeForLog(hash));
+                out.add(span);
+                continue;
+            }
+            Map<String, Object> merged = new LinkedHashMap<>(span.attributes());
+            merged.remove(IngestService.STMT_REF_ATTRIBUTE);
+            merged.put(IngestService.DB_STATEMENT_ATTRIBUTE, statement);
+            out.add(new SpanDto(span.spanId(), span.parentSpanId(), span.serviceName(),
+                    span.operationName(), span.spanKind(), span.startTime(), span.endTime(),
+                    span.status(), merged));
+        }
+        return out;
+    }
+
+    /**
+     * [Phase R25] 로그 위생 — 이 두 값은 인증 없는 입구가 정한 것이라 개행이 들 수 있다.
+     * {@code IngestService.sanitizeForLog} 와 같은 뜻이지만 그쪽은 {@code private} 이라 공개하지 않고
+     * 여기 한 줄로 둔다(새 공용 도구를 만들지 않는다 — 도구가 늘면 두 벌이 갈린다).
+     */
+    private static String sanitizeForLog(String raw) {
+        if (raw == null) {
+            return null;
+        }
+        String oneLine = raw.replace('\r', ' ').replace('\n', ' ');
+        return oneLine.length() <= LOG_VALUE_MAX_CHARS
+                ? oneLine
+                : oneLine.substring(0, LOG_VALUE_MAX_CHARS) + "[truncated]";
     }
 
     public boolean spanExists(String traceId, String spanId) {
@@ -164,13 +279,26 @@ public class TraceQueryRepository {
         return count != null && count > 0;
     }
 
+    /**
+     * [Phase R25] AC-25-01-1/AC-25-03-2 — 본문을 본문 표에서 되돌린다. 행 매퍼는 <b>안 바뀐다</b>
+     * (별칭 {@code body} 유지) — 새 행은 {@code pb.body}, 옛 행은 {@code p.body},
+     * 본문이 없는 행은 둘 다 NULL 이라 <b>오늘과 같은 값</b>이다.
+     *
+     * <p>// ★옛 형태 읽기 폴백 — 지우지 말 것.
+     * //   올린 뒤 약 이틀(retention.days=1 + 04:00 정리)간 body_hash 가 없는 옛 행이 남는다.
+     * //   이 갈래를 지우면 그 사이의 본문·SQL 이 <b>에러 없이 빈 값</b>으로 나온다(예외가 안 뜨므로 아무도 모른다).
+     * //   정본 시험: LegacyRowFallbackTest.oldFormPayloadRowReadsTheSameAsNewForm
+     */
     public List<PayloadDto> findPayloads(String spanId) {
         return jdbc.query(
                 """
-                        SELECT direction, content_type, body, size_bytes, truncated
-                        FROM payloads
-                        WHERE span_id = ?
-                        ORDER BY payload_id ASC
+                        SELECT p.direction, p.content_type,
+                               COALESCE(pb.body, p.body) AS body,
+                               p.size_bytes, p.truncated
+                        FROM payloads p
+                        LEFT JOIN payload_bodies pb ON pb.body_hash = p.body_hash
+                        WHERE p.span_id = ?
+                        ORDER BY p.payload_id ASC
                         """,
                 (rs, rowNum) -> new PayloadDto(
                         rs.getString("direction"),

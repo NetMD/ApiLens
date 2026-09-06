@@ -28,7 +28,7 @@ import {
   WINDOW_LABELS,
 } from '../../lib/instrumentThresholds';
 import type { SortAxis, WindowHours } from '../../lib/instrumentThresholds';
-import { classPackage } from '../../lib/format';
+import { classPackage, formatBytes } from '../../lib/format';
 import { formatAnalysisWindow } from '../../lib/time';
 import { ErrorState } from '../ErrorState';
 import { LoadingSkeleton } from '../LoadingSkeleton';
@@ -352,6 +352,29 @@ export function InstrumentAnalysis({ service, onBack }: Props): ReactNode {
             )}
           </p>
         )}
+        {/*
+          [Phase R25] T-R25-02/AC-25-05-3/AC-25-05-4 (C-R25-03 조건식 그대로) — 「고유 본문 합」 한 줄.
+          라벨 「고유 본문 합」은 **사용자 명시 확정**이라 못 바꾼다 (프리브리프 OQ-6 · 기획 §5.1 표).
+          자리는 설계 D-R25-19 가 지정한 T-15 줄 옆이다 (이 화면에 「요약 영역」이 원래 없다 — 기획 정정-1).
+
+          ⚠️ 조건은 세 개를 모두 본다: 결과가 있음 && 진행 중이 아님 && **값이 있음**.
+             `!value` 로 쓰면 0 이 사라져 「조회가 실패한 것」과 「정말 0 인 것」을 영영 못 가른다
+             (AC-25-05-4 · C-R25-04). 그래서 `!== undefined` 로만 판정한다.
+          ⚠️ 값이 없을 때 「—」 같은 자리표를 새로 만들지 않는다 (T-R25-03). 줄 자체를 안 그린다.
+          ⚠️ 판정을 `!== undefined` 로 둔 것은 설계 §11.3-3 지시 그대로다. 이 판정은 서버가 `null` 을
+             실어 보내는 경우를 「모름」으로 안 본다(그 경우 formatBytes(null) 이 `0 B` 를 돌려준다).
+             그래서 **서버 필드가 원시형 long 이어야 한다**는 것이 이 줄이 서는 전제다 —
+             설계 §5.5(c) 가 `COALESCE(SUM(u.b), 0)` 이라 null 이 안 나오는 것이 근거다.
+             서버가 이 필드를 `Long`(nullable)으로 바꾸면 이 줄의 판정도 함께 바꿔야 한다.
+          ⚠️ 새 컨트롤·새 문구를 만들지 않는다 (C-R25-01·C-R25-02 기준선). 바이트 표기는 lib/format.ts 1곳.
+        */}
+        {analysis !== undefined &&
+          !isAnalyzing &&
+          analysis.summary.uniquePayloadBytes !== undefined && (
+            <p className="mt-1 text-xs text-stone-500">
+              {`고유 본문 합 ${formatBytes(analysis.summary.uniquePayloadBytes)}`}
+            </p>
+          )}
       </section>
 
       {/* ── 인증 실패는 화면 전체 안내(기존 규격) ── */}

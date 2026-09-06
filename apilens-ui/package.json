@@ -1,7 +1,7 @@
 {
   "name": "apilens-ui",
   "private": true,
-  "version": "0.6.2",
+  "version": "0.7.0",
   "type": "module",
   "description": "ApiLens 운영자 대시보드 UI (React 19 + Vite 6 + TS strict)",
   "scripts": {

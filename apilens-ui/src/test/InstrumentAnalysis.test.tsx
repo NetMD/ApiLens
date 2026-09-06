@@ -16,7 +16,7 @@
 //   displaysProxyReasonWithRemoteGateAlternative  — [Phase R20] R20/AC-11-2·AC-12-1: 불가 사유 ⓐ + 대안 안내 ⓑ 2요소 문구 상시 노출
 // 반대 방향 lock-in 동사(hides*/rejects*/denies*) 0건.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router';
 import { InstrumentAnalysis } from '../components/instrument/InstrumentAnalysis';
@@ -141,6 +141,22 @@ function mockApi(orphanRatio: number): void {
     }
     if (url.includes('/v1/instrument/simulation')) {
       return Promise.resolve(jsonResponse(makeSimulation(orphanRatio)));
+    }
+    return Promise.resolve(jsonResponse({ error: 'unexpected' }, 500));
+  });
+}
+
+/**
+ * [Phase R25] 분석 응답만 갈아 끼우는 mock — 「고유 본문 합」 줄의 두 갈래(키 없음 / 0)를 재려고 둔다.
+ * 위 mockApi 는 상수 ANALYSIS 고정이라 응답을 바꿔 끼울 수 없다. 기존 mockApi 는 **안 고친다**
+ * (기존 13건이 그 함수를 쓰고 있어 손대면 이번 라운드 밖 시험이 흔들린다).
+ */
+function mockAnalysisOnly(analysis: AnalysisResponse): void {
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url =
+      typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+    if (url.includes('/v1/instrument/analysis')) {
+      return Promise.resolve(jsonResponse(analysis));
     }
     return Promise.resolve(jsonResponse({ error: 'unexpected' }, 500));
   });
@@ -351,5 +367,32 @@ describe('계측 분석 화면 — 임계 반응 · 절감/부작용 짝 · 확�
       ).toBeInTheDocument();
     });
     expect(screen.queryByText(/계측 제외 옵션을 아직 몰라요/)).toBe(null);
+  });
+
+  // [Phase R25] TS-R25-34 (AC-25-05-3/AC-25-05-4 · C-R25-03/C-R25-04) — 「고유 본문 합」 한 줄.
+  // Plan AC verbatim: "AC-25-05-4 화면은 **「값이 없다(모름)」와 「값이 0이다」를 다르게 다룬다.**
+  //   모름이면 안 그리고, 0이면 0으로 그린다. 둘을 같게 다루면 조회가 실패한 것과 정말 0인 것을 못 가른다."
+  //   (라벨 「고유 본문 합」은 사용자 명시 확정 — 못 바꿈)
+  // 한 시험 안에서 두 갈래를 잰다 — 같은 한 줄의 반대편 갈래라 따로 떼면 「무엇과 무엇이 달라야
+  // 하는지」가 시험 이름에서 사라진다. 설계 §9.4 의 신설 목록 1행(TS-R25-34)과 1:1 이다.
+  it('showsUniquePayloadBytesOnlyWhenTheServerSendsIt — TS-R25-34: 값이 없으면 안 그리고 0 이면 0 B 로 그린다', async () => {
+    // ⓐ 서버가 그 키를 안 실은 응답(= 모름). ANALYSIS 픽스처에는 uniquePayloadBytes 키가 없다.
+    //    선택 필드라 컴파일이 통과하고, 그 통과 자체가 「값 없음이면 안 그린다」의 첫 증거다.
+    mockAnalysisOnly(ANALYSIS);
+    renderScreen();
+    fireEvent.click(screen.getByRole('button', { name: '분석 실행' }));
+    await screen.findByLabelText('com.acme.batch.OrderSyncJob 선택'); // 결과가 다 그려진 뒤에 잰다
+    expect(screen.queryByText(/고유 본문 합/)).toBe(null);
+    // 자리표(「—」 등)를 새로 만들지 않았다는 것도 함께 본다 (T-R25-03).
+    expect(screen.queryByText('고유 본문 합 —')).toBe(null);
+
+    cleanup();
+    vi.restoreAllMocks();
+
+    // ⓑ 값이 0인 응답. 0 은 「모름」이 아니다 — `0 B` 로 그린다.
+    mockAnalysisOnly({ ...ANALYSIS, summary: { ...ANALYSIS.summary, uniquePayloadBytes: 0 } });
+    renderScreen();
+    fireEvent.click(screen.getByRole('button', { name: '분석 실행' }));
+    expect(await screen.findByText('고유 본문 합 0 B')).toBeInTheDocument();
   });
 });
