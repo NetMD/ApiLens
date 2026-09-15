@@ -315,8 +315,14 @@ export function DataManagementSection(): ReactNode {
         <div className="flex items-start justify-between gap-4 border-t border-stone-200 pt-4">
           <div>
             <p className="text-sm font-medium text-stone-900">전체 삭제</p>
+            {/* [R26/T-R26-25 ⓐ · 설계 §2-7 역방향 스캔 처분] 이번 라운드부터 [전체 삭제] 가
+                SQL 원문 표까지 비운다. 열거에 그 낱말을 안 더하면 **이 라운드가 만든 동작 때문에
+                화면이 거짓말**을 하게 된다. 낱말 하나만 더한다 — 나머지 문면은 그대로.
+                ★위 [지난 데이터 정리] 쪽 안내문은 일부러 안 고쳤다(설계 §2-7 처분). 그 문장은
+                  여전히 참이고, 거기에 회수를 덧붙이면 운영자가 몰라도 되는 내부 구조를
+                  화면에 끌어들인다. */}
             <p className="mt-1 text-xs text-stone-500">
-              모든 로그(trace · span · payload)를 삭제해요. 되돌릴 수 없어요.
+              모든 로그(trace · span · payload · SQL 원문)를 삭제해요. 되돌릴 수 없어요.
             </p>
             {/* [Phase R15] AC-B6-1/T-10 — 유도(미강제): 수신 중이면 일시정지 권유 텍스트만. 버튼 disabled 아님(enabled 유지). 사용자 명시 비협상 결정(D06 정리 미강제). CLAUDE.md '아키텍처 핵심 원칙'. */}
             {!paused && (

@@ -93,8 +93,10 @@ describe('Setup wizard — [R10] 회수 검증', () => {
         screen.getByText('ApiLens 가 모니터링할 사용자 앱(서비스/시스템) 의 이름이에요'),
       ).toBeInTheDocument();
     });
-    // [R10] AC-04-3 — 2차 보조 안내 + 예시 3개 박힘
-    expect(screen.getByText(/order-service, vams/)).toBeInTheDocument();
+    // [R10] AC-04-3 — 2차 보조 안내 + 예시 박힘 (계보 보존)
+    // [R26/AC-R26-46] 예시에서 실운영 이름 하나를 뺐다. 남은 두 개를 이어서 단언한다 —
+    // 낱말 하나만 보면 다른 자리의 같은 낱말에도 걸려서 이 줄을 실제로 봤는지 알 수 없다.
+    expect(screen.getByText(/my-api, order-service/)).toBeInTheDocument();
     // [R10] 회귀 가드 — R9 잔존 카피 0 hit
     expect(
       screen.queryByText('사용자 앱을 구분할 이름을 입력해 주세요 (영문/숫자/하이픈/언더스코어)'),
@@ -180,5 +182,64 @@ describe('Setup wizard — [R10] 회수 검증', () => {
     expect(
       screen.queryByText('agent jar 자동 추출 안 됨 — server 재빌드 후 다시 시도해 주세요'),
     ).not.toBeInTheDocument();
+  });
+
+  // [R26/AC-R26-45] (U2) AC 원문: "Setup 4단계 **복사 버튼과 알림 시험 1건** 추가.
+  // fallback 갈래 시험은 **이미 있으므로 새로 만들지 않는다**"
+  //
+  // 여기서 말하는 "이미 있는 fallback 갈래 시험 2건" = 바로 위 두 개
+  // (displaysFallbackWarningWhenAgentJarPathIsNull · hidesFallbackWarningWhenAgentJarPathIsPresent).
+  // 복사 실패(권한 거부) 갈래는 새로 만들지 않는다 — AC 가 "1건 추가" 로 못 박았다.
+  //
+  // 무엇을 눌러 보나: 4단계 [복사] 버튼을 실제로 눌러, SH-02 가 약속한 두 가지
+  // (버튼 라벨 변경 + 알림) 가 **둘 다** 나는지 본다. 하나만 보면 나머지 하나가 조용히
+  // 빠져도 초록으로 지나간다.
+  it('showsToastWhenTheSnippetCopyButtonIsClicked — Step 4 [복사] 클릭 시 알림 + 라벨 변경 (AC-R26-45)', async () => {
+    mockFetchOk('/Users/foo/.apilens/apilens-agent.jar');
+
+    // happy-dom 의 navigator.clipboard 대신 이 시험이 쓰는 대역을 끼운다.
+    // vi.restoreAllMocks() 는 defineProperty 로 바꾼 속성을 되돌리지 않으므로 finally 에서 직접 되돌린다.
+    const writeText = vi.fn(() => Promise.resolve());
+    const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true,
+    });
+
+    try {
+      const { Wrapper } = makeWrapper();
+      render(<Wrapper />);
+
+      // Step 1 → 2 → 3 → 4
+      fireEvent.click(screen.getByRole('button', { name: '다음' }));
+      const svcInput = await screen.findByLabelText('Service Name');
+      fireEvent.change(svcInput, { target: { value: 'my-api' } });
+      fireEvent.blur(svcInput);
+      fireEvent.click(screen.getByRole('button', { name: '다음' }));
+      await screen.findByText('Capture Options');
+      fireEvent.click(screen.getByRole('button', { name: '다음' }));
+
+      // 전제 단언 — 스니펫이 실제로 만들어져야 [복사] 가 살아 있다(빈 스니펫이면 disabled).
+      const copyButton = await screen.findByRole('button', { name: '스니펫 복사' });
+      expect(copyButton).toBeEnabled();
+
+      fireEvent.click(copyButton);
+
+      // SH-02 ① 알림
+      expect(await screen.findByText('붙여넣기용으로 복사했어요')).toBeInTheDocument();
+      // SH-02 ② 버튼 라벨 변경
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: '스니펫 복사' })).toHaveTextContent('복사됨');
+      });
+      // 클립보드에 실제로 스니펫이 넘어갔는지 — 빈 문자열을 복사하고 알림만 띄우는 갈래 차단.
+      expect(writeText).toHaveBeenCalledTimes(1);
+      expect(writeText.mock.calls[0]?.[0]).toContain('apilens-agent.jar');
+    } finally {
+      if (originalClipboard) {
+        Object.defineProperty(navigator, 'clipboard', originalClipboard);
+      } else {
+        Reflect.deleteProperty(navigator, 'clipboard');
+      }
+    }
   });
 });

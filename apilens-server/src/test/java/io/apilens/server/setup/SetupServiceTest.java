@@ -305,4 +305,47 @@ class SetupServiceTest {
                         List.of(new ServiceRegistration(""))
                 )));
     }
+
+    // ── [Phase R26] R26/AC-R26-29 — 입력 검증을 거부 방향으로만 넓힘 ──
+    //
+    //  AC-R26-29 원문: "Setup 서비스 배열 **상한 50** 초과 시 400 · 서버 주소는 호스트가 있어야 통과 ·
+    //  **빈 값·없는 값이 통과하던 기존 갈래는 그대로**".
+
+    /** 상한(50) 바로 위인 51개를 넣어 거부되는지 본다. 같은 요청에서 <b>경계값 50 은 통과</b>도 함께 잰다. */
+    @Test
+    void rejectsMoreServicesThanTheLimit() {
+        List<ServiceRegistration> fifty = java.util.stream.IntStream.range(0, 50)
+                .mapToObj(i -> new ServiceRegistration("svc-" + i))
+                .toList();
+        // 전제: 상한 자리(50)는 실제로 통과해야 아래 거부가 "상한 때문" 임이 확정된다.
+        assertTrue(service.complete(new SetupCompleteRequest("http://apilens-host:8765", fifty)).completed(),
+                "전제: 경계값 50 은 통과한다");
+
+        List<ServiceRegistration> fiftyOne = java.util.stream.IntStream.range(0, 51)
+                .mapToObj(i -> new ServiceRegistration("svc-" + i))
+                .toList();
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                () -> service.complete(new SetupCompleteRequest("http://apilens-host:8765", fiftyOne)));
+        assertTrue(e.getMessage().contains("50"),
+                "문면에 몇 개까지 되는지가 들어야 운영자가 몇 개를 줄일지 안다 — 실제: " + e.getMessage());
+    }
+
+    /**
+     * 호스트가 없는 주소를 거부한다. 접두만 보던 종전 검사는 {@code "http://"} 하나를 통과시켰다.
+     *
+     * <p>★같은 시험에서 <b>기존 통과 갈래가 그대로인지</b>도 잰다 — 빈 값과 없는 값은 여전히 통과한다
+     * (설치를 건너뛰는 경로라 이 라운드가 좁히지 않기로 한 자리다).
+     */
+    @Test
+    void rejectsAServerUrlWithoutAHost() {
+        assertThrows(IllegalArgumentException.class,
+                () -> service.complete(new SetupCompleteRequest("http://", null)));
+        assertThrows(IllegalArgumentException.class,
+                () -> service.complete(new SetupCompleteRequest("https:///traces", null)));
+
+        assertTrue(service.complete(new SetupCompleteRequest("", null)).completed(),
+                "빈 값은 여전히 통과한다(설치 건너뛰기 경로 보존)");
+        assertTrue(service.complete(new SetupCompleteRequest(null, null)).completed(),
+                "없는 값도 여전히 통과한다(설치 건너뛰기 경로 보존)");
+    }
 }

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="ApiLens">
+  <!-- 브라우저 탭 아이콘. 돋보기(렌즈) 안으로 호출 흐름이 왼쪽에서 오른쪽으로 지나간다. -->
+  <rect width="32" height="32" rx="7" fill="#1C1917"/>
+  <circle cx="14" cy="14" r="7.5" fill="none" stroke="#FAFAF9" stroke-width="2.4"/>
+  <path d="M19.6 19.6 L25.5 25.5" stroke="#FAFAF9" stroke-width="2.8" stroke-linecap="round"/>
+  <path d="M9.5 14 H18.5" stroke="#378ADD" stroke-width="2" stroke-linecap="round"/>
+  <circle cx="9.5" cy="14" r="2" fill="#1D9E75"/>
+</svg>

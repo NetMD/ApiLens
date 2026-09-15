@@ -91,6 +91,28 @@ class AuthWhitelistTest {
         assertFalse(AuthWhitelist.isWhitelisted(post("/v1/some/nested/endpoint")));
     }
 
+    /**
+     * [Phase R26] R26/AC-R26-30 — 경로에 {@code %} 가 들어오면 면제하지 않는다(보호).
+     *
+     * <p>AC-R26-30 원문: "인증 면제 경로에 {@code %} 가 들어오면 면제하지 않는다.
+     * 넣는 자리는 값 없음 검사 <b>다음</b> · {@code /v1/**} 신규 경로 무접촉".
+     *
+     * <p>★같은 시험에서 <b>값이 없을 때 오류가 안 나는지</b>도 잰다 — 검사를 값 없음 검사 <b>앞</b>에
+     * 넣었다면 여기서 터진다(자리 자체를 재는 단언이다).
+     */
+    @Test
+    void doesNotExemptAPathThatContainsAPercentSign() {
+        // 전제: 같은 경로의 이스케이프 없는 모양은 실제로 면제다 — 그래야 아래 false 가 % 때문임이 확정된다.
+        assertTrue(AuthWhitelist.isWhitelisted(get("/v1/setup/state")));
+
+        assertFalse(AuthWhitelist.isWhitelisted(get("/v1/setup/%2e%2e/traces")));
+        assertFalse(AuthWhitelist.isWhitelisted(get("/assets/%2e%2e/v1/traces")));
+        assertFalse(AuthWhitelist.isWhitelisted(post("/v1/spans%20")));
+
+        // 값이 없을 때(경로 null)는 오늘과 같이 보호로 떨어지고 오류가 안 난다 — 검사 자리 확인.
+        assertFalse(AuthWhitelist.isWhitelisted(new MockHttpServletRequest("GET", null)));
+    }
+
     /** [Phase K] AC-01-3 — /actuator/** (health 제외)은 보호(false). */
     @Test
     void protectsNonHealthActuatorEndpoints() {

@@ -156,7 +156,10 @@ public class IngestService {
 
     // [Phase R25] AC-25-01-2 — IN (?, …) 목록 한 번에 묶는 최대 개수. SQLite 의 바인딩 변수 한도(구버전 999)
     //   안쪽 안전 마진이고, 같은 파일의 SPAN_CHUNK_SIZE·RetentionCleanupService 의 500 관례와 같은 값이다.
-    private static final int HASH_IN_CHUNK_SIZE = 500;
+    // [Phase R26] R26/AC-R26-33 — ★쓰기와 읽기가 공유하는 **단일 거주지**다. R25 까지 읽는 쪽
+    //   (TraceQueryRepository)이 같은 값을 자기 파일에 따로 들고 있었고, 그러면 한쪽만 고치는 순간 갈린다.
+    //   STMT_REF_ATTRIBUTE 가 이미 같은 이유로 public 인 자리다 — 새 공용 클래스를 만들지 않고 그 전례를 따른다.
+    public static final int HASH_IN_CHUNK_SIZE = 500;
 
     // [Phase R17] EXT-003 anchor — V-02 생성자 4-인자 불변(사용자 명시 비협상 결정).
     //   협력자(트랜잭션 관리자·카운터)는 생성자 인자가 아니라 내부 필드/본문으로 얻는다.
@@ -175,6 +178,10 @@ public class IngestService {
     }
 
     // [Phase R17] FR-01 — @Transactional 제거: 상위 통짜 트랜잭션 대신 청크별 프로그래매틱 트랜잭션.
+    // [Phase R26] R26/AC-R26-27 — ★spanId 의 **형식 검사는 controller 가 한다**(IngestController 의
+    //   requireWellFormedSpanIds). 여기 validate() 는 "비어 있지 않은가" 만 본다 — agent 모듈 통합 시험이
+    //   이 메서드를 POJO 로 직접 부르고 그 spanId 가 16진수가 아니기 때문이다(agent 파일 무접촉이 비협상).
+    //   ⚠️ 이 메서드를 부르는 **새 생산 경로를 만들면 그 자리에도 같은 형식 검사를 붙여야 한다.**
     public IngestResponse ingest(IngestRequest request) {
         validate(request);
         long receivedAt = System.currentTimeMillis();
@@ -369,8 +376,14 @@ public class IngestService {
      * ① 개행({@code \r} {@code \n})을 공백으로 바꾼다 — 가짜 로그 줄 삽입 차단(로그 인젝션).
      *   이 WARN 이 유실률 기준선의 앵커라 <b>한 줄 단위</b>가 깨지면 대조가 틀린다.
      * ② {@value #ROOT_MESSAGE_MAX_CHARS} 자를 넘으면 잘라 내고 잘렸음을 표시한다.
+     *
+     * <p>// [Phase R26] R26/AC-R26-33 — ★이 도구의 <b>단일 거주지</b>다. R25 까지 읽는 쪽
+     * // ({@code TraceQueryRepository})이 같은 뜻의 복사본을 자기 파일에 따로 들고 있었고,
+     * // "그쪽은 private 이라 공개하지 않는다" 는 정당화가 붙어 있었다. 두 벌이면 한쪽만 고치는 순간 갈린다 —
+     * // <b>새 공용 클래스를 만드는 대신</b> 이 자리를 공개해서 쓰는 쪽이 이것을 부른다
+     * // ({@link #STMT_REF_ATTRIBUTE} 가 같은 이유로 이미 public 인 전례를 따른다).
      */
-    private static String sanitizeForLog(String raw) {
+    public static String sanitizeForLog(String raw) {
         if (raw == null) {
             return null;
         }
@@ -403,8 +416,13 @@ public class IngestService {
      * <p><b>로그 인젝션</b>: 마지막 {@code service=} 값은 agent 가 보내는 값이라 서버 통제 밖이다.
      * // [Phase R25] AC-25-04-1/AC-25-04-2 — ★<b>결정이 났다: 감싸는 쪽이다.</b> R24 까지 이 자리는
      * // "처방 선택이 아직 결정되지 않았다" 는 이유로 비어 있었고, 그래서 이 파일에 감싼 줄과 안 감싼 줄이
-     * // 공존했다. R25 가 인증 없는 입구와 그 예외 경로의 로그 인자를 <b>전수</b>로 {@link #sanitizeForLog}
+     * // 공존했다. R25 가 인증 없는 입구와 그 예외 경로에서 <b>이 파일의</b> 로그 인자를 {@link #sanitizeForLog}
      * // 로 감쌌다 — 새 클래스도 공용 도구도 만들지 않고 <b>이미 같은 파일에 있는 것</b>을 쓴다.
+     * // [Phase R26] R26/AC-R26-34 — ★범위를 <b>「이 파일의」로 좁혀 적는다.</b> 종전 문면은 "전수" 라
+     * //   같은 호출 사슬의 <b>다른 파일</b>까지 다 됐다는 뜻으로 읽혔다. 실제로 안 감싼 자리가 밖에 남아 있다
+     * //   ({@code IngestController} 의 config 미탑재 debug · {@code ApiKeyAuthFilter} 의 401 debug ·
+     * //   {@code InstrumentAnalysisService} 의 {@code service=} 두 줄 — 앞 둘은 기본 설정에서 안 찍히고
+     * //   뒤 둘은 인증이 필요한 경로라 지금 위험은 낮다). 다음 라운드가 "밖도 다 됐다" 로 안 읽게 한다.
      * // 앞머리 문구와 필드 이름은 안 바꾼다(과거 기록 대조의 기준점).
      *
      * <p>본문 전체가 {@code try-catch(Throwable)} 안이다 — <b>호스트로 예외가 새지 않는다</b> 는

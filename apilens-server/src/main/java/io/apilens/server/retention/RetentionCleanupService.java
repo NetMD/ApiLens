@@ -34,6 +34,7 @@ import java.util.Map;
 import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.LongSupplier;
 
 /**
  * Retention cleanup: deletes traces older than the resolved retention window,
@@ -188,14 +189,81 @@ public class RetentionCleanupService {
     static final int PAYLOAD_BODY_GC_BATCH_SIZE = 1_000;
 
     /**
-     * [Phase R25] AC-25-01-5 — 본문 정리 회전 수 상한(= 한 실행 최대 {@code 50 × 1,000} = 50,000행).
+     * [Phase R26] R26/AC-R26-21 — 본문 정리 회전 수 상한. <b>일상 제어에서 빠졌다</b>(50 → 5,000).
      *
-     * <p><b>왜 50 인가</b>: 하룻밤 대상 상한 실측 <b>18,028행</b>(2026-09-05 15:33 측정)의 2.8배다.
+     * <p>★<b>지금 상한의 주역은 {@link #PAYLOAD_BODY_GC_BUDGET_MS} 시간 예산</b>이고, 이 회전 상한은
+     * <b>예산 판정이 고장 나도 루프가 영원히 도는 것을 막는 두 번째 그물</b>이다. 예산 30초 안에 도는
+     * 회전은 실측 기준 약 319회(2026-09-09 실측 50,000행 4.7초 = 1,000행당 약 94 ms)라 5,000 에 못 닿는다.
      *
-     * <p>★<b>상한의 목적은 완주 보장이 아니라 쓰기 잠금 시간의 상한</b>이다. 도달하면 경고를 남기고
-     * <b>다음 실행이 잇는다</b> — 정리가 스캔 방식이라 밀려도 대상이 안 사라진다(멱등).
+     * <p>★<b>도달은 실패가 아니다</b>: 경고를 남기고 <b>다음 실행이 잇는다</b> — 정리가 스캔 방식이라
+     * 밀려도 대상이 안 사라진다(멱등). 그 경고 문면은 R25 그대로다(회전 상한이 없어지지 않았으므로
+     * 그 문장은 여전히 참이다). 예산 소진 경고는 <b>그 옆에 새 줄로</b> 더했다.
      */
-    static final int PAYLOAD_BODY_GC_MAX_ROUNDS = 50;
+    static final int PAYLOAD_BODY_GC_MAX_ROUNDS = 5_000;
+
+    /**
+     * [Phase R26] R26/AC-R26-21/R26/AC-R26-22 — 본문 정리 한 실행의 <b>시간 예산</b>(ms). 사용자 명시 결정(UA-2).
+     *
+     * <p><b>왜 30초인가</b> — 세 가지를 함께 본다:
+     * <ol>
+     *   <li><b>실측</b>: 2026-09-09 에 50,000행을 4.7초에 지웠다 = 1,000행당 약 94 ms. 예산 30초는
+     *       그 속도로 약 319회전 · 약 319,000행에 해당한다 — 하룻밤 대상 상한 실측 18,028행의 열 배가 넘는다.</li>
+     *   <li><b>사건</b>: v0.7.0 첫 밤에 이 루프의 <b>한 회전이 159,959 ms</b> 걸렸다(원인 미확정).
+     *       구간 로그(acquireMs/statementMs/commitMs)가 그때 없어서 어디였는지 못 갈랐다 — 지금은 있다.
+     *       회전 수 상한은 그런 밤에 <b>아무 도움이 안 됐다</b>(회전 0 이었다). 시간 예산은 다음 회전을
+     *       시작하지 않는 것으로 그 밤을 끊는다.</li>
+     *   <li><b>잠금 대기 상한 10초와의 관계</b>: ★<b>예산은 회전과 회전 사이에만 걸리므로 문장 하나의
+     *       잠금 시간은 못 막는다.</b> 한 문장이 10초를 넘겨 쥐면 그 사이 적재는 여전히 유실된다 —
+     *       예산이 막는 것은 "여러 회전이 쌓여 밤 정리가 길어지는 것" 이지 "한 문장이 오래 쥐는 것" 이 아니다.</li>
+     * </ol>
+     *
+     * <p>★<b>첫 회전은 예산과 무관하게 1회 돈다</b> — 예산이 0 이거나 아주 작아도 정리가 영영 안 도는
+     * 것을 막는다. 그래서 예산을 줄여도 <b>전진은 멈추지 않는다</b>(느려질 뿐이다).
+     */
+    static final long PAYLOAD_BODY_GC_BUDGET_MS = 30_000L;
+
+    /**
+     * [Phase R26] R26/AC-R26-01 — 참조 없는 SQL 원문 회수 한 회전이 지우는 지문 개수.
+     *
+     * <p>사용자 명시 결정(UA-3). {@code IngestService} 의 {@code HASH_IN_CHUNK_SIZE} · 이 파일의
+     * {@link #RETENTION_DELETE_BATCH_SIZE} 와 같은 값이다 — SQLite 바인딩 변수 한도(구버전 999) 안쪽
+     * 안전 마진(지문 500 + 표시점 1 = 501개).
+     */
+    static final int SQL_STMT_GC_BATCH_SIZE = 500;
+
+    /**
+     * [Phase R26] R26/AC-R26-05 — 참조 없는 SQL 원문 회수 한 실행의 시간 예산(ms). 사용자 명시 결정(UA-3
+     * 「별도 10초 미만」). {@link #PAYLOAD_BODY_GC_BUDGET_MS} 와 <b>공유하지 않는다</b> — 둘은 같은 밤에
+     * 잇달아 돌지만 서로의 몫을 갉아먹으면 어느 쪽이 밤을 길게 만들었는지 못 가린다.
+     *
+     * <p>★<b>예산이 안 걸리는 자리</b>: 훑기(깨진 행 세기 · 표시점 · 회수 후보 뽑기)에 쓴 시간은 예산에서
+     * 빼지 않는다. 빼면 훑기가 예산보다 오래 걸리는 큰 보관 환경에서 회전이 <b>0</b> 이 되어 회수가 영원히
+     * 안 돈다. 훑기 시간은 {@code sql statement gc scan:} 의 {@code scanMs} 로 관측한다.
+     */
+    static final long SQL_STMT_GC_BUDGET_MS = 8_000L;
+
+    /**
+     * [Phase R26] R26/AC-R26-04 — 삭제 문장의 재확인 서브질의가 보는 <b>표시점 이후 span</b> 행 수 상한.
+     *
+     * <p>★<b>이것이 회수 삭제 문장의 유일한 크기 의존 항이다.</b> 나머지(지문 목록 ≤500건의 기본 키 조회)는
+     * 원문 표 크기에 비례하지 표 전체를 훑지 않는다. 그래서 여기에만 상한을 건다.
+     *
+     * <p><b>수치 판정</b>: JSON 한 줄 해석 실측 <b>행당 약 1.27 마이크로초</b>(316,062 span 을 0.3~0.4초에
+     * 훑은 값). 상한까지 갔을 때 최악 = {@code 200,000 × 1.27 μs ≈ 254 ms} 이고, 잠금 대기 상한은
+     * {@code application.yml} 의 {@code busy_timeout=10000} 이다 — <b>여유 약 39배</b>.
+     *
+     * <p>넘으면 그 회전을 미루고 경고 한 줄을 남긴다. <b>틀리는 방향은 안전한 쪽</b>이다 —
+     * 원문이 남을 뿐이고 다음 밤이 잇는다.
+     */
+    static final int SQL_STMT_GC_RECHECK_MAX_NEW_SPANS = 200_000;
+
+    /**
+     * [Phase R26] R26/AC-R26-05 — 훑기가 한 번에 돌려받는 회수 후보 지문 목록의 개수 상한.
+     *
+     * <p>지문은 SHA-256 16진수 64자라 50,000건이면 메모리로 약 3.2 MB 다. 넘치는 몫은 <b>다음 밤이
+     * 잇는다</b> — 훑기 방식이라 밀려도 대상이 안 사라진다(멱등).
+     */
+    static final int SQL_STMT_GC_RECLAIMABLE_LIMIT = 50_000;
 
     private final JdbcTemplate jdbc;
     private final TransactionTemplate tx;
@@ -272,6 +340,12 @@ public class RetentionCleanupService {
         //   예외는 자체 try-catch 가 흡수하므로 아래 finalizeMaintenance 는 어떤 경우에도 실행된다.
         gcUnreferencedPayloadBodies();
 
+        // [Phase R26] R26/AC-R26-01 — ★본문 정리 **다음** · finalizeMaintenance **앞**, 정확히 1회.
+        //   순서가 뒤집히면 무엇이 무력화되나: 뒷정리보다 뒤에 두면 회수가 만든 free page 를 같은 밤이
+        //   못 돌려주고, 인자 없는 래퍼 안에 넣으면 그 자리는 회수 본문의 try 밖이라 예외가 뒷정리를 건너뛴다.
+        //   예외는 자체 try-catch 가 흡수하므로 아래 finalizeMaintenance 는 어떤 경우에도 실행된다.
+        gcUnreferencedSqlStatements();
+
         finalizeMaintenance(nowMs);
 
         log.info("retention cleanup finished: deletedTraces={} batches={} cutoffMs={}",
@@ -301,6 +375,15 @@ public class RetentionCleanupService {
         // [Phase R25] AC-25-01-5 — 고아 스윕이 payload 행을 지운 **뒤**라, 그 스윕이 만든 고아 본문까지
         //   같은 실행에서 걷힌다. 야간 경로와 대칭이고 실패 격리도 같다(자체 try-catch).
         gcUnreferencedPayloadBodies();
+
+        // [Phase R26] R26/AC-R26-02 — ★고아 스윕과 본문 정리가 끝난 **뒤** = 이 경로의 마지막 정리 단계.
+        //   순서가 뒤집히면 무엇이 무력화되나: 고아 스윕 앞에 두면 그 스윕이 아직 안 지운 span 이 원문을
+        //   붙잡고 있어 회수량이 줄어든다. 사용자 명시 결정(UA-3 「purge 에서는 마지막」).
+        //   ★이 경로가 가장 안전한 이유는 「spans 가 이미 비어 표시점이 0 이라서」가 **아니다**. 이 버튼은
+        //   수신 일시정지를 보지 않으므로, 수신이 살아 있으면 새 span 이 들어와 표시점은 0 이 아니다.
+        //   진짜 이유는 훑기에 rowid 조건이 없어 **전체 span** 을 보기 때문이다 — 그래서 방금 들어온 span 이
+        //   가리키는 원문은 애초에 회수 대상에서 빠진다.
+        gcUnreferencedSqlStatements();
 
         finalizeMaintenance(now);
 
@@ -472,19 +555,35 @@ public class RetentionCleanupService {
      * 이름·필드·로그 낱말도 그 봉인이 세는 것과 겹치지 않게 골랐다.
      */
     private void gcUnreferencedPayloadBodies() {
-        gcUnreferencedPayloadBodies(PAYLOAD_BODY_GC_BATCH_SIZE, PAYLOAD_BODY_GC_MAX_ROUNDS);
+        gcUnreferencedPayloadBodies(PAYLOAD_BODY_GC_BATCH_SIZE, PAYLOAD_BODY_GC_MAX_ROUNDS,
+                PAYLOAD_BODY_GC_BUDGET_MS, System::nanoTime);
     }
 
     /**
      * 위 메서드의 본문. 회전 크기·상한을 인자로 받는 <b>package-private</b> 갈래는 시험이 상한 도달 갈래를
      * 실제로 밟기 위한 자리다(상수값으로는 50,000행을 만들어야 해서 실물 시험이 불가능하다).
      * 운영 경로는 언제나 위 무인자 호출이고, 생성자 인자는 늘리지 않는다(진입점 시그니처 불변 봉인).
+     *
+     * <p>// [Phase R26] R26/AC-R26-21 — 이 2-인자 갈래는 <b>남긴다</b>. 예산을 사실상 무한으로 넘겨
+     * // 회전 상한 갈래만 밟게 하므로, R25 가 쓴 상한 도달 시험이 한 글자도 안 바뀐다.
      */
     void gcUnreferencedPayloadBodies(int batchSize, int maxRounds) {
+        gcUnreferencedPayloadBodies(batchSize, maxRounds, Long.MAX_VALUE, System::nanoTime);
+    }
+
+    /**
+     * [Phase R26] R26/AC-R26-21/R26/AC-R26-22/R26/AC-R26-25 — 시간 예산과 시계를 받는 본문.
+     *
+     * <p>★<b>시계를 인자로 받는 이유</b>: 시간 갈래 시험이 실제 시계에 안 기대게 하려고 <b>가짜 시계</b>를
+     * 넣는 자리다({@code Thread.sleep} 으로 예산을 소진시키는 시험은 느리고 결과가 흔들린다).
+     * <b>생성자 인자는 늘리지 않는다</b> — 진입점 시그니처 불변 봉인(위 무인자 갈래 주석과 같은 규율).
+     */
+    void gcUnreferencedPayloadBodies(int batchSize, int maxRounds, long budgetMs, LongSupplier nanoClock) {
         try {
-            long started = System.nanoTime();
+            long started = nanoClock.getAsLong();
             int deleted = 0;
             int rounds = 0;
+            boolean budgetExhausted = false;
             // [v0.7.0 첫 밤 관측 · 2026-09-06] 첫 야간 정리에서 이 루프의 한 회전이 159,959 ms 걸렸는데
             //   (deleted=0 · rounds=0), DB 사본에서 같은 문장은 같은 드라이버로 7~15 ms, 동시 writer 4개
             //   아래서도 108 ms 였다. 즉 시간은 문장이 아니라 tx.execute 안의 다른 자리(커넥션 확보·begin ·
@@ -492,9 +591,20 @@ public class RetentionCleanupService {
             //   그래서 회전마다 세 구간을 따로 잰다 — acquireMs(tx 진입→콜백 시작 = 커넥션 확보 + begin) ·
             //   statementMs(DELETE 한 문장) · commitMs(콜백 끝→tx 반환 = 커밋 + 체크포인트 시도).
             //   아래 요약 줄(deleted/rounds/elapsedMs)은 공개 문서가 인용하므로 문면을 바꾸지 않는다.
-            log.info("payload body gc start: batchSize={} maxRounds={}", batchSize, maxRounds);
-            while (rounds < maxRounds) {
+            // [Phase R26] R26/AC-R26-23 — 시작 줄은 **기존 두 필드를 그대로 두고 budgetMs 를 뒤에** 더했다
+            //   (공개 릴리스 노트가 maxRounds= 를 인용 중이다 — 필드를 빼면 그 인용이 끊긴다).
+            log.info("payload body gc start: batchSize={} maxRounds={} budgetMs={}", batchSize, maxRounds, budgetMs);
+            while (true) {
+                // [Phase R26] R26/AC-R26-22 — ★첫 회전(rounds == 0)은 판정 없이 돈다. 예산이 0 이어도
+                //   한 회전은 돌아 전진이 멈추지 않는다. 판정을 루프 머리로 올리면 예산 0 에서 0 회전이 된다.
                 if (rounds > 0) {
+                    if (elapsedMs(started, nanoClock) >= budgetMs) {
+                        budgetExhausted = true;
+                        break;
+                    }
+                    if (rounds >= maxRounds) {
+                        break;   // 두 번째 그물 — 예산 판정이 고장 나도 루프가 안 돈다.
+                    }
                     sleepQuietly(BATCH_YIELD_MS);   // 회전 사이 양보 — 배치 루프와 같은 관례.
                 }
                 long roundStarted = System.nanoTime();
@@ -526,14 +636,201 @@ public class RetentionCleanupService {
                 deleted += n;
                 rounds++;
             }
-            if (rounds >= maxRounds) {
+            // [Phase R26] R26/AC-R26-24 — 예산 소진 경고는 **새 줄로 더한다**. 아래 회전 상한 경고는
+            //   문면 그대로다(상한이 두 번째 그물로 남았으므로 그 문장은 여전히 참이다).
+            if (budgetExhausted) {
+                log.warn("payload body gc stopped at the time budget: elapsedMs={} rounds={} — the next run continues",
+                        elapsedMs(started, nanoClock), rounds);
+            } else if (rounds >= maxRounds) {
                 log.warn("payload body gc stopped at the round cap: rounds={} — the next run continues", rounds);
             }
             log.info("payload body gc: deleted={} rounds={} elapsedMs={}",
-                    deleted, rounds, (System.nanoTime() - started) / 1_000_000L);
+                    deleted, rounds, elapsedMs(started, nanoClock));
         } catch (Exception e) {
             log.error("payload body gc failed — the delete itself succeeded, the next run picks it up", e);
         }
+    }
+
+    /**
+     * [Phase R26] R26/AC-R26-01/R26/AC-R26-02 — <b>아무 span 도 더 안 가리키는 SQL 원문</b>을 되찾는다.
+     * 운영 경로의 단일 진입점이고, 야간 정리와 [전체 삭제] 둘 다 <b>이 무인자 갈래</b>를 부른다.
+     *
+     * <p>★<b>왜 읽기와 쓰기를 나눴나</b>(이 설계의 핵심): 참조가 열이 아니라 {@code spans.attributes_json}
+     * 안에 있어 인덱스를 못 건다(식 인덱스는 이 라운드의 비협상 금지다). 그래서 회수 후보를 정하는 훑기는
+     * <b>쓰기 잠금을 안 잡는 읽기 전용 자동 커밋</b>으로 돌리고, 삭제만 <b>짧은 쓰기 트랜잭션</b>으로 따로 돈다.
+     * 그 결과 <b>쓰기 잠금 시간이 표 전체 크기와 무관</b>해진다.
+     *
+     * <p>★<b>훑기와 삭제 사이에 들어온 span</b>은 훑기 시작 시점의 최대 rowid 를 표시점으로 삼아
+     * <b>그 표시점 이후 행만</b> 다시 확인한다. 비교를 {@code >} 가 아니라 <b>{@code >=}</b> 로 하는 이유는,
+     * 최대 rowid 행이 덮어쓰기 삽입되면 <b>같은 rowid 를 다시 받기</b> 때문이다 — 대가는 행 하나를 더 보는 것뿐이다.
+     *
+     * <p>★<b>한계 그 자리에 — rowid 재사용의 잔여 갈래</b>: 표시점을 잡은 뒤 rowid 꼭대기 쪽 span 여러 건이
+     * 지워지고 그 자리를 새 span 이 채우면, 그 새 행의 rowid 가 표시점보다 작아 재확인이 못 본다.
+     * <b>방아쇠는 사람이 누르는 [전체 삭제]({@link #purgeAll} · HTTP 스레드)와 겹칠 때</b>다.
+     * <b>예약 작업끼리는 안 겹친다</b> — 예약으로 도는 정리들은 스케줄러 스레드가 1개(기본값)라 차례로 돈다.
+     * 결과도 「일부가 빠진다」가 아니다. [전체 삭제]가 꼭대기까지 비우면 <b>살아남은 모든 행이 표시점 아래</b>가
+     * 되어 재확인 서브질의가 0행을 돌려준다 — 그 실행의 남은 회전 동안 <b>재확인 가드가 통째로 무력해진다</b>.
+     * 조건도 세 겹이 아니라 <b>사실상 한 겹</b>이다: ⓐ [전체 삭제]와 겹치기만 하면, ⓑ 그 자리를 채운 새 span 이
+     * 이미 표에 있던 원문을 가리키는 것과 ⓒ 그 원문이 훑기 시점에 참조 0 이던 것은 거의 자동으로 따라온다.
+     * <b>틀리는 방향은 위험한 쪽</b>이다(살아 있는 참조가 끊긴다). 피해는 데이터 손실이나 500 이 아니라
+     * 그 span 의 SQL 이 화면에 안 보이고 못 푼 참조 경고 한 줄이 남는 것이고, 같은 SQL 이 다시 들어오면
+     * 원문도 다시 생긴다. <b>근본 해소는 참조 계수 표를 두는 것</b>이라 스키마 변경을 동반한다 — 백로그다.
+     *
+     * <p><b>이 한계를 어떻게 처분했나</b> — [Phase R26] DF-R26-01 · 사용자 명시 결정(2026-09-15):
+     * <b>알고 내보낸다</b>. ① 운영 규칙 = [전체 삭제]는 <b>수신을 멈춘 상태에서만</b> 누르고 04:00 정리 창은
+     * 피한다. ② 회전마다 표시점을 다시 보는 가드와 그 경계 시험은 <b>다음 라운드 첫 묶음</b>에 넣는다
+     * (백로그 SEC-R26-04 · RA-R26-04).
+     *
+     * <p><b>독립 실패 구간</b>: 예외를 밖으로 안 던진다. {@code finalizeMaintenance} 는 <b>어떤 경우에도</b>
+     * 돈다 — 본문 정리({@link #gcUnreferencedPayloadBodies})와 <b>같은 모양</b>이다.
+     *
+     * <p><b>멱등</b>: 삭제만 하고 새로 넣는 문장이 없다. 두 번 돌려도 이미 지운 행은 다시 안 지워지고,
+     * 남은 몫은 다음 실행이 잇는다(훑기 방식이라 대상이 안 사라진다).
+     */
+    private void gcUnreferencedSqlStatements() {
+        gcUnreferencedSqlStatements(SQL_STMT_GC_BATCH_SIZE, SQL_STMT_GC_BUDGET_MS, System::nanoTime);
+    }
+
+    /**
+     * 위 메서드의 본문. 회전 크기·예산·시계를 인자로 받는 <b>package-private</b> 갈래는 시험이 예산 갈래를
+     * 실제로 밟기 위한 자리다. 운영 경로는 언제나 위 무인자 호출이고, <b>생성자 인자는 늘리지 않는다</b>
+     * (진입점 시그니처 불변 봉인).
+     *
+     * <p><b>다섯 걸음</b> — 순서가 뒤집히면 무엇이 무력화되는지 각 걸음 옆에 적었다.
+     */
+    void gcUnreferencedSqlStatements(int batchSize, long budgetMs, LongSupplier nanoClock) {
+        try {
+            long started = nanoClock.getAsLong();
+            log.info("sql statement gc start: batchSize={} budgetMs={}", batchSize, budgetMs);
+
+            // ② 원문 표가 비어 있으면(전체 삭제 직후·빈 설치) 훑기를 아예 안 한다.
+            if (countOf("SELECT COUNT(*) FROM sql_statements") == 0) {
+                log.info("sql statement gc: deleted={} rounds={} elapsedMs={}", 0, 0, elapsedMs(started, nanoClock));
+                return;
+            }
+
+            // ③ ★이 걸음은 ④ **앞**에 있어야 한다. 뒤로 가면 깨진 행 하나가 ④ 의 json_extract 를 통째로
+            //   오류로 끝내 회수가 '실패' 로 끝난다 — 깨끗한 건너뜀 + 경고라는 정책이 무력화된다.
+            //   json_valid 는 형식이 깨져도 오류를 안 내므로 이 문장 자체는 안전하다.
+            int malformed = countOf("""
+                    SELECT COUNT(*) FROM spans
+                     WHERE attributes_json IS NOT NULL
+                       AND json_valid(attributes_json) = 0
+                    """);
+            if (malformed > 0) {
+                // ★보수적 건너뜀: 원문을 **한 행도** 안 지운다. "깨진 행 = 참조 없음" 으로 읽으면
+                //   그 행이 가리키던 원문이 지워져 **살아 있는 참조가 끊긴다** — 무결성이 회수보다 앞선다.
+                log.warn("sql statement gc skipped: malformedAttributes={}", malformed);
+                return;
+            }
+
+            // ④ ★표시점을 훑기 **앞**에 잡아야 한다. 뒤로 가면 훑기 도중에 들어온 행이 표시점보다 작아져
+            //   재확인에서 빠지고, 그 순간 살아 있는 참조를 지운다.
+            long scanStarted = nanoClock.getAsLong();
+            long watermarkRowid = watermarkOf();
+            // 회수 후보 = 어떤 span 도 안 가리키는 원문. ★IS NOT NULL 은 장식이 아니라 판정식이다 —
+            //   빠지면 NULL 하나에 NOT IN 전체가 거짓이 되어 **조용히 0행**을 지우고 로그에는 deleted=0 만
+            //   남는다("참조 없는 원문이 없다" 와 구별이 안 된다).
+            List<String> reclaimable = jdbc.queryForList("""
+                    SELECT stmt_hash FROM sql_statements
+                     WHERE stmt_hash NOT IN (
+                           SELECT json_extract(attributes_json, '$."apilens.stmt.ref"')
+                             FROM spans
+                            WHERE json_extract(attributes_json, '$."apilens.stmt.ref"') IS NOT NULL
+                     )
+                     LIMIT ?
+                    """, String.class, SQL_STMT_GC_RECLAIMABLE_LIMIT);
+            log.info("sql statement gc scan: scanMs={} reclaimable={} watermarkRowid={}",
+                    elapsedMs(scanStarted, nanoClock), reclaimable.size(), watermarkRowid);
+
+            // ⑤ 회전 루프 — 예산은 **여기에만** 걸린다(훑기 시간은 예산 밖).
+            int deleted = 0;
+            int rounds = 0;
+            boolean budgetExhausted = false;
+            for (int from = 0; from < reclaimable.size(); from += batchSize) {
+                // ★첫 회전은 판정 없이 돈다 — 예산이 0 이어도 전진이 멈추지 않는다.
+                if (rounds > 0) {
+                    if (elapsedMs(started, nanoClock) >= budgetMs) {
+                        budgetExhausted = true;
+                        break;
+                    }
+                    sleepQuietly(BATCH_YIELD_MS);   // 회전 사이 양보 — 배치 루프와 같은 관례.
+                }
+                // ⑤-a 삭제 문장의 유일한 크기 의존 항에 상한을 건다.
+                //   ★전제: 이 검사는 바로 아래 삭제 트랜잭션 **밖**이라 **무른 상한**이다 — 재는 순간과
+                //   지우는 순간 사이에 들어온 적재만큼 넘을 수 있다. 그래도 결론은 성립한다. 2026-09-15
+                //   실측으로 잠금 대기 한도(10초)에 닿으려면 표시점 이후 약 1,400만 행이 필요한데,
+                //   이 상한을 통과시키는 값은 20만이다.
+                int newSpans = countOf("SELECT COUNT(*) FROM spans WHERE rowid >= ?", watermarkRowid);
+                if (newSpans > SQL_STMT_GC_RECHECK_MAX_NEW_SPANS) {
+                    log.warn("sql statement gc deferred the round: newSpansSinceScan={} cap={}"
+                            + " — the next run continues", newSpans, SQL_STMT_GC_RECHECK_MAX_NEW_SPANS);
+                    break;
+                }
+                List<String> chunk = reclaimable.subList(from, Math.min(from + batchSize, reclaimable.size()));
+                long roundStarted = nanoClock.getAsLong();
+                Integer n = tx.execute(status -> deleteReclaimableStatements(chunk, watermarkRowid));
+                log.info("sql statement gc round: round={} deleted={} recheckRows={} statementMs={}",
+                        rounds, n == null ? 0 : n, newSpans, elapsedMs(roundStarted, nanoClock));
+                deleted += n == null ? 0 : n;
+                rounds++;
+            }
+            if (budgetExhausted) {
+                log.warn("sql statement gc stopped at the time budget: elapsedMs={} rounds={}"
+                        + " — the next run continues", elapsedMs(started, nanoClock), rounds);
+            }
+            log.info("sql statement gc: deleted={} rounds={} elapsedMs={}",
+                    deleted, rounds, elapsedMs(started, nanoClock));
+        } catch (Exception e) {
+            log.error("sql statement gc failed — nothing was deleted, the next run picks it up", e);
+        }
+    }
+
+    /**
+     * [Phase R26] R26/AC-R26-04 — 회수 삭제 <b>한 문장</b>. 이 문장이 <b>쓰기 트랜잭션의 첫 문장</b>이다.
+     *
+     * <p>★첫 문장이 읽기면 SQLite(WAL)가 처음 쓰려 할 때 {@code busy_timeout} 을 안 부르고 즉시
+     * SQLITE_BUSY 를 돌려준다 — v0.7.0 첫 밤의 수신 유실이 바로 그 자리였다(적재 쪽 같은 규율 참조).
+     *
+     * <p>★<b>최상위 {@code DELETE … LIMIT} 을 쓰지 않는다</b>(SQLite 컴파일 옵션 의존). 회전 나누기는
+     * 자바 쪽 지문 목록이 한다 — 각 삭제 문장이 무엇을 지울지 미리 정해져 있어 잠금 시간이 예측 가능해진다.
+     *
+     * <p>★재확인 서브질의에 {@code json_valid} 가드를 <b>안 넣는다</b>. 넣으면 그것이 곧 금지된
+     * "깨진 행 = 참조 없음" 읽기가 된다. 안 넣으면 훑기 뒤에 들어온 깨진 행은 이 문장이 <b>실패</b>하고
+     * 아무것도 안 지운다 — 안전한 쪽이다.
+     */
+    private Integer deleteReclaimableStatements(List<String> chunk, long watermarkRowid) {
+        String placeholders = String.join(", ", Collections.nCopies(chunk.size(), "?"));
+        Object[] args = new Object[chunk.size() + 1];
+        for (int i = 0; i < chunk.size(); i++) {
+            args[i] = chunk.get(i);
+        }
+        args[chunk.size()] = watermarkRowid;
+        return jdbc.update("DELETE FROM sql_statements"
+                + " WHERE stmt_hash IN (" + placeholders + ")"
+                + " AND stmt_hash NOT IN ("
+                + "   SELECT json_extract(s.attributes_json, '$.\"apilens.stmt.ref\"')"
+                + "     FROM spans s"
+                + "    WHERE s.rowid >= ?"
+                + "      AND json_extract(s.attributes_json, '$.\"apilens.stmt.ref\"') IS NOT NULL"
+                + " )", args);
+    }
+
+    /** 표시점 — 훑기 시작 시점의 {@code spans} 최대 rowid. 빈 표면 0 이고 {@code rowid >= 0} 은 전체를 본다. */
+    private long watermarkOf() {
+        Long v = jdbc.queryForObject("SELECT COALESCE(MAX(rowid), 0) FROM spans", Long.class);
+        return v == null ? 0L : v;
+    }
+
+    /** {@code COUNT(*)} 한 값을 읽는다. 값이 없으면 0 — 셈이 null 로 새지 않게 한다. */
+    private int countOf(String sql, Object... args) {
+        Integer v = jdbc.queryForObject(sql, Integer.class, args);
+        return v == null ? 0 : v;
+    }
+
+    /** 나노 시각 두 점 사이를 밀리초로. 주입한 시계를 그대로 쓴다(시험이 가짜 시계를 넣는 자리다). */
+    private static long elapsedMs(long startedNanos, LongSupplier nanoClock) {
+        return (nanoClock.getAsLong() - startedNanos) / 1_000_000L;
     }
 
     /**

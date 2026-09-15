@@ -16,6 +16,7 @@
 package io.apilens.server.ingest;
 
 import io.apilens.common.IngestRequest;
+import io.apilens.common.Span;
 import io.apilens.server.instrument.config.ServiceInstrumentConfigService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.headers.Header;
@@ -43,6 +44,15 @@ public class IngestController {
 
     // [Phase R21] R21/AC-08-1 (R-02) — 무로그 catch 관측성용 로거(현행 slf4j 로거 부재라 신설).
     private static final Logger log = LoggerFactory.getLogger(IngestController.class);
+
+    /**
+     * [Phase R26] R26/AC-R26-28 — {@code spanId} 길이 상한(글자). 사용자 명시 결정(UA-8 「16진수 32자 이하」).
+     *
+     * <p>W3C Trace Context 의 span-id 는 16진수 <b>16자</b>이고 계측기도 그 값을 보낸다. 32 는 그 두 배로 잡은
+     * 여유다 — 계측기가 보내는 값을 거르지 않으면서, 고아 후보 목록의 64자 잘림(그 쪽 {@code MAX_ID_LENGTH})에
+     * <b>닿기 전에</b> 입구에서 끊는다.
+     */
+    static final int SPAN_ID_MAX_LENGTH = 32;
 
     private final IngestService service;
     // [Phase R15] AC-A2-1 — 수신 일시정지 상태 주입(controller 레이어 분기). 사용자 명시 비협상 결정(D02).
@@ -87,10 +97,67 @@ public class IngestController {
                     .header("Retry-After", "60")
                     .body(Map.of("error", "서버가 유지보수 중이라 잠시 수신을 멈췄습니다."));
         }
+        requireWellFormedSpanIds(request);
         IngestResponse response = service.ingest(request);
         // 202 — additive only(GT-3 재정의, Q-U3): 기존 두 필드 { accepted, traces } 형식 불변,
         // 새 필드 추가만 허용. instrumentConfig 는 부재 허용형. @ResponseStatus(ACCEPTED) 제거 후 ResponseEntity 통일.
         return ResponseEntity.accepted().body(attachInstrumentConfig(request, response));
+    }
+
+    /**
+     * [Phase R26] R26/AC-R26-27/R26/AC-R26-28 — {@code spanId} 형식 검사. <b>16진수 32자 이하</b>만 통과한다
+     * (사용자 명시 결정 UA-8). 밖에서 온 값이 그대로 고아 후보 목록·로그에 실리는 것을 입구에서 끊는다.
+     *
+     * <p>★<b>왜 {@code IngestService.validate()} 가 아니라 여기인가</b>: 적재 진입점 service 를
+     * <b>POJO 로 직접 부르는 agent 모듈 통합 시험</b>이 있고 그 시험의 spanId 는 16진수가 아니다
+     * ({@code AgentToServerIntegrationTest} 의 {@code "s-root"} 류). service 안에 넣으면 그 시험이 깨지는데,
+     * <b>agent 모듈 파일 무접촉</b>이 이 라운드의 비협상이다. 신규 의존·신규 판정은 진입점 service 가 아니라
+     * controller 레이어에 둔다 — R15 {@code pauseState} · R20 {@code instrumentConfigService} 와 같은 전례다.
+     * CLAUDE.md 'Build 설정 lessons §1'(shadow jar relocate 함정) 인용.
+     *
+     * <p>★★<b>{@code traceId} 로 넓히지 말 것</b>: 계측기의 기동 알림 span 은 traceId 가
+     * {@code "agent-startup-…"} 이라 <b>16진수가 아니다</b>({@code AgentMain} 의 hello span 조립부).
+     * 넓히면 운영 트래픽이 400 이 된다. "대칭을 맞추자" 는 이유로 넓히는 것이 정확히 그 함정이다.
+     *
+     * <p>★<b>한계 그 자리에</b>: 이 가드는 <b>HTTP 입구만</b> 덮는다. 앞으로 {@code IngestService.ingest()}
+     * 를 부르는 새 생산 경로가 생기면 그 경로는 안 덮이므로 <b>그 자리에도 같은 검사를 붙여야 한다</b>.
+     * 안 덮인 경로의 동작은 오늘과 같다(과잉 거부 0) — <b>틀리는 방향은 안전한 쪽</b>이다.
+     *
+     * <p>빈 값·없는 값·null 묶음은 <b>그냥 넘긴다</b> — 그 문면은 {@code IngestService.validate()} 가 이미
+     * 갖고 있고, 여기서 먼저 던지면 기존 400 메시지가 바뀐다. <b>거부 방향만 넓히고</b> 통과 갈래는 안 좁힌다.
+     */
+    private static void requireWellFormedSpanIds(IngestRequest request) {
+        if (request == null || request.spans() == null) {
+            return;
+        }
+        for (Span s : request.spans()) {
+            if (s == null) {
+                continue;
+            }
+            String id = s.spanId();
+            if (id == null || id.isBlank()) {
+                continue;
+            }
+            if (id.length() > SPAN_ID_MAX_LENGTH || !isHexadecimal(id)) {
+                throw new IllegalArgumentException(
+                        "spanId must be hexadecimal and at most " + SPAN_ID_MAX_LENGTH + " characters");
+            }
+        }
+    }
+
+    /**
+     * 손으로 쓴 16진수 판정 — <b>정규식을 쓰지 않는다</b>. 요청마다 패턴을 만들 필요가 없고,
+     * 이 파일에 정규식 폭주 표면을 새로 늘리지 않는다.
+     */
+    private static boolean isHexadecimal(String value) {
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            boolean hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+            if (!hex) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**

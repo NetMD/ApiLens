@@ -39,6 +39,13 @@ public class SetupService {
     // 영문/숫자/하이픈/언더스코어 — wizard UI 와 AgentOptionBuilder 와 동일 규약
     private static final Pattern SERVICE_NAME_PATTERN = Pattern.compile("^[A-Za-z0-9_-]+$");
 
+    /**
+     * [Phase R26] R26/AC-R26-29 — 설치 마법사가 한 번에 등록할 수 있는 서비스 개수 상한.
+     * 사용자 명시 결정(UA-11). 이 화면은 <b>사람이 손으로 채우는 자리</b>라 50 이면 넉넉하고,
+     * 상한이 없으면 무인증 입구가 아닌데도 한 번의 요청으로 임의 개수의 행을 만들 수 있다.
+     */
+    static final int SETUP_SERVICES_MAX = 50;
+
     private final SetupRepository repo;
 
     public SetupService(SetupRepository repo) {
@@ -98,6 +105,18 @@ public class SetupService {
                 && !(url.startsWith("http://") || url.startsWith("https://"))) {
             throw new IllegalArgumentException("serverUrl must start with http:// or https://");
         }
+        // [Phase R26] R26/AC-R26-29 — 서버 주소에 **호스트가 있어야** 한다. 접두만 보면 "http://" 하나가
+        //   그대로 통과해 설정 화면에 못 쓰는 값이 저장된다. ★기존 통과 갈래는 안 좁힌다 —
+        //   빈 값·null 은 위 skip 경로 그대로다. 주소 만들기가 실패하면 호스트 없음으로 본다.
+        if (url != null && !url.isBlank() && hostOf(url) == null) {
+            throw new IllegalArgumentException("serverUrl must include a host (예: http://192.168.0.10:8765)");
+        }
+        // [Phase R26] R26/AC-R26-29 — 서비스 배열 상한(사용자 명시 결정 UA-11). 문면에 **몇 개까지 되는지**를
+        //   적는다 — 숫자가 없으면 운영자가 몇 개를 줄여야 하는지 모른다. 거부 방향만 넓힌다.
+        if (req.services() != null && req.services().size() > SETUP_SERVICES_MAX) {
+            throw new IllegalArgumentException(
+                    "too many services — at most " + SETUP_SERVICES_MAX + " are allowed");
+        }
         if (req.services() != null) {
             for (ServiceRegistration r : req.services()) {
                 if (r == null || r.name() == null || r.name().isBlank()) {
@@ -107,6 +126,21 @@ public class SetupService {
                     throw new IllegalArgumentException("service name format invalid");
                 }
             }
+        }
+    }
+
+    /**
+     * [Phase R26] R26/AC-R26-29 — 주소에서 호스트를 꺼낸다. 못 꺼내면 {@code null}.
+     *
+     * <p>형식이 아예 주소가 아니거나({@code URISyntaxException}) 호스트가 비면 <b>호스트 없음</b>으로 본다 —
+     * 예외를 밖으로 던지지 않는 이유는 여기서 나는 오류의 뜻이 "주소가 아니다" 하나뿐이기 때문이다.
+     */
+    private static String hostOf(String url) {
+        try {
+            String host = new java.net.URI(url).getHost();
+            return (host == null || host.isBlank()) ? null : host;
+        } catch (java.net.URISyntaxException e) {
+            return null;
         }
     }
 

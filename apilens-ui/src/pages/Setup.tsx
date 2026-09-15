@@ -467,9 +467,14 @@ function Step2({ value, onChange, onBlur, error, onEnter }: Step2Props): ReactNo
       <p className="text-xs text-stone-500">
         ApiLens 가 모니터링할 사용자 앱(서비스/시스템) 의 이름이에요
       </p>
-      {/* [R10] AC-04-3 (D-H10-06 비협상) — 2차 보조 안내 + 예시 3개. */}
+      {/* [R10] AC-04-3 (D-H10-06 비협상) — 2차 보조 안내 + 예시. 계보 보존(원 결정 줄). */}
+      {/* [R26/AC-R26-46] AC 원문: "Setup 예시 문구가 `my-api, order-service` · 실운영 이름은
+          **이번에 여는 두 줄만** 고친다" (사용자 확정 UA-7). 예시 셋 중 실제 운영 서비스 이름
+          하나를 빼고 둘만 남겼다 — 공개 화면에 남의 배포 이름이 보일 이유가 없다.
+          D-H10-06 의 나머지 문면(해요체 1차 안내 · 이 줄의 앞머리)은 그대로다.
+          ★일괄 치환 금지 — 다른 파일의 같은 이름은 그 파일을 여는 라운드가 처리한다. */}
       <p className="text-xs text-stone-400">
-        영문/숫자/하이픈/언더스코어. 예: my-api, order-service, vams
+        영문/숫자/하이픈/언더스코어. 예: my-api, order-service
       </p>
       {error !== null && (
         <p role="alert" className="text-xs text-[var(--color-status-error)]">

@@ -486,4 +486,101 @@ class RetentionCleanupServiceTest {
                 "SELECT COUNT(*) FROM " + table + " WHERE trace_id = ?", Integer.class, traceId);
         return count == null ? 0 : count;
     }
+
+    // ── [Phase R26] R26/AC-R26-02/R26/AC-R26-03 — 회수가 두 경로에 각 1회 · 실패해도 뒷정리는 돈다 ──
+    //
+    //  AC-R26-02 원문: "[전체 삭제]에서도 SQL 원문 표가 비워진다 — 그 경로의 **마지막 정리 단계**".
+    //  AC-R26-03 원문: "회수가 던져도 **뒷정리 단계는 그대로 돈다** · 야간·전체 삭제 각 **정확히 1회**".
+
+    /**
+     * 야간 경로와 전체 삭제 경로를 <b>각각 한 번씩</b> 돌려 회수 요약 줄이 <b>각 1줄</b>인지 세고,
+     * 회수 안에서 <b>일부러 예외를 내어</b> 정리 시각이 그래도 갱신되는지 본다.
+     *
+     * <p>예외는 흉내가 아니라 <b>실제로</b> 낸다 — 원문 표를 지워 두면 회수의 첫 조회가 "그런 표 없음" 으로
+     * 던진다. 그 예외를 밖으로 던지면 그 밤의 시각 기록·공간 회수·WAL·통계가 통째로 빠진다.
+     */
+    @Test
+    void theStatementGcRunsOncePerPathAndFinalizeStillRunsWhenItThrows() {
+        long now = System.currentTimeMillis();
+
+        // ① 야간 경로 — 요약 줄 한 줄.
+        List<String> nightly = captureRetentionLines(() -> service.cleanup(now));
+        assertEquals(1, countLinesStartingWith(nightly, "sql statement gc:"),
+                "야간 경로에서 회수 요약 줄이 정확히 한 줄 — 실제: " + nightly);
+
+        // ② 전체 삭제 경로 — 요약 줄 한 줄.
+        List<String> purge = captureRetentionLines(service::purgeAll);
+        assertEquals(1, countLinesStartingWith(purge, "sql statement gc:"),
+                "전체 삭제 경로에서도 정확히 한 줄 — 실제: " + purge);
+
+        // ③ 회수가 실제로 던지게 만든 뒤에도 뒷정리는 돈다.
+        jdbc.execute("DROP TABLE sql_statements");
+        assertEquals(0, countTables("sql_statements"), "전제: 원문 표가 실제로 없어야 회수가 던진다");
+        long laterNight = now + 1_000L;
+
+        assertDoesNotThrow(() -> service.cleanup(laterNight), "회수가 던져도 밖으로 안 샌다");
+
+        Long after = jdbc.queryForObject("SELECT last_cleanup_at FROM retention_meta WHERE id = 1", Long.class);
+        assertNotNull(after, "회수가 던져도 정리 시각은 기록된다");
+        assertEquals(laterNight, after.longValue(), "그 밤의 시각이 그대로 기록된다");
+    }
+
+    /** 수신이 없는 상태에서 [전체 삭제]를 누르면 원문 표가 <b>0행</b>이 된다. */
+    @Test
+    void thePurgePathEmptiesTheStatementTableWhenIngestIsIdle() {
+        long now = System.currentTimeMillis();
+        insertTraceTree("t-live", now);
+        jdbc.update("INSERT INTO sql_statements (stmt_hash, statement, first_seen_at) VALUES (?, ?, ?)",
+                "a".repeat(64), "SELECT 1", now);
+        jdbc.update("INSERT INTO sql_statements (stmt_hash, statement, first_seen_at) VALUES (?, ?, ?)",
+                "b".repeat(64), "SELECT 2", now);
+        // 전제 둘 — 표가 실제로 차 있고, 그중 하나는 살아 있는 span 이 가리킨다(0 == 0 통과 방지).
+        assertEquals(2, countStatements(), "전제: 원문 표에 행이 실제로 둘 있어야 한다");
+        jdbc.update("UPDATE spans SET attributes_json = ? WHERE span_id = ?",
+                "{\"apilens.stmt.ref\":\"" + "a".repeat(64) + "\"}", "t-live-span-2");
+        Integer pointing = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM spans WHERE json_extract(attributes_json, '$.\"apilens.stmt.ref\"') IS NOT NULL",
+                Integer.class);
+        assertEquals(1, pointing == null ? 0 : pointing,
+                "전제: 살아 있는 span 이 실제로 원문 하나를 가리켜야 '전부 사라진다' 가 뜻을 가진다");
+
+        service.purgeAll();
+
+        assertEquals(0, countStatements(),
+                "AC-R26-02 판정: 전체 삭제 뒤 원문 표가 0행 — span 이 다 사라졌으니 남을 참조가 없다");
+    }
+
+    private int countStatements() {
+        Integer c = jdbc.queryForObject("SELECT COUNT(*) FROM sql_statements", Integer.class);
+        return c == null ? 0 : c;
+    }
+
+    private int countTables(String name) {
+        Integer c = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?", Integer.class, name);
+        return c == null ? 0 : c;
+    }
+
+    private static long countLinesStartingWith(List<String> lines, String prefix) {
+        return lines.stream().filter(m -> m.startsWith(prefix)).count();
+    }
+
+    /** 정리 로거가 남긴 INFO·WARN 줄을 모은다. 생산 코드에 시험 전용 필드를 더하지 않는다. */
+    private static List<String> captureRetentionLines(Runnable action) {
+        ch.qos.logback.classic.Logger logger =
+                (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(RetentionCleanupService.class);
+        ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> appender =
+                new ch.qos.logback.core.read.ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            action.run();
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+        }
+        return appender.list.stream()
+                .map(ch.qos.logback.classic.spi.ILoggingEvent::getFormattedMessage)
+                .toList();
+    }
 }

@@ -17,6 +17,45 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # [Phase R26] R26/AC-R26-39/R26/AC-R26-40 — 아래 조상 검사가 보려면 **전체 이력**이 필요하다.
+          #   기본값(얕은 받기)이면 merge-base 가 볼 커밋이 없어 검사가 **조용히 실패**한다 —
+          #   그 실패는 "통과" 와 구별이 안 되므로, 이 줄과 아래 검사 단계는 **한 쌍**이다. 하나만 넣지 말 것.
+          fetch-depth: 0
+
+      # 0. 그물 둘 — 긴 빌드 **앞**에서 실패를 낸다(Create Release 앞이라는 조건도 자동 충족).
+      # [Phase R26] R26/AC-R26-39 — ① 태그가 붙은 커밋이 main 의 조상인가.
+      #   지금까지 이것은 사람 기억에 맡겨져 있었다 — main 밖 커밋에 태그하면 검사망이 **0회** 돈다.
+      #   원격 참조 이름이 만들어지는지에 안 기대려고 FETCH_HEAD 로 본다.
+      - name: Verify the tagged commit is an ancestor of main
+        run: |
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor HEAD FETCH_HEAD; then
+            echo "ERROR: 태그가 붙은 커밋이 main 의 조상이 아닙니다."
+            echo "  main 에 밀린 커밋에 태그하세요 — 그래야 이 커밋이 검사망을 한 번은 지나갑니다."
+            exit 1
+          fi
+          echo "OK: tagged commit is an ancestor of main."
+
+      # [Phase R26] R26/AC-R26-39 — ② 릴리스 노트 파일이 실제로 있는가.
+      #   아래 Create Release 단계가 이 파일을 본문으로 읽는다. 없으면 릴리스 본문이 **빈 채로** 만들어진다.
+      - name: Verify the release notes file exists
+        # [Phase R26 · SEC-R26-01] 태그 이름은 **밖에서 정하는 값**이다. 워크플로 식({{ }} 형태)은
+        #   대본이 돌기 **전에** 글자로 치환되므로, 그것을 run: 안에 바로 쓰면 태그 이름에 든
+        #   쉘 특수문자가 그대로 명령이 된다(git 은 태그 이름에 ; | & $ ` ( ) 를 허용한다).
+        #   ★값은 env: 로 넘기고 대본에서는 "$TAG_NAME" 으로 읽는다 — 환경 변수 값은 다시 해석되지 않는다.
+        #   ★이 두 줄(env 와 아래 읽는 자리)은 **한 쌍**이다. 하나만 되돌리면 구멍이 다시 열린다.
+        #   회귀 가드: ci.yml 의 "Guard — no workflow expression inside a run: script".
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          NOTES="release-notes/${TAG_NAME}.md"
+          if [ ! -s "$NOTES" ]; then
+            echo "ERROR: $NOTES 가 없거나 비어 있습니다 — 릴리스 본문이 빈 채로 만들어집니다."
+            ls -la release-notes || true
+            exit 1
+          fi
+          echo "OK: $NOTES present."
 
       # 1. UI 빌드 (server jar 에 임베드되려면 dist 가 먼저 있어야 함)
       - name: Setup Node

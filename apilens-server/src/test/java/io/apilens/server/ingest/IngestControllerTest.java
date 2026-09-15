@@ -133,8 +133,12 @@ class IngestControllerTest {
 
     // ── [Phase R20] R20/AC-04-1/AC-04-2 — 202 config piggyback 단일 조립점 (B-14/B-22) ──
 
+    // [Phase R26] R26/AC-R26-28 — spanId 를 계측기가 실제로 보내는 모양(16진수 16자)으로 바꿨다.
+    //   종전 "s1" 은 형식 검사가 생기면서 400 이 된다. ★이것은 「시험을 고쳐 통과시킨 것」이 아니라
+    //   **입력 계약이 좁아진 짝**이다 — 그 좁힘 자체는 아래 rejects*/accepts* 세 시험이 정면으로 잰다.
+    //   traceId 는 안 바꾼다(검사 대상이 아니다 — 계측기의 기동 알림 traceId 가 16진수가 아니기 때문).
     private static final String ONE_SPAN_BODY = """
-            {"spans":[{"spanId":"s1","traceId":"t1","parentSpanId":null,"serviceName":"svc-a",
+            {"spans":[{"spanId":"00f067aa0ba902b7","traceId":"t1","parentSpanId":null,"serviceName":"svc-a",
             "operationName":"op","spanKind":"SERVER","startTime":1,"endTime":2,"status":"OK",
             "attributes":null,"payloads":[]}]}
             """;
@@ -192,5 +196,65 @@ class IngestControllerTest {
                 .andExpect(status().isAccepted())
                 .andExpect(jsonPath("$.accepted").value(1))
                 .andExpect(jsonPath("$.instrumentConfig").doesNotExist());
+    }
+
+    // ── [Phase R26] R26/AC-R26-27/R26/AC-R26-28 — spanId 형식 검사 (거부 방향만 넓힘) ──
+    //
+    //  AC-R26-28 원문: "spanId 는 **16진수 32자 이하**만 통과 · 그 밖은 400.
+    //  **계측기 0.6.0 이 보내는 값은 전부 통과**" (사용자 명시 결정 UA-8).
+    //
+    //  ★검사 자리는 controller 다 — service 에 넣으면 그것을 POJO 로 부르는 계측기 모듈 통합 시험이
+    //    깨지고, 그 파일은 이 라운드에서 손대지 않기로 한 자리다.
+
+    private static String oneSpanBodyWith(String spanId) {
+        return """
+                {"spans":[{"spanId":"%s","traceId":"t1","parentSpanId":null,"serviceName":"svc-a",
+                "operationName":"op","spanKind":"SERVER","startTime":1,"endTime":2,"status":"OK",
+                "attributes":null,"payloads":[]}]}
+                """.formatted(spanId);
+    }
+
+    /** 16진수가 아닌 값(종전 시험 픽스처가 쓰던 모양)을 HTTP 로 보내 400 인지 본다. 의도된 거부 = 정방향. */
+    @Test
+    void rejectsASpanIdThatIsNotHexadecimal() throws Exception {
+        mockMvc.perform(post("/v1/spans")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(oneSpanBodyWith("s1")))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").exists());
+
+        verify(service, never()).ingest(any(IngestRequest.class));   // 저장까지 안 간다
+    }
+
+    /** 33자(상한 32 바로 위) 16진수 → 400. 경계 바로 바깥. 의도된 거부 = 정방향. */
+    @Test
+    void rejectsASpanIdLongerThanTheLimit() throws Exception {
+        String thirtyThreeHex = "0".repeat(33);
+        mockMvc.perform(post("/v1/spans")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(oneSpanBodyWith(thirtyThreeHex)))
+                .andExpect(status().isBadRequest());
+
+        verify(service, never()).ingest(any(IngestRequest.class));
+    }
+
+    /**
+     * ★가장 중요한 축 — <b>계측기가 실제로 만드는 모양이 통과</b>해야 한다(16진수 16자).
+     * 이것이 빨개지면 운영 트래픽이 400 이 된다. 경계 위(32자 16진수)도 같은 요청에서 함께 본다.
+     */
+    @Test
+    void acceptsTheSixteenHexCharacterSpanIdTheAgentSends() throws Exception {
+        when(service.ingest(any(IngestRequest.class))).thenReturn(new IngestResponse(1, 1));
+
+        mockMvc.perform(post("/v1/spans")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(oneSpanBodyWith("00f067aa0ba902b7")))       // W3C 규격 16자
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.accepted").value(1));
+
+        mockMvc.perform(post("/v1/spans")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(oneSpanBodyWith("A".repeat(32))))           // 경계값 32자(대문자도 16진수)
+                .andExpect(status().isAccepted());
     }
 }

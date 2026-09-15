@@ -87,41 +87,65 @@ describe('formatJsonPretty', () => {
   });
 });
 
+// [R26/AC-R26-42] 기대값 쪽 줄바꿈 없는 공백. formatBytes 가 쓰는 상수를 그대로 가져오지 않고
+// 여기서 따로 적는다 — 함수가 보통 공백으로 되돌아가도 이 시험이 그것을 잡아야 하기 때문이다.
+// (같은 상수를 import 하면 양쪽이 같이 틀려도 초록으로 통과한다.)
+const NBSP = ' ';
+
 describe('formatBytes', () => {
   it('음수는 0 B로 fallback', () => {
-    expect(formatBytes(-1)).toBe('0 B');
+    expect(formatBytes(-1)).toBe(`0${NBSP}B`);
   });
 
   it('NaN은 0 B로 fallback', () => {
-    expect(formatBytes(NaN)).toBe('0 B');
+    expect(formatBytes(NaN)).toBe(`0${NBSP}B`);
   });
 
   it('0은 0 B', () => {
-    expect(formatBytes(0)).toBe('0 B');
+    expect(formatBytes(0)).toBe(`0${NBSP}B`);
   });
 
   it('1024 미만은 바이트 그대로', () => {
-    expect(formatBytes(512)).toBe('512 B');
+    expect(formatBytes(512)).toBe(`512${NBSP}B`);
   });
 
   it('1024는 1 KB (정수면 소수 생략)', () => {
-    expect(formatBytes(1024)).toBe('1 KB');
+    expect(formatBytes(1024)).toBe(`1${NBSP}KB`);
   });
 
   it('1536은 1.5 KB (소수 1자리)', () => {
-    expect(formatBytes(1536)).toBe('1.5 KB');
+    expect(formatBytes(1536)).toBe(`1.5${NBSP}KB`);
   });
 
   it('41943040은 40 MB', () => {
-    expect(formatBytes(41943040)).toBe('40 MB');
+    expect(formatBytes(41943040)).toBe(`40${NBSP}MB`);
   });
 
   it('53687091200은 50 GB (계약 예시 freedBytes)', () => {
-    expect(formatBytes(53687091200)).toBe('50 GB');
+    expect(formatBytes(53687091200)).toBe(`50${NBSP}GB`);
   });
 
   it('1 TB 단위까지 환산', () => {
-    expect(formatBytes(1099511627776)).toBe('1 TB');
+    expect(formatBytes(1099511627776)).toBe(`1${NBSP}TB`);
+  });
+
+  // [R26/AC-R26-42] (U3) AC 원문: "숫자와 단위 사이가 **줄바꿈 없는 공백** · 짝 시험의 공백
+  // 단언도 같이 바뀐다" — 위 단언들은 문자열 전체를 견주므로 어느 글자가 틀렸는지 안 알려준다.
+  // 이 시험은 공백 한 글자만 집어 코드포인트로 단언한다. 환산 갈래(1024 이상)와
+  // 바이트 갈래(1024 미만) 둘 다 본다 — 한쪽만 고치는 것이 실제로 있었던 빈틈이다.
+  it('usesANonBreakingSpaceBetweenTheNumberAndTheUnit — 숫자와 단위를 잇는 공백은 U+00A0', () => {
+    const converted = formatBytes(53687091200); // "50 GB" 갈래
+    const rawBytes = formatBytes(512); // "512 B" 갈래
+    const zero = formatBytes(0); // fallback 갈래
+
+    // 전제 단언 — 애초에 공백이 한 개씩 들어 있어야 아래 대조가 뜻을 가진다.
+    expect(converted.length).toBe(5);
+    expect(rawBytes.length).toBe(5);
+    expect(zero.length).toBe(3);
+
+    expect(converted.charCodeAt(2)).toBe(0x00a0);
+    expect(rawBytes.charCodeAt(3)).toBe(0x00a0);
+    expect(zero.charCodeAt(1)).toBe(0x00a0);
   });
 });
 

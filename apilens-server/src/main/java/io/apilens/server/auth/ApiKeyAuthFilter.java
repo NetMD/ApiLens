@@ -26,6 +26,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.lang.NonNull;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
@@ -74,8 +75,11 @@ public class ApiKeyAuthFilter extends OncePerRequestFilter {
         }
     }
 
+    // [Phase R26] R26/AC-R26-36 — 상위 타입({@code OncePerRequestFilter})이 이 세 인자를 @NonNull 로
+    //   선언하는데 이 재정의는 안 적고 있었다. 도구 진단 한 건을 없애는 표기이고 **동작 변경 0** 이다.
     @Override
-    protected void doFilterInternal(HttpServletRequest req, HttpServletResponse res, FilterChain chain)
+    protected void doFilterInternal(@NonNull HttpServletRequest req, @NonNull HttpServletResponse res,
+                                    @NonNull FilterChain chain)
             throws ServletException, IOException {
         // 1. 키 미설정 = 인증 비활성 → 항상 통과 (BL-02, R14-D08, AC-02-1/02-3).
         if (!props.isConfigured()) {

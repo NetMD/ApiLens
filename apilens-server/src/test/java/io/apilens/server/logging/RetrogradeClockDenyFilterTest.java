@@ -74,6 +74,41 @@ class RetrogradeClockDenyFilterTest {
         assertEquals(FilterReply.NEUTRAL, reply);
     }
 
+    // ── [Phase R26] R26/AC-R26-32 — 갈래 ② micrometer 음수 기록 경고 (사용자 명시 결정 UA-10) ──
+    //
+    //  AC-R26-32 원문: "micrometer {@code AbstractTimer amount -1} 경고를 **메시지 조건 거부로만** 막는다.
+    //  **로거 레벨 상향 금지** · 막은 사실을 관측 파일에 한 줄".
+    //
+    //  ground truth (dev 진입 게이트 실측 · micrometer 1.14.2 AbstractTimer 상수풀):
+    //    경고 본문 = "'amount' should not be negative but was: <N>" + 공용 후위 문장.
+    //    micrometer 는 렌더한 문자열 하나를 넘긴다({} 파라미터 없음) → format 인자 contains 판정이 유효.
+
+    private static final String MICROMETER_NEGATIVE_AMOUNT =
+            "'amount' should not be negative but was: -1 Note that subsequent logs will be logged at debug level.";
+    private static final String MICROMETER_OTHER_WARNING =
+            "Unable to apply meter filter 'example' — the meter was not registered.";
+
+    /** micrometer 로거 + 음수 기록 문구 → DENY (잡음 차단이 이 갈래의 정방향). */
+    @Test
+    void deniesTheMicrometerNegativeAmountWarning() {
+        FilterReply reply = filter.decide(null, logger("io.micrometer.core.instrument.AbstractTimer"),
+                Level.WARN, MICROMETER_NEGATIVE_AMOUNT, null, null);
+
+        assertEquals(FilterReply.DENY, reply);
+    }
+
+    /**
+     * 같은 로거의 <b>다른</b> 경고는 그대로 흐른다 — 로거 레벨을 올리지 않았다는 증거다.
+     * 레벨 상향으로 막았다면 이 단언이 빨개진다(불변식 11 과 같은 규율).
+     */
+    @Test
+    void keepsOtherMicrometerWarnings() {
+        FilterReply reply = filter.decide(null, logger("io.micrometer.core.instrument.AbstractTimer"),
+                Level.WARN, MICROMETER_OTHER_WARNING, null, null);
+
+        assertEquals(FilterReply.NEUTRAL, reply, "형제 신호 보존 — 메시지 조건 거부는 그 한 문구만");
+    }
+
     /** format == null 방어 — NEUTRAL (NPE 0). */
     @Test
     void keepsNullFormatNeutral() {

@@ -228,6 +228,64 @@ class PayloadBodyGcTest {
         assertEquals(0, countTraces(), "전체 지우기는 그대로 끝난다");
     }
 
+    // ── [Phase R26] R26/AC-R26-21/R26/AC-R26-22/R26/AC-R26-25 — 상한의 주역이 시간 예산으로 바뀐다 ──
+    //
+    //  AC-R26-22 원문: "예산 판정은 **회전이 시작할 때** 한다(문장 중간은 못 끊음) ·
+    //  **첫 회전은 예산과 무관하게 1회 돈다**".
+    //  AC-R26-25 원문: "시간 갈래 시험이 **실제 시계에 안 기댄다**".
+    //
+    //  ★<b>가짜 시계</b>로만 잰다 — {@code Thread.sleep} 0. 실제 시계에 기대면 느린 기계에서 결과가 흔들린다.
+
+    /**
+     * 예산이 다하면 <b>다음 회전을 시작하지 않고</b> 멈추되, 다음 실행이 나머지를 지운다(멱등).
+     *
+     * <p>가짜 시계가 회전마다 5초씩 흐른다. 예산은 6초다 — 회전 0 은 판정 없이 돌고(2행),
+     * 회전 1 시작 시점의 경과는 5초라 통과해 또 돌고(2행), 회전 2 시작 시점의 경과가 10초라 멈춘다.
+     * 남는 것은 <b>1행</b>이고 그것이 이 시험의 본체다.
+     */
+    @Test
+    void stopsAtTheTimeBudgetAndLetsTheNextRunFinishTheRest() {
+        for (int i = 0; i < 5; i++) {
+            insertUnreferencedBody("budget-body-" + i);
+        }
+        assertEquals(5, countUnreferencedBodies(), "전제: 안 가리키는 본문이 실제로 5개 있어야 한다");
+
+        // 회전당 2행 · 회전 상한은 넉넉히(예산만 잰다) · 가짜 시계는 부를 때마다 5초씩 흐른다.
+        service.gcUnreferencedPayloadBodies(2, 1_000, 6_000L, steppingClock(5_000L));
+
+        assertEquals(1, countUnreferencedBodies(),
+                "예산이 다해 2회전에서 멈춘다 — 1개가 남는 것이 정상 동작이다");
+
+        // 다음 실행이 이어서 지운다(스캔 방식이라 밀려도 대상이 안 사라진다).
+        service.gcUnreferencedPayloadBodies(2, 1_000, 6_000L, steppingClock(5_000L));
+        assertEquals(0, countUnreferencedBodies(), "다음 실행이 남은 몫을 지운다");
+    }
+
+    /**
+     * 예산이 <b>0</b> 이어도 <b>한 회전은 돈다</b> — 전진이 영영 안 멈추게 하는 자리다.
+     *
+     * <p>예산 판정을 루프 머리로 올리면 여기서 0행이 되고, 그러면 정리가 <b>영구히 0</b> 이 된다.
+     */
+    @Test
+    void runsTheFirstRoundEvenWhenTheBudgetIsZero() {
+        insertUnreferencedBody("zero-budget-body");
+        assertEquals(1, countUnreferencedBodies(), "전제: 안 가리키는 본문이 실제로 하나 있어야 한다");
+
+        service.gcUnreferencedPayloadBodies(1, 1_000, 0L, steppingClock(5_000L));
+
+        assertEquals(0, countUnreferencedBodies(), "예산 0 에서도 첫 회전은 돌아 대상이 지워진다");
+    }
+
+    /** 부를 때마다 정해진 만큼 흐르는 가짜 시계(나노 단위). 실제 시계를 안 쓴다. */
+    private static java.util.function.LongSupplier steppingClock(long stepMillis) {
+        long[] nanos = {0L};
+        return () -> {
+            long current = nanos[0];
+            nanos[0] += stepMillis * 1_000_000L;
+            return current;
+        };
+    }
+
     // ─── 픽스처 ──────────────────────────────────────────────────────────
 
     private IngestService newIngestService() {

@@ -23,6 +23,7 @@ import org.springframework.mock.web.MockHttpServletResponse;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -164,7 +165,11 @@ class ApiKeyAuthFilterTest {
 
         verify(chain, never()).doFilter(any(), any()); // 체인 미호출 (차단)
         assertEquals(401, res.getStatus());
-        assertTrue(res.getContentType().contains("application/json"));
+        // [Phase R26] R26/AC-R26-36 — 값이 있는지 먼저 단언한다. 없으면 여기서 NPE 가 나 "무엇이 틀렸는지"
+        //   대신 "어디서 터졌는지" 만 남는다. 도구 진단 한 건도 함께 사라진다.
+        String contentType = res.getContentType();
+        assertNotNull(contentType, "전제: 401 응답에 Content-Type 이 실제로 있어야 한다");
+        assertTrue(contentType.contains("application/json"));
         // 본문은 {"error":"unauthorized"} — 토큰/내부정보 비노출 (AC-01-4).
         assertEquals("{\"error\":\"unauthorized\"}", res.getContentAsString());
         assertFalse(res.getContentAsString().contains(TOKEN), "응답 본문에 토큰 비노출");

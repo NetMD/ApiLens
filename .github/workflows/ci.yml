@@ -9,6 +9,11 @@ on:
   push:
     branches: [main]
 
+# [Phase R26] R26/AC-R26-37 — 토큰 권한을 읽기로 좁힌다. 이 검사망은 저장소에 아무것도 안 쓴다
+#   (릴리스 생성은 release.yml 이 자기 job 에서 쓰기 권한을 따로 선언한다).
+permissions:
+  contents: read
+
 jobs:
   # ============================================================
   # Job 1: backend-test
@@ -50,6 +55,36 @@ jobs:
 
       - name: License header check (idempotent)
         run: bash scripts/apply-license-header.sh --check
+        continue-on-error: ${{ matrix.smoke }}
+
+      # [Phase R26 · SEC-R26-01 회귀 가드] 워크플로우 식을 run: 대본 안에 직접 쓰면
+      #   그 값이 대본이 돌기 전에 글자로 박혀 임의 명령이 된다(태그·가지 이름은 밖에서 정하는 값이다).
+      #   값은 env: 로 넘기고 대본에서는 "$VAR" 로 읽는다.
+      #   ★ 이 가드의 검사 대본은 찾을 무늬를 조각으로 이어 만든다 — 그래야 가드가 자기 선언문을 안 잡는다.
+      #   예상 hit 수 = 0 (0 이 「그런 자리가 없다」는 뜻이다 — 2026-09-15 수정 전에는 release.yml 한 줄이 잡혔다).
+      - name: "Guard — no workflow expression inside a run: script"
+        run: |
+          FOUND=$(awk '
+            BEGIN { pat = "$" "{" "{" }
+            /^[[:space:]]*run:[[:space:]]*[|>]/ { inrun=1; ind=index($0, "run:"); next }
+            /^[[:space:]]*run:[[:space:]]*[^|>[:space:]]/ {
+              if (index($0, pat) > 0) { print FILENAME ":" FNR ": " $0 }
+              inrun=0; next
+            }
+            {
+              if (inrun && $0 ~ /[^[:space:]]/) {
+                cur = match($0, /[^ ]/)
+                if (cur <= ind) { inrun = 0 }
+              }
+              if (inrun && index($0, pat) > 0) { print FILENAME ":" FNR ": " $0 }
+            }
+          ' .github/workflows/*.yml)
+          if [ -n "$FOUND" ]; then
+            echo 'ERROR: run: 대본 안에 워크플로우 식이 있습니다 — 값은 env: 로 넘기고 대본에서는 환경 변수로 읽으세요.'
+            echo "$FOUND"
+            exit 1
+          fi
+          echo "OK: no workflow expression inside any run: script."
         continue-on-error: ${{ matrix.smoke }}
 
       - name: Clean build + test
@@ -144,18 +179,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check apilens-ui presence
-        id: ui-check
-        run: |
-          if [ -d apilens-ui ]; then
-            echo "ui_present=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "ui_present=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::apilens-ui directory not yet present. CLAUDE.md D-04 보존: server build proceeds with warning."
-          fi
-
+      # [Phase R26] R26/AC-R26-38 — 「화면 디렉터리가 있는가」를 묻던 확인 단계와 그 조건문 여섯 곳을
+      #   **전수 제거**했다(G-R26-13 축). 화면은 이제 항상 있고, 없으면 그것 자체가 실패여야 한다 —
+      #   조건이 남아 있으면 디렉터리가 사라진 날 이 job 이 **아무것도 안 하고 초록**이 된다.
       - name: Setup Node
-        if: steps.ui-check.outputs.ui_present == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -163,27 +190,22 @@ jobs:
           cache-dependency-path: apilens-ui/package-lock.json
 
       - name: npm ci
-        if: steps.ui-check.outputs.ui_present == 'true'
         working-directory: apilens-ui
         run: npm ci
 
       - name: npm run lint
-        if: steps.ui-check.outputs.ui_present == 'true'
         working-directory: apilens-ui
         run: npm run lint
 
       - name: npm run test
-        if: steps.ui-check.outputs.ui_present == 'true'
         working-directory: apilens-ui
         run: npm run test
 
       - name: npm run build
-        if: steps.ui-check.outputs.ui_present == 'true'
         working-directory: apilens-ui
         run: npm run build
 
       - name: Upload UI dist
-        if: steps.ui-check.outputs.ui_present == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: ui-dist

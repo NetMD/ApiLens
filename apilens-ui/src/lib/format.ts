@@ -51,16 +51,32 @@ export function formatJsonPretty(s: string): string {
 }
 
 /**
+ * [R26/AC-R26-42] 숫자와 단위 사이에만 쓰는 줄바꿈 없는 공백(U+00A0).
+ *
+ * 좁은 폭에서 "50 GB" 가 "50" / "GB" 로 갈려 두 줄에 걸치는 것을 막는다. 눈에 안 보이는
+ * 글자라 실수로 지워지기 쉬워서 리터럴 대신 이스케이프 상수 한 곳에 둔다 — 이 파일이
+ * 표시 문자열을 만드는 단일 거주지이므로 상수도 여기 산다.
+ *
+ * ⚠️ 낱말과 낱말 사이(예: formatDuration 의 "1m 5s")에는 쓰지 않는다. 그 공백은 갈려도
+ *    되는 자리이고, 여기를 넓히면 줄바꿈이 필요한 곳까지 붙어 버린다.
+ */
+const NON_BREAKING_SPACE = ' ';
+
+/**
  * 바이트 수를 사람이 읽기 좋은 문자열로 포맷 (디스크 용량 표시용).
  * - 음수 / NaN / Infinity → "0 B" fallback
  * - 1024 미만 → "{n} B"
  * - 이후 KB / MB / GB / TB 로 1024 단위 환산, 소수 1자리 (정수면 소수 생략)
  *
  * 예: 0 → "0 B", 1536 → "1.5 KB", 53687091200 → "50 GB", 41943040 → "40 MB"
+ * (위 예시의 공백은 모두 NON_BREAKING_SPACE 다 — 화면에서는 보통 공백과 똑같이 보인다.)
+ *
+ * [R26/AC-R26-42] 숫자와 단위를 잇는 공백 세 자리(fallback · 바이트 · 환산)를 모두
+ * 줄바꿈 없는 공백으로 바꿨다. 환산 값만 바꾸면 "512 B" 가 여전히 갈린다.
  */
 export function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes < 0) return '0 B';
-  if (bytes < 1024) return `${Math.round(bytes)} B`;
+  if (!Number.isFinite(bytes) || bytes < 0) return `0${NON_BREAKING_SPACE}B`;
+  if (bytes < 1024) return `${Math.round(bytes)}${NON_BREAKING_SPACE}B`;
   const units = ['KB', 'MB', 'GB', 'TB'] as const;
   let value = bytes / 1024;
   let unitIdx = 0;
@@ -71,7 +87,7 @@ export function formatBytes(bytes: number): string {
   // 정수면 소수점 생략 (50 GB), 아니면 소수 1자리 (1.5 KB)
   const rounded = Math.round(value * 10) / 10;
   const text = Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
-  return `${text} ${units[unitIdx]}`;
+  return `${text}${NON_BREAKING_SPACE}${units[unitIdx]}`;
 }
 
 /**

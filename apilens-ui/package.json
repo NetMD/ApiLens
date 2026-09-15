@@ -1,7 +1,7 @@
 {
   "name": "apilens-ui",
   "private": true,
-  "version": "0.7.0",
+  "version": "0.7.1",
   "type": "module",
   "description": "ApiLens 운영자 대시보드 UI (React 19 + Vite 6 + TS strict)",
   "scripts": {
@@ -17,7 +17,7 @@
     "dagre": "^0.8.5",
     "react": "19.0.0",
     "react-dom": "19.0.0",
-    "react-router": "^7.15.0",
+    "react-router": "^7.18.3",
     "recharts": "2.15.0"
   },
   "devDependencies": {

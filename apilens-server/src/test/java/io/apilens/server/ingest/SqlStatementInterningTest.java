@@ -27,6 +27,10 @@ import io.apilens.server.masking.MaskingEngineHolder;
 import io.apilens.server.masking.MaskingRuleRepository;
 import io.apilens.server.query.TraceQueryRepository;
 import io.apilens.server.query.dto.SpanDto;
+import io.apilens.server.retention.RetentionCleanupService;
+import io.apilens.server.retention.RetentionProperties;
+import io.apilens.server.settings.SettingsRegistry;
+import io.apilens.server.settings.SettingsService;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -266,7 +270,262 @@ class SqlStatementInterningTest {
                 "다음 묶음의 SQL 이 정상으로 되돌아온다(유령 참조 0)");
     }
 
+    // ── [Phase R26] R26/AC-R26-01 ~ R26/AC-R26-04 — 참조 없는 SQL 원문 회수 ──
+    //
+    //  AC-R26-01 원문: "아무 span 도 더 안 가리키는 SQL 원문을 **밤 정리에서** 되찾는다."
+    //  AC-R26-04 원문: "회수 삭제 트랜잭션의 **첫 문장이 쓰기**이고, 재확인은 **표시점 이후 span 만** 본다."
+    //
+    //  ★잰 것은 **모양과 행 개수**이지 시간이 아니다 — 시간은 첫 밤 로그가 잰다.
+
+    /** 아무도 안 가리키는 원문을 심고 밤 정리를 돌려 표에서 사라지는지 센다. */
+    @Test
+    void reclaimsStatementsThatNoSpanPointsTo() {
+        service.ingest(new IngestRequest(List.of(dbSpan("s1", "t1",
+                Map.of(IngestService.DB_STATEMENT_ATTRIBUTE, SQL)))));
+        jdbc.update("DELETE FROM spans WHERE span_id = 's1'");   // 그 원문을 가리키던 유일한 span 을 없앤다
+        assertEquals(1, count("SELECT COUNT(*) FROM sql_statements"),
+                "전제: 회수하기 전에 원문 행이 실제로 하나 있어야 한다");
+        assertEquals(0, count("SELECT COUNT(*) FROM spans"),
+                "전제: 그 원문을 가리키는 span 이 실제로 없어야 한다");
+
+        newCleanupService().cleanup();
+
+        assertEquals(0, count("SELECT COUNT(*) FROM sql_statements"),
+                "AC-R26-01 판정: 아무도 안 가리키는 원문이 밤 정리 뒤에 사라진다");
+    }
+
+    /** 아직 가리키는 span 이 있는 원문은 <b>그대로 남는다</b>(끊어진 참조 0). */
+    @Test
+    void keepsStatementsThatAreStillReferenced() {
+        service.ingest(new IngestRequest(List.of(dbSpan("s-live", "t-live",
+                Map.of(IngestService.DB_STATEMENT_ATTRIBUTE, SQL)))));
+        String liveRef = storedRefOf("s-live");
+        assertNotNull(liveRef, "전제: 살아 있는 span 이 실제로 참조를 들고 있어야 한다");
+        assertEquals(1, count("SELECT COUNT(*) FROM sql_statements"), "전제: 원문 행이 하나 있다");
+
+        newCleanupService().cleanup();
+
+        assertEquals(1, count("SELECT COUNT(*) FROM sql_statements"), "가리키는 span 이 있으면 남는다");
+        assertEquals(SQL, attributesOf("t-live", "s-live").get(IngestService.DB_STATEMENT_ATTRIBUTE),
+                "끊어진 참조 0 — 읽기도 오늘과 같다");
+    }
+
+    /**
+     * ★삭제 트랜잭션의 <b>첫 문장</b>이 쓰기이고, 재확인이 <b>표시점 이후 span 으로 묶여</b> 있다.
+     *
+     * <p>세 가지를 한 시험에서 본다:
+     * <ol>
+     *   <li>회수 트랜잭션 안에서 처음 실행된 SQL 이 {@code DELETE} 로 시작한다 — 읽기로 시작하면
+     *       SQLite(WAL)가 처음 쓰려 할 때 잠금 대기를 안 부르고 즉시 물러나 <b>수신이 유실된다</b>.</li>
+     *   <li>그 문장에 {@code rowid >=} 와 {@code IS NOT NULL} 이 둘 다 있다 — 앞것이 없으면 표 전체를
+     *       다시 훑어 잠금이 길어지고, 뒷것이 없으면 NULL 하나에 <b>조용히 0행</b>이 된다.</li>
+     *   <li>훑기와 삭제 <b>사이에</b> 새 span 을 끼워 넣으면 그 원문이 안 지워진다(경쟁 갈래).</li>
+     * </ol>
+     */
+    @Test
+    void theStatementGcDeleteStartsWithAWriteAndRechecksOnlyNewSpans() throws Exception {
+        service.ingest(new IngestRequest(List.of(dbSpan("s-gone", "t-gone",
+                Map.of(IngestService.DB_STATEMENT_ATTRIBUTE, SQL)))));
+        String reclaimableRef = storedRefOf("s-gone");
+        jdbc.update("DELETE FROM spans WHERE span_id = 's-gone'");
+        assertEquals(1, count("SELECT COUNT(*) FROM sql_statements"),
+                "전제: 훑기 시점에 그 원문이 실제로 회수 후보여야 한다");
+
+        RetentionCleanupService cleanup = newCleanupService();
+        // 훑기(후보 목록 조회)가 끝난 **직후** 새 span 을 끼워 넣는다 — 경합을 타이밍이 아니라 순서로 만든다.
+        StatementGcSpy spy = new StatementGcSpy(jdbc, () ->
+                insertRawSpan("s-late", "t-late", "{\"apilens.stmt.ref\":\"" + reclaimableRef + "\"}"));
+        setCleanupJdbc(cleanup, spy);
+        setCleanupTx(cleanup, new FlaggingTx(new DataSourceTransactionManager(jdbc.getDataSource()), spy));
+
+        cleanup.cleanup();
+
+        // 트랜잭션마다 **처음 실행된 문장**을 모아 뒀다. 그중 원문 표를 건드리는 것이 회수의 트랜잭션이다.
+        String firstOfStatementTx = spy.firstStatementsPerTx.stream()
+                .filter(s -> s.contains("sql_statements"))
+                .findFirst()
+                .orElse(null);
+        assertNotNull(firstOfStatementTx,
+                "회수 트랜잭션의 첫 문장이 원문 표를 안 건드리면(읽기로 시작하면) 여기서 걸린다 — 실제: "
+                        + spy.firstStatementsPerTx);
+        String head = firstOfStatementTx.stripLeading().toUpperCase(java.util.Locale.ROOT);
+        assertTrue(head.startsWith("DELETE"),
+                "회수 트랜잭션의 첫 문장은 쓰기(DELETE)여야 잠금 대기가 산다 — 실제: " + firstOfStatementTx);
+        assertTrue(firstOfStatementTx.contains("rowid >="),
+                "재확인이 표시점으로 묶여 있어야 한다 — 실제: " + firstOfStatementTx);
+        assertTrue(firstOfStatementTx.contains("IS NOT NULL"),
+                "IS NOT NULL 이 빠지면 조용히 0행이 된다 — 실제: " + firstOfStatementTx);
+
+        assertEquals(1, count("SELECT COUNT(*) FROM spans WHERE span_id = 's-late'"),
+                "전제: 끼워 넣은 span 이 실제로 들어갔어야 경쟁 갈래를 잰 것이 된다");
+        assertEquals(1, count("SELECT COUNT(*) FROM sql_statements"),
+                "훑기 뒤에 들어온 span 이 가리키면 그 원문은 안 지워진다");
+    }
+
+    /**
+     * 형식이 깨진 {@code attributes_json} 행이 하나라도 있으면 그 실행을 <b>통째로 건너뛴다</b>.
+     *
+     * <p>깨진 행을 "참조 없음" 으로 읽으면 그 행이 가리키던 원문이 지워져 <b>살아 있는 참조가 끊긴다</b> —
+     * 참조 무결성이 회수보다 앞선다. 건너뛰어도 뒷정리(정리 시각 기록)는 그대로 돈다.
+     */
+    @Test
+    void theStatementGcSkipsTheWholeRunWhenAttributesJsonIsMalformed() {
+        service.ingest(new IngestRequest(List.of(dbSpan("s-gone", "t-gone",
+                Map.of(IngestService.DB_STATEMENT_ATTRIBUTE, SQL)))));
+        jdbc.update("DELETE FROM spans WHERE span_id = 's-gone'");
+        insertRawSpan("s-broken", "t-broken", "{not valid json");
+        // ★전제 둘 — 원문 표가 실제로 비어 있지 않아야 "0행 삭제" 가 정답과 구별된다.
+        assertEquals(1, count("SELECT COUNT(*) FROM sql_statements"),
+                "전제: 원문 표에 지울 수 있는 행이 실제로 있어야 한다");
+        assertEquals(1, count("SELECT COUNT(*) FROM spans WHERE json_valid(attributes_json) = 0"),
+                "전제: 형식이 깨진 행이 실제로 하나 있어야 한다");
+
+        RetentionCleanupService cleanup = newCleanupService();
+        ch.qos.logback.classic.Logger logger = retentionLogger();
+        ListAppender<ILoggingEvent> appender = attach(logger);
+        try {
+            cleanup.cleanup();
+        } finally {
+            detach(logger, appender);
+        }
+
+        assertEquals(1, count("SELECT COUNT(*) FROM sql_statements"),
+                "건너뛴 실행은 원문을 한 행도 안 지운다");
+        assertTrue(messages(appender, Level.WARN).stream()
+                        .anyMatch(m -> m.startsWith("sql statement gc skipped:")),
+                "건너뛴 사실이 경고 한 줄로 남는다 — 실제: " + messages(appender, Level.WARN));
+        assertNotNull(jdbc.queryForObject("SELECT last_cleanup_at FROM retention_meta WHERE id = 1", Long.class),
+                "건너뛰어도 뒷정리는 돈다(정리 시각이 기록된다)");
+    }
+
     // ─── 헬퍼 ────────────────────────────────────────────────────────────
+
+    /** 이 시험 묶음이 쓰는 정리 진입점. 같은 DB 파일을 본다(연결만 다르다). */
+    private RetentionCleanupService newCleanupService() {
+        return new RetentionCleanupService(jdbc,
+                new DataSourceTransactionManager(jdbc.getDataSource()),
+                new SettingsService(jdbc, new SettingsRegistry(), new RetentionProperties(30, "0 0 4 * * *")));
+    }
+
+    private static void setCleanupJdbc(RetentionCleanupService target, JdbcTemplate replacement) throws Exception {
+        Field f = RetentionCleanupService.class.getDeclaredField("jdbc");
+        f.setAccessible(true);
+        f.set(target, replacement);
+    }
+
+    private static ch.qos.logback.classic.Logger retentionLogger() {
+        return (ch.qos.logback.classic.Logger) LoggerFactory.getLogger(RetentionCleanupService.class);
+    }
+
+    private static void setCleanupTx(RetentionCleanupService target, TransactionTemplate replacement)
+            throws Exception {
+        Field f = RetentionCleanupService.class.getDeclaredField("tx");
+        f.setAccessible(true);
+        f.set(target, replacement);
+    }
+
+    /**
+     * 회수 훑기가 끝난 <b>직후</b> 주어진 일을 한 번 하고, <b>트랜잭션마다 처음 실행된 SQL</b> 을 모은다.
+     *
+     * <p>회수의 후보 목록 조회는 {@code queryForList(String, Class, Object...)} 한 자리뿐이라 그 호출을
+     * 훑기 종료 신호로 쓴다. 생산 코드는 한 글자도 안 바뀐다 — 시험 전용 주입이다.
+     */
+    private static final class StatementGcSpy extends JdbcTemplate {
+        private final Runnable afterScan;
+        private boolean scanned = false;
+        private final List<String> firstStatementsPerTx = new java.util.ArrayList<>();
+        private boolean inTx = false;
+        private String firstOfCurrentTx = null;
+
+        StatementGcSpy(JdbcTemplate delegate, Runnable afterScan) {
+            super(java.util.Objects.requireNonNull(delegate.getDataSource()));
+            this.afterScan = afterScan;
+        }
+
+        void txStarted() {
+            inTx = true;
+            firstOfCurrentTx = null;
+        }
+
+        void txEnded() {
+            inTx = false;
+            if (firstOfCurrentTx != null) {
+                firstStatementsPerTx.add(firstOfCurrentTx);
+            }
+        }
+
+        private void note(String sql) {
+            if (inTx && firstOfCurrentTx == null) {
+                firstOfCurrentTx = sql;
+            }
+        }
+
+        @Override
+        public <T> List<T> queryForList(String sql, Class<T> elementType, Object... args) {
+            note(sql);
+            List<T> out = super.queryForList(sql, elementType, args);
+            if (!scanned && sql.contains("FROM sql_statements")) {
+                scanned = true;
+                afterScan.run();
+            }
+            return out;
+        }
+
+        @Override
+        public int update(String sql, Object... args) {
+            note(sql);
+            return super.update(sql, args);
+        }
+
+        @Override
+        public int update(String sql) {
+            note(sql);
+            return super.update(sql);
+        }
+
+        @Override
+        public <T> T queryForObject(String sql, Class<T> requiredType, Object... args) {
+            note(sql);
+            return super.queryForObject(sql, requiredType, args);
+        }
+
+        @Override
+        public Map<String, Object> queryForMap(String sql, Object... args) {
+            note(sql);
+            return super.queryForMap(sql, args);
+        }
+    }
+
+    /** 트랜잭션의 시작·끝을 spy 에 알린다. 같은 DataSource 라 Spring 트랜잭션에 함께 묶인다. */
+    @SuppressWarnings("serial")
+    private static final class FlaggingTx extends TransactionTemplate {
+        private final StatementGcSpy spy;
+
+        FlaggingTx(PlatformTransactionManager tm, StatementGcSpy spy) {
+            super(tm);
+            this.spy = spy;
+        }
+
+        @Override
+        public <T> T execute(org.springframework.transaction.support.TransactionCallback<T> action) {
+            spy.txStarted();
+            try {
+                return super.execute(action);
+            } finally {
+                spy.txEnded();
+            }
+        }
+
+        @Override
+        public void executeWithoutResult(Consumer<TransactionStatus> action) {
+            spy.txStarted();
+            try {
+                super.executeWithoutResult(action);
+            } finally {
+                spy.txEnded();
+            }
+        }
+    }
 
     /**
      * [v0.7.0 첫 밤 정정 · 2026-09-06] 청크 트랜잭션의 <b>첫 문장은 쓰기</b>여야 한다.

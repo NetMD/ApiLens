@@ -286,8 +286,9 @@ curl -H "Authorization: Bearer $APILENS_TOKEN" http://localhost:8765/v1/traces
 - 일시정지 중 들어오는 trace 는 server 가 **503 으로 거부**하며 **저장되지 않습니다**. agent 는 해당 batch 를 drop 합니다.
 - **켜둔 채 잊어도 30분 뒤 자동으로 재개**됩니다 (안전장치). 유지보수는 수 분 내 짧게 끝내고 즉시 재개하는 것을 전제로 합니다.
 - 상태는 메모리에만 두므로 **server 를 재시작하면 항상 수신 중(false)으로 복귀**합니다 (DB 에 저장하지 않음).
+- ⚠️ **[전체 삭제]는 수신을 멈춘 상태에서 누르고, 밤 정리 시간(기본 04:00)은 피하세요** (v0.7.1+). 밤 정리가 안 쓰는 SQL 원문을 되찾는 몇 초와 [전체 삭제]가 겹치면, 그사이 새로 들어온 흐름 수십 건의 SQL 원문이 상세 화면에서 잠시 안 보일 수 있습니다. **기록 자체는 하나도 잃지 않습니다** — 같은 SQL 이 다시 들어오면 저절로 복구됩니다. 겹치는 갈래를 코드에서 막는 보완은 아직 들어 있지 않아, 이 운영 규칙으로 피합니다.
 
-> **Maintenance mode** lets you pause ingest (without stopping your monitored services) so disk optimization (VACUUM) and cleanup run without write-lock contention. Toggle it from the "데이터 관리" section on `/settings`. While paused, `POST /v1/spans` returns `503 Retry-After: 60` and incoming traces are **not stored**. A 30-minute max-pause cap auto-resumes ingest if you forget. The state is in-memory only — a server restart always resumes ingest.
+> **Maintenance mode** lets you pause ingest (without stopping your monitored services) so disk optimization (VACUUM) and cleanup run without write-lock contention. Toggle it from the "데이터 관리" section on `/settings`. While paused, `POST /v1/spans` returns `503 Retry-After: 60` and incoming traces are **not stored**. A 30-minute max-pause cap auto-resumes ingest if you forget. The state is in-memory only — a server restart always resumes ingest. ⚠️ **Pause ingest before pressing [전체 삭제] (purge), and avoid the nightly cleanup window (04:00 by default)** — if a purge overlaps the few seconds in which the nightly sweep reclaims unreferenced SQL statements, the SQL text of a few dozen traces that arrive in that window may be missing from the detail view for a while. Nothing is lost, and the text comes back the next time the same statement is ingested.
 
 ---
 
@@ -307,7 +308,7 @@ curl -H "Authorization: Bearer $APILENS_TOKEN" http://localhost:8765/v1/traces
 - **돌려받은 디스크 공간은 영구적이지 않습니다** — 정리·최적화로 회수한 공간은 트래픽이 늘면 다시 그만큼 채워집니다. 파일 크기를 계속 낮게 유지하려면 보관 기간을 줄이거나 계측량 자체를 줄이는 편이 근본적입니다. 오래 밀려 있던 빈 공간을 한 번에 돌려받는 절차는 [API 문서](./docs/api.md) 의 「밀린 빈 공간을 한 번에 돌려받기」 절에 있습니다
 - **고아 기록이 생기는 것 자체를 막지는 못합니다** — 흐름 요약을 저장하지 못하면 그 흐름의 기록만 남아 어디에도 안 붙는 「고아 기록」이 됩니다. 가장 큰 원인이던 저장 경합은 없앴지만 다른 이유(디스크 부족·비정상 종료 등)는 남아 있고, 그렇게 생긴 고아는 **자동 정리가 이틀에 걸쳐 치우는 방식**입니다 — 즉시 사라지지 않습니다. 설정 페이지의 「요약 저장 실패」 누계가 0 이 아니면 그 밤에 그런 흐름이 있었다는 뜻입니다
 - **같은 본문을 한 번만 저장하는 것의 효과는 「응답 내용이 얼마나 자주 바뀌는가」에 달려 있습니다** — v0.7+ 는 같은 요청·응답 본문을 저장소 전체에서 한 번만 담습니다. 같은 내용이 반복해서 들어오는 환경(폴링 응답 등)일수록 많이 줄고, **매번 다른 내용이 들어오는 환경에서는 거의 안 줄어듭니다.** 줄어드는 비율을 미리 약속할 수 없어 각자의 환경에서 재 보셔야 합니다. 그리고 줄어드는 것은 **새로 들어가는 양**이라 파일 크기가 그날 바로 줄지는 않습니다 — 이미 쓴 페이지는 아래 항목대로 밤 정리와 빈 공간 회수가 평소 속도로 돌려줍니다
-- **SQL 원문 표는 지금 지우지 않습니다 — 종류 수만큼 자라기만 합니다** — v0.7+ 는 span 속성 안의 SQL 원문을 별도 표에 한 번만 담습니다. 이 표는 **서로 다른 SQL 의 종류 수만큼만** 늘고 대개 배포할 때만 늘어서, 이 버전에서는 정리 기능을 두지 않았습니다(이 프로젝트 운영 환경에서 측정 시 57 종 · 43 KB — 2026-09-05 15:33). 다만 앱이 문자열을 이어 붙여 SQL 을 만들면(`IN (?,?,?)` 의 물음표 개수가 매번 다른 형태 등) 종류가 계속 늘 수 있고, 그러면 이 표는 **줄어들지 않고 자라기만 합니다**
+- **SQL 원문 표는 어느 흐름도 더 안 가리키는 원문만 되찾습니다** — v0.7+ 는 span 속성 안의 SQL 원문을 별도 표에 한 번만 담습니다. v0.7.1+ 는 그 표에서 **아무 기록도 더 가리키지 않게 된 원문**을 밤 정리와 [전체 삭제]에서 되찾습니다. 참조가 남아 있는 원문은 그대로 남으므로, 이 표는 **지금 보관 중인 기록이 쓰는 SQL 의 종류 수만큼** 남습니다(바이트가 아니라 종류 수입니다). 앱이 문자열을 이어 붙여 SQL 을 만들면(`IN (?,?,?)` 의 물음표 개수가 매번 다른 형태 등) 종류가 빠르게 늘 수 있습니다 — **배포할 때만 느는 것이 아닙니다.** 이 프로젝트 운영 환경에서는 배포가 없던 8일 동안 하루 약 50 종씩 늘어 **527 종**이 됐습니다(2026-09-14 23:28 · 운영 DB 를 읽기 전용으로 조회해 셌습니다). ★줄어든 양을 견줄 때는 **v0.7.1 첫 밤 이후 값끼리만** 비교하세요 — 그 이전 값과 직접 빼면 회수가 없던 기간이 섞입니다
 - **수집기가 멈춰 있는 동안에는 그 사실을 스스로 알릴 수 없습니다** — 수집이 한동안 끊겼다가 다시 들어오면 그 구간(직전에 마지막으로 받은 시각과 그 사이 공백)을 수집기 로그에 `ingest resumed:` 한 줄로 남깁니다. 다만 이것은 **나중에 되짚기 위한 기록이지 무슨 일이 나면 알려 주는 장치가 아닙니다.** 수집기 프로세스가 아예 없던 구간은 **다시 켜진 뒤에야** 드러납니다 — 그 표시를 만들어 주는 것이 바로 그 프로그램이기 때문입니다. 공백이 10분 미만이거나 처음 등록된 서비스면 줄이 안 남는 것도 정상입니다. **수집기가 계속 떠 있는지는 바깥에서 지켜보세요** (프로세스 관리자·헬스 체크 등)
 
 ---
@@ -320,7 +321,7 @@ curl -H "Authorization: Bearer $APILENS_TOKEN" http://localhost:8765/v1/traces
 - **화면 성능** — 대량 데이터에서 차트가 부드럽게 흐르도록 개선
 - **인증 보강** — TLS 종단·ingest 토큰·세션 기반 인증
 - **agent 보강 후보** — JDBC 파라미터 이름 기반 마스킹(컬럼 이름 추적), `@Async` 비동기 경로 ([CHANGELOG](./CHANGELOG.md) Unreleased 후보 참조)
-- **저장량 계속 줄이기** — 옛 형태로 쌓인 행이 다 사라진 뒤 쓰지 않게 된 본문 열을 정리하고, SQL 원문 표가 계속 커지는 환경이 확인되면 그때 정리 방식을 정합니다 (위 [현재 한계](#현재-한계--current-limitations) 참조)
+- **저장량 계속 줄이기** — 옛 형태로 쌓인 행이 다 사라진 뒤 쓰지 않게 된 본문 열을 정리하고, 바인딩 개수만 다른 같은 SQL 을 한 벌로 접을지 검토합니다 (위 [현재 한계](#현재-한계--current-limitations) 참조)
 
 ---
 

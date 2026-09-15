@@ -101,6 +101,13 @@ logging:
   #   유실률 기준선 비교처가 된다(로그 파일 grep). Spring Boot 기본 롤링(파일당 10MB, 이력 cap) 적용.
   file:
     name: logs/apilens.log
+  # [Phase R26] R26/AC-R26-31 — 회전 파일 보존 기간. 사용자 명시 결정(UA-9).
+  #   이 키가 없으면 Spring Boot 기본 7일이라, 첫 밤 로그가 일주일 뒤에 사라진다 —
+  #   실제로 09-06 첫 밤 로그가 09-14 에 이미 없었다. 판정에 쓰는 원본이 사라지는 자리다.
+  #   ★파일당 10MB 기본 상한(total-size-cap 무설정)은 그대로 둔다 — 늘리는 것은 디스크 계획이 함께 필요하다.
+  logback:
+    rollingpolicy:
+      max-history: 30
   level:
     root: INFO
     # [Phase R20] R20/AC-09-1 — DEBUG → INFO (로그 위생, Q-3③). hikari 로거 레벨은 무접촉 —

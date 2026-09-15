@@ -46,7 +46,7 @@ import java.util.List;
  * {@code Statement.setQueryTimeout(n)} 은 그 값을 <b>busy(잠금 대기) timeout</b> 으로만 쓰고
  * 쿼리 실행을 끊지 않는다(2초로 걸어 둔 쿼리가 51초 동안 완주). 그래서 이 파일은
  * {@code setQueryTimeout} 을 부르지 않는다 — 부르면 이 커넥션의 잠금 대기 시간만 바뀌고
- * (연결 URL 의 {@code busy_timeout=5000}) 얻는 것은 없다. 상한은 나머지 방어선으로 유지한다:
+ * (연결 URL 의 {@code busy_timeout=10000}) 얻는 것은 없다. 상한은 나머지 방어선으로 유지한다:
  * 유한 창(1/6/24시간) · 집계 행 상한 · 재귀 깊이 상한 · 동시 실행 1건 · 게이트 점유 상한.
  */
 @Repository
@@ -273,6 +273,22 @@ public class InstrumentAnalysisRepository {
      * <p>★<b>한계 그 자리에</b>: <b>옛 행은 행마다 별개 묶음</b>이라 개별 본문으로 센다
      * ({@code 'row:' || payload_id} 열쇠). 그래서 올린 뒤 약 이틀간 이 값이 <b>실제보다 크게</b> 나온다.
      * 틀리는 방향은 <b>절감이 덜 되어 보이는 안전한 쪽</b>이다. 옛 행이 사라지면 저절로 정확해진다.
+     *
+     * <p>// [Phase R26] R26/AC-R26-33 — ★폴백 주석 세 요소 중 R25 가 안 적은 ②③ 을 채운다:
+     * // ② <b>이 갈래({@code COALESCE(p.body_hash, 'row:' || p.payload_id)} 와
+     * //    {@code COALESCE(pb.body_bytes, length(...))})를 지우면 옛 형태 행의 값이 오류 없이 빠진다</b> —
+     * //    예외가 안 나므로 화면에는 그냥 작은 숫자로 보이고 아무도 모른다.
+     * // ③ <b>정본 시험</b>: {@code InstrumentAnalysisRepositoryTest.countsASharedBodyOnceInTheUniqueBytesSum}
+     * //    과 {@code …countsEachOldFormRowSeparatelyEvenWhenTheBodiesAreIdentical}
+     * //    (그 갈래를 깨면 이 두 시험이 빨개진다 — R25 QA 돌연변이 실측).
+     *
+     * <p>// [Phase R26] R26/AC-R26-33 — ★<b>비용 축</b>: 이 문장은 분석 요청마다 <b>한 번 더</b> 돌고,
+     * // 그 요청은 <b>15초 데드라인</b> 안에서 돈다(초과하면 504 + 「구간을 좁혀 주세요」).
+     * // 옛 형태 행이 남아 있는 동안이 가장 비싸다 — R25 실측(합성 1/7 규모·따뜻한 값)에서 순위 질의와
+     * // 이 질의의 합이 옛 형태 100% 구간에서 0.204 s → 0.733 s(약 3.6배)였고, 옛 행이 사라진 뒤에는
+     * // 0.327 s(약 1.6배)였다. <b>틀리는 방향은 안전한 쪽</b>이다(504 + 안내이고 짧은 창은 그대로 돈다).
+     * // 판정 명령: 서버 로그 {@code instrument analysis done: … elapsedMs=} 의 <b>최댓값 &lt; 15000</b>,
+     * // 또는 데드라인 초과 로그 0줄. ★이 질의를 매 요청마다 돌 것인가의 재검토는 <b>별개 항목</b>이다.
      *
      * <p>본문이 없는 행은 값이 NULL 이라 {@code SUM} 이 건너뛴다(0 과 같은 결과).
      */

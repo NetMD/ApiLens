@@ -15,7 +15,6 @@
  */
 package io.apilens.server.retention;
 
-import io.apilens.server.settings.SettingsRegistry;
 import io.apilens.server.settings.SettingsService;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -72,7 +71,9 @@ class RetentionOptimizeTest {
     //
     //  ★ 위 3건(기존 hasEnoughDisk)은 **한 글자도 안 고친다** — 그쪽은 전체 VACUUM 용이고
     //    optimizeDatabase() 전용으로 남는다 (R22/AC-01-4 · R22/AC-01-9 회귀 무변경).
-    //    아래 3건은 예산 크기에 맞는 **별도 가드**의 경계다. 두 가드를 섞어 쓰지 말 것.
+    //    아래 **4건**은 예산 크기에 맞는 **별도 가드**의 경계다. 두 가드를 섞어 쓰지 말 것.
+    // [Phase R26] R26/AC-R26-36 — 개수를 3 에서 4 로 고쳤다(실물을 세어 맞춤). 종전 표기는
+    //   네 번째 시험(한 점 외삽 대신 상계를 요구하는 경계)이 나중에 붙으면서 낡은 값이 됐다.
 
     /**
      * [Phase R22] R22/AC-01-4 경계 — 가용 == 필요 → 허용({@code >=}, true). 정방향.

@@ -111,7 +111,9 @@ class OpenApiDocsIntegrationTest {
         // [Phase R25] AC-25-08-2 — bump(0.6.3 → 0.7.0) 동반 정정. 이번에도 같은 모양으로 한 건 빨개진 뒤
         //   고쳤다(실측: expected 0.6.3 / actual 0.7.0). ★위 머리 주석의 버전 리터럴은 지웠다 —
         //   같은 값이 두 자리에 있으면 한 자리만 고치는 편집이 나머지를 조용히 낡게 만든다.
-        assertEquals("0.7.0", info.get("version").asText(), "info.version must track the Gradle build version");
+        // [Phase R26] AC-R26-48 — bump(0.7.0 → 0.7.1) 동반 정정. 이번에는 **빨개지기 전에** 같은 접촉에서
+        //   함께 올렸다(build.gradle.kts 의 version 줄에도 그 사실을 적어 두었다).
+        assertEquals("0.7.1", info.get("version").asText(), "info.version must track the Gradle build version");
         assertEquals("ApiLens API", info.get("title").asText());
     }
 

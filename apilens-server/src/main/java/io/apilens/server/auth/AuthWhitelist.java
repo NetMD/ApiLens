@@ -60,6 +60,16 @@ final class AuthWhitelist {
         if (path == null) {
             return false;
         }
+        // [Phase R26] R26/AC-R26-30 — 면제 판정은 **원문 경로로만** 한다. percent 이스케이프가 섞이면
+        //   면제하지 않는다(%2e%2e 류가 컨테이너 정규화를 거쳐 면제 접두와 다르게 읽히는 것을 끊는다).
+        //   ★값 없음 검사 **다음**이다 — 앞에 넣으면 값이 없을 때 여기서 오류가 난다.
+        //   면제 범위를 **좁히는 방향**만이다. 신규 /v1/** 경로는 안 건드린다.
+        //   ★한계 그 자리에: 정적 자산 파일 이름에 % 가 들어 있으면 그 파일이 면제 밖으로 나가 화면이
+        //     깨진다 — **틀리는 방향이 위험한 쪽**이다. 빌드 산출물 이름은 지문이 붙은 영숫자라 지금은 0 이고,
+        //     화면 딥링크(/settings · /traces/{지문})에도 % 가 없다. 자산 이름 규칙을 바꾸면 여기를 다시 본다.
+        if (path.indexOf('%') >= 0) {
+            return false;
+        }
         // 1. setup 묶음 — /v1/setup/** 전체 면제 (정확 4 endpoint, prefix 로 일괄).
         if (path.startsWith(SETUP_PREFIX)) {
             return true;

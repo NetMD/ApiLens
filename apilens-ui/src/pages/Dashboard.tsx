@@ -155,7 +155,14 @@ export function Dashboard(): ReactNode {
       return (
         <div className="space-y-4">
           {filterBar}
-          <LoadingSkeleton variant="chart" />
+          {/* [R26/AC-R26-43] 차트 자리 표시를 h-80 래퍼로 감싼다. 값은 아래 Suspense fallback
+              (R21/AC-04-3) 과 같은 h-80 이고, 그쪽이 본보기다 — 맨몸 스켈레톤은 min-h-64(256px)
+              라 실물 산점도(h-80=320px) 로 바뀌는 순간 64px 만큼 자리가 튄다.
+              ★목록 스켈레톤(바로 아래 variant="list")은 일부러 그대로 둔다 — 행 수에 따라
+              높이가 변해서 고정할 실물 값이 없다. */}
+          <div className="h-80">
+            <LoadingSkeleton variant="chart" />
+          </div>
           <LoadingSkeleton variant="list" />
         </div>
       );

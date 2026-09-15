@@ -56,13 +56,11 @@ public class TraceQueryRepository {
             new TypeReference<>() {
             };
 
-    // [Phase R25] AC-25-02-4 — IN (?, …) 목록을 한 번에 묶는 최대 개수. SQLite 바인딩 변수 한도(구버전 999)
-    //   안쪽 안전 마진이고, IngestService 쪽 같은 이름의 상수와 같은 값이다(관례 통일).
-    private static final int HASH_IN_CHUNK_SIZE = 500;
-
-    // [Phase R25] AC-25-04-1 — 로그 한 줄에 싣는 외부 문자열의 길이 상한(문자).
-    //   IngestService 의 ROOT_MESSAGE_MAX_CHARS 와 같은 값이다.
-    private static final int LOG_VALUE_MAX_CHARS = 512;
+    // [Phase R26] R26/AC-R26-33 — ★상수·도우미의 **두 벌을 없앴다**. 「IN (?, …) 목록을 몇 개씩 나누나」와
+    //   「로그에 싣는 외부 문자열 위생 처리」는 둘 다 쓰는 쪽(IngestService)이 단일 거주지이고, 읽는 쪽인
+    //   이 파일은 그것을 **부른다**. 같은 값을 여기 따로 들면 한쪽만 고치는 순간 조용히 갈린다 —
+    //   STMT_REF_ATTRIBUTE·DB_STATEMENT_ATTRIBUTE 가 이미 같은 이유로 공유되는 전례다.
+    //   (R25 는 "그쪽이 private 이라" 복사본을 뒀고, 이번에 그 정당화를 지웠다.)
 
     private final JdbcTemplate jdbc;
     private final ObjectMapper mapper;
@@ -218,8 +216,8 @@ public class TraceQueryRepository {
         }
         Map<String, String> resolved = new LinkedHashMap<>();
         List<String> list = new ArrayList<>(refs);
-        for (int start = 0; start < list.size(); start += HASH_IN_CHUNK_SIZE) {
-            List<String> slice = list.subList(start, Math.min(start + HASH_IN_CHUNK_SIZE, list.size()));
+        for (int start = 0; start < list.size(); start += IngestService.HASH_IN_CHUNK_SIZE) {
+            List<String> slice = list.subList(start, Math.min(start + IngestService.HASH_IN_CHUNK_SIZE, list.size()));
             jdbc.query(
                     "SELECT stmt_hash, statement FROM sql_statements WHERE stmt_hash IN ("
                             + String.join(", ", Collections.nCopies(slice.size(), "?")) + ")",
@@ -241,7 +239,7 @@ public class TraceQueryRepository {
             if (statement == null) {
                 // 못 푼 참조 — 키를 지우지 않고 그대로 통과시킨다(밖에서 넣은 값일 수 있다).
                 log.warn("unresolved statement ref: spanId={} ref={}",
-                        sanitizeForLog(span.spanId()), sanitizeForLog(hash));
+                        IngestService.sanitizeForLog(span.spanId()), IngestService.sanitizeForLog(hash));
                 out.add(span);
                 continue;
             }
@@ -253,21 +251,6 @@ public class TraceQueryRepository {
                     span.status(), merged));
         }
         return out;
-    }
-
-    /**
-     * [Phase R25] 로그 위생 — 이 두 값은 인증 없는 입구가 정한 것이라 개행이 들 수 있다.
-     * {@code IngestService.sanitizeForLog} 와 같은 뜻이지만 그쪽은 {@code private} 이라 공개하지 않고
-     * 여기 한 줄로 둔다(새 공용 도구를 만들지 않는다 — 도구가 늘면 두 벌이 갈린다).
-     */
-    private static String sanitizeForLog(String raw) {
-        if (raw == null) {
-            return null;
-        }
-        String oneLine = raw.replace('\r', ' ').replace('\n', ' ');
-        return oneLine.length() <= LOG_VALUE_MAX_CHARS
-                ? oneLine
-                : oneLine.substring(0, LOG_VALUE_MAX_CHARS) + "[truncated]";
     }
 
     public boolean spanExists(String traceId, String spanId) {
