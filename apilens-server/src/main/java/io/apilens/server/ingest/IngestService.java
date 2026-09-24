@@ -422,7 +422,10 @@ public class IngestService {
      * //   같은 호출 사슬의 <b>다른 파일</b>까지 다 됐다는 뜻으로 읽혔다. 실제로 안 감싼 자리가 밖에 남아 있다
      * //   ({@code IngestController} 의 config 미탑재 debug · {@code ApiKeyAuthFilter} 의 401 debug ·
      * //   {@code InstrumentAnalysisService} 의 {@code service=} 두 줄 — 앞 둘은 기본 설정에서 안 찍히고
-     * //   뒤 둘은 인증이 필요한 경로라 지금 위험은 낮다). 다음 라운드가 "밖도 다 됐다" 로 안 읽게 한다.
+     * //   뒤 둘은 인증이 필요한 경로라 지금 위험은 낮다 — 단, 키를 안 넣은 기본 설치에서는 인증이 없다).
+     * //   다음 라운드가 "밖도 다 됐다" 로 안 읽게 한다.
+     * // [2026-09-24] SEC-R26-02 — 뒤 둘({@code InstrumentAnalysisService} 의 {@code service=} 두 줄)은 이 헬퍼로
+     * //   감쌌다(시험 2건 동반 · {@code InstrumentAnalysisServiceLogHygieneTest}). 앞 둘은 기본 설정에서 안 찍혀 그대로다.
      * // 앞머리 문구와 필드 이름은 안 바꾼다(과거 기록 대조의 기준점).
      *
      * <p>본문 전체가 {@code try-catch(Throwable)} 안이다 — <b>호스트로 예외가 새지 않는다</b> 는

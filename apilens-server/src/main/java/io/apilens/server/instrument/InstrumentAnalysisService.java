@@ -18,6 +18,7 @@ package io.apilens.server.instrument;
 import io.apilens.server.instrument.dto.AnalysisResponse;
 import io.apilens.server.instrument.dto.SimulationResponse;
 import io.apilens.server.instrument.dto.Window;
+import io.apilens.server.ingest.IngestService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -144,8 +145,11 @@ public class InstrumentAnalysisService {
             int totalClasses = merged.size();
             boolean truncated = totalClasses > items.size();
 
+            // [2026-09-24] SEC-R26-02 — service= 는 요청이 정한 값이다. 인증이 켜진 설치에서는 위험이 낮지만
+            //   키를 안 넣은 기본 설치에는 인증이 없다. IngestService 와 같은 헬퍼로 한 줄로 접는다(TraceQueryRepository 전례).
+            //   앞머리 문구와 필드 이름은 안 바꾼다(과거 기록 대조의 기준점).
             log.info("instrument analysis done: service={} windowHours={} totalClasses={} returned={} elapsedMs={}",
-                    serviceName, windowHours, totalClasses, items.size(),
+                    IngestService.sanitizeForLog(serviceName), windowHours, totalClasses, items.size(),
                     (System.nanoTime() - startedNanos) / 1_000_000L);
 
             return new AnalysisResponse(window, summary, totalClasses, truncated, items);
@@ -190,8 +194,9 @@ public class InstrumentAnalysisService {
                     ratio(orphanRow.singleSpanTraces(), orphanRow.resultTraces())
             );
 
+            // [2026-09-24] SEC-R26-02 — 위 analyze 의 같은 자리와 한 쌍. 시험은 InstrumentAnalysisServiceLogHygieneTest.
             log.info("instrument simulation done: service={} targets={} remainingSpans={} resultTraces={} elapsedMs={}",
-                    serviceName, safeTargets.size(), orphanRow.remainingSpans(), orphanRow.resultTraces(),
+                    IngestService.sanitizeForLog(serviceName), safeTargets.size(), orphanRow.remainingSpans(), orphanRow.resultTraces(),
                     (System.nanoTime() - startedNanos) / 1_000_000L);
 
             return new SimulationResponse(window, savings, impact, orphanRow.cappedCount() > 0);
