@@ -480,6 +480,7 @@ _이 release 에는 breaking change 가 없습니다._ server 전용 변경이�
 - **MyBatis Mapper instrument**.
 - **Span collector** (HTTP POST → `/v1/spans`, daemon thread batch 송신).
 - **W3C Trace Context (`traceparent`) 표준 전파** — OpenTelemetry 호환 span 모델.
+  - (2026-09-24 정정) 위 「표준 전파」는 계측된 요청 흐름의 trace/span ID **형식**(32/16자리 16진수)이 W3C Trace Context 와 호환된다는 뜻입니다. `traceparent` 헤더의 추출·주입은 0.7.1 까지 구현되지 않았고, 멀티 서비스 분산 추적(향후 예정) 항목에 들어 있습니다.
 - **Trace / Span / Payload 분리 저장** (SQLite + Flyway). 큰 payload 는 마스킹 적용 후 별도 테이블에 저장.
 - **Server-side PII 마스킹** — 주민등록번호 / 카드번호 / `password`·`token`·`secret` 기본 룰을 ingest 시 서버에서 자동 적용.
 - **노드 그래프 UI** (mind-map, 수평 시간 흐름) + 응답시간 대시보드 + payload inspector + 에러 시 stack trace 즉시 표시. React + Vite + TypeScript.

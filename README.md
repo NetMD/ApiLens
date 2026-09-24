@@ -69,7 +69,7 @@ what value actually hit the database.* It has been dogfooded against a live prod
 | 📖 API 문서 자동화 | 코드에서 OpenAPI 스펙을 생성하고 `/swagger-ui` 를 단일 jar 에 임베드 — 문서가 코드와 어긋나지 않음 |
 | 🧙 Setup 마법사 | 브라우저에서 옵션을 고르면 부착용 JVM 옵션 한 줄을 만들어 줌 |
 | 📕 단일 jar 배포 | agent + collector + storage + UI 가 하나의 jar |
-| 🧩 표준 호환 | W3C Trace Context (`traceparent`) + OpenTelemetry 호환 span 모델 |
+| 🧩 표준 호환 | OpenTelemetry 호환 span 모델 · 계측된 요청 흐름의 trace/span ID 는 W3C Trace Context 형식(32/16자리 16진수) (`traceparent` 헤더 전파는 향후 예정 — 아래 [로드맵](#향후-예정--roadmap)) |
 
 - **백엔드 | Backend**: Java 21 (21~25 호환) · Spring Boot 3.x · SQLite + Flyway
 - **에이전트 | Agent**: ByteBuddy + premain — 모든 의존성을 `io.apilens.agent.shaded.*` 로 relocate 하여 호스트 앱과 클래스 충돌 0
