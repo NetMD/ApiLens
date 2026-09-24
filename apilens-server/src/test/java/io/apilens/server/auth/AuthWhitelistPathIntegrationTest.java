@@ -88,6 +88,11 @@ class AuthWhitelistPathIntegrationTest {
      *
      * <p>단언은 "200 이 아니다" 가 아니라 <b>"면제 통과가 아니다"</b> 로 읽는다 — 컨테이너가 그 경로를
      * 400 으로 먼저 끊든 필터가 401 로 끊든, 어느 쪽이든 <b>토큰 없이 setup 이 열리는 일은 없다</b>.
+     *
+     * <p>[2026-09-24] RA-R26-11 — 단언을 실제 값 <b>401</b> 로 좁혔다(단독 실행 실측: 이 컨테이너는
+     * 그 경로를 400 으로 끊지 않고 필터까지 보내 401 이 난다). "200 이 아니다" 는 500·404 같은
+     * <b>엉뚱한 실패</b>도 초록으로 통과시키는 빈 그물이었다. 컨테이너를 바꿔 400 이 나오게 되면
+     * 여기가 빨개지는데, 그때는 면제 판정이 아니라 컨테이너 정규화가 바뀐 것이니 값을 다시 잰다.
      */
     @Test
     void protectsAPercentEncodedSetupPath() {
@@ -95,7 +100,7 @@ class AuthWhitelistPathIntegrationTest {
                 URI.create(rest.getRootUri() + "/v1/setup/%2e%2e/traces"),
                 org.springframework.http.HttpMethod.GET, null, String.class);
 
-        assertNotEquals(HttpStatus.OK, res.getStatusCode(),
+        assertEquals(HttpStatus.UNAUTHORIZED, res.getStatusCode(),
                 "이스케이프가 섞인 경로가 토큰 없이 열리면 안 된다 — 실제: " + res.getStatusCode());
     }
 
