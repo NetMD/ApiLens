@@ -31,6 +31,7 @@ import { useSearchPreservingNavigate } from '../hooks/useSearchPreservingNavigat
 import { useAgentJarPath } from '../hooks/useAgentJarPath';
 // Phase R12 (FR-D3, AC-D3-2): 버전 라벨 단일 거주지 (DG-01 — 직전 세션 착수분의 import 누락 보완)
 import { APP_VERSION } from '../lib/version';
+import { hostOfLikeJavaUri, portProblemLikeJavaUri } from '../lib/javaUriHost';
 import { Stepper } from '../components/Stepper';
 import { Toggle } from '../components/Toggle';
 import { Modal } from '../components/Modal';
@@ -103,6 +104,12 @@ export function Setup(): ReactNode {
     if (serverUrl.trim() === '') return 'URL 입력 필요';
     if (!(serverUrl.startsWith('http://') || serverUrl.startsWith('https://'))) {
       return 'URL 형식 오류 (http:// 또는 https://)';
+    }
+    // [2026-09-24 RA-R26-12] 서버 검사(SetupService.hostOf)가 호스트까지 보므로 화면도 같은 기준으로 맞춘다 —
+    //   접두만 보면 "http://" 가 통과해 [완료]에서야 400 을 받고 "잠시 후 다시 시도" 라는 틀린 안내를 보게 된다.
+    if (hostOfLikeJavaUri(serverUrl) === null) {
+      if (portProblemLikeJavaUri(serverUrl)) return 'URL 포트 형식 오류 (예: :8765)';
+      return 'URL 호스트 없음 (예: http://your-apilens-host:8765)';
     }
     return null;
   })();

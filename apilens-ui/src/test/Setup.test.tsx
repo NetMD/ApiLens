@@ -242,4 +242,61 @@ describe('Setup wizard — [R10] 회수 검증', () => {
       }
     }
   });
+
+  // [2026-09-24] 화면 주소 검사가 서버와 같은 기준(호스트 있음)으로 본다 — 접두만 맞는 "http://" 는 막는다.
+  it('rejectsServerUrlWithoutHost — "http://" 만 입력하면 호스트 없음 오류 + [다음] 막힘', () => {
+    mockFetchOk();
+    const { Wrapper } = makeWrapper();
+    render(<Wrapper />);
+
+    const input = screen.getByLabelText('Server URL');
+    fireEvent.change(input, { target: { value: 'http://' } });
+    fireEvent.blur(input);
+
+    expect(screen.getByRole('alert')).toHaveTextContent('URL 호스트 없음');
+    expect(screen.getByRole('button', { name: '다음' })).toBeDisabled();
+  });
+
+  it('rejectsServerUrlWithUnderscoreHost — 브라우저는 받아도 서버(Java URI)가 거부하는 밑줄 호스트도 화면에서 막음', () => {
+    mockFetchOk();
+    const { Wrapper } = makeWrapper();
+    render(<Wrapper />);
+
+    const input = screen.getByLabelText('Server URL');
+    fireEvent.change(input, { target: { value: 'http://foo_bar:8765' } });
+    fireEvent.blur(input);
+
+    expect(screen.getByRole('alert')).toHaveTextContent('URL 호스트 없음');
+    expect(screen.getByRole('button', { name: '다음' })).toBeDisabled();
+  });
+
+  it('showsPortFormatErrorWhenOnlyPortIsWrong — 호스트는 맞고 포트만 틀리면 포트 문구로 고칠 자리를 짚음', () => {
+    mockFetchOk();
+    const { Wrapper } = makeWrapper();
+    render(<Wrapper />);
+
+    const input = screen.getByLabelText('Server URL');
+    fireEvent.change(input, { target: { value: 'http://host:abc' } });
+    fireEvent.blur(input);
+
+    expect(screen.getByRole('alert')).toHaveTextContent('URL 포트 형식 오류 (예: :8765)');
+    expect(screen.queryByText(/URL 호스트 없음/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '다음' })).toBeDisabled();
+  });
+
+  it('acceptsServerUrlWithHost — "http://your-host:8765" 는 통과해 Step 2 로 넘어감', async () => {
+    mockFetchOk();
+    const { Wrapper } = makeWrapper();
+    render(<Wrapper />);
+
+    const input = screen.getByLabelText('Server URL');
+    fireEvent.change(input, { target: { value: 'http://your-host:8765' } });
+    fireEvent.blur(input);
+
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    const next = screen.getByRole('button', { name: '다음' });
+    expect(next).toBeEnabled();
+    fireEvent.click(next);
+    expect(await screen.findByLabelText('Service Name')).toBeInTheDocument();
+  });
 });
