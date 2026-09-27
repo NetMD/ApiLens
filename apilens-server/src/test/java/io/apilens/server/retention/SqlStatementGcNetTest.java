@@ -68,8 +68,14 @@ class SqlStatementGcNetTest {
     /** 로그 줄 파싱용 — 생산 코드의 로그 문면과 같은 모양이다. */
     private static final Pattern SCAN_LINE =
             Pattern.compile("^sql statement gc scan: scanMs=-?\\d+ reclaimable=(\\d+) watermarkRowid=(\\d+)$");
+    /**
+     * [Phase R27] R27/AC-27-02-4 — 회전 줄에 세 구간이 붙었다. 끝의 {@code $} 는 그대로 둔다(필드가 더 붙으면
+     * 이 정규식이 빨개져야 한다). 기록: 생산 문면을 먼저 바꾸고 이 줄을 그대로 둔 채 돌리면 이 줄로 회전 줄을
+     * 읽는 기존 시험 3건이 빨갛다(2026-09-25 실측 · 7건 중 3건 실패) — 갱신 뒤 초록.
+     */
     private static final Pattern ROUND_LINE =
-            Pattern.compile("^sql statement gc round: round=(\\d+) deleted=(\\d+) recheckRows=(\\d+) statementMs=-?\\d+$");
+            Pattern.compile("^sql statement gc round: round=(\\d+) deleted=(\\d+) recheckRows=(\\d+)"
+                    + " acquireMs=-?\\d+ statementMs=-?\\d+ commitMs=-?\\d+$");
     private static final Pattern SUMMARY_LINE =
             Pattern.compile("^sql statement gc: deleted=(\\d+) rounds=(\\d+) elapsedMs=-?\\d+$");
 
@@ -283,8 +289,10 @@ class SqlStatementGcNetTest {
      * 여기서는 기존 span 을 먼저 깔아 표시점을 0 이 아닌 값으로 만들고, 훑기 문장({@code queryForList … FROM
      * sql_statements}) 직후에 후보 원문을 가리키는 span 을 끼워 넣는다(그 rowid 는 표시점보다 크다).
      *
-     * <p>★「표시점보다 <b>작은</b> rowid 로 들어온 삽입」 갈래(rowid 되쓰기 · SEC-R26-04)는 <b>이번 범위 밖</b>이다 —
-     * 그 갈래는 회전마다 표시점을 다시 보는 가드 코드와 함께 파이프라인이 맡는다.
+     * <p>★「표시점보다 <b>작은</b> rowid 로 들어온 삽입」 갈래(rowid 되쓰기 · SEC-R26-04)는 이 시험 밖이다 —
+     * [Phase R27] 그 갈래의 가드(삭제 문장 안 표시점 행 판정)와 접는 줄 문면은 R27 에 반영됐고,
+     * {@code foldsTheRunWhenSpansShrinkBelowTheWatermarkAfterTheScan} ·
+     * {@code foldsTheRoundWhenTheWatermarkRowIsReplacedBeforeTheDelete} 가 잰다.
      */
     @Test
     void theRecheckAboveANonZeroWatermarkKeepsAStatementReferencedAfterTheScan() throws Exception {
@@ -337,9 +345,9 @@ class SqlStatementGcNetTest {
      * {@code execute} 가 <b>돌아온 뒤</b>(= 커밋 뒤) 깨진 행을 넣는다 — 둘째 회전의 삭제 문장이 재확인
      * 서브질의의 {@code json_extract} 에서 오류로 끝난다. 타이밍이 아니라 순서로 만든 결정적 경합이다.
      *
-     * <p>★오류 줄은 <b>앞머리 {@code sql statement gc failed}</b> 까지만 단언한다. 지금 문면의 뒷부분
-     * "nothing was deleted" 는 이 시험이 보여 주듯 <b>거짓</b>이다(첫 회전 몫은 이미 지워졌다) — 다음 라운드
-     * (OBS-R26-01)가 문면을 고친다. 거짓 문면을 시험으로 봉인하면 그 정정이 시험을 깨뜨려야 하므로 안 묶는다.
+     * <p>[Phase R27] R27/AC-27-02-3 — 오류 줄이 이제 <b>그때까지 커밋된 몫</b>을 싣는다. 이 시험은 그 값을
+     * 끝까지 단언한다: 첫 회전 한 행 · 회전 1 · 오류 이벤트에 예외가 붙어 있음. 종전 문면(「아무것도 안
+     * 지웠다」)은 이 픽스처에서 거짓이었고, R26 은 그 거짓을 시험으로 묶지 않으려고 앞머리까지만 봤다.
      */
     @Test
     void keepsTheFirstRoundDeletionsWhenAMalformedRowArrivesAfterTheFirstCommit() throws Exception {
@@ -387,6 +395,14 @@ class SqlStatementGcNetTest {
                 .toList();
         assertEquals(1, failures.size(), "둘째 회전 실패가 오류 한 줄로 남는다 — 실제: " + messages(appender, Level.ERROR));
         assertTrue(summary(info).isEmpty(), "실패한 실행은 요약 줄을 안 남긴다 — 실제: " + info);
+        // [Phase R27] R27/AC-27-02-3 — 실패 줄이 커밋된 몫(첫 회전 1행 · 회전 1)을 말하고, 예외가 붙어 있다.
+        assertTrue(failures.get(0).startsWith("sql statement gc failed: deleted=1 rounds=1 "),
+                "실패 줄은 예외 직전까지 커밋된 몫을 싣는다 — 실제: " + failures.get(0));
+        assertTrue(appender.list.stream()
+                        .filter(e -> e.getLevel() == Level.ERROR)
+                        .allMatch(e -> e.getThrowableProxy() != null),
+                "오류 이벤트에 예외가 붙어 있어야 원인을 되짚는다");
+        assertEquals(0, danglingRefs(), "끊긴 참조 0");
     }
 
     // ─── SEC-R26-05 ──────────────────────────────────────────────────────
@@ -448,6 +464,146 @@ class SqlStatementGcNetTest {
         assertEquals(1, countStatement(raced), "검사 뒤에 참조가 생긴 원문은 재확인이 살린다");
         assertEquals(0, countStatement(orphan), "참조 없는 원문은 지워진다");
         // ③ 끊긴 참조 0.
+        assertEquals(0, danglingRefs(), "끊긴 참조 0");
+    }
+
+    // ─── [Phase R27] SEC-R26-04 · RA-R26-16 ─────────────────────────────
+
+    /**
+     * [Phase R27] R27/AC-27-02-1 — 훑기 뒤 [전체 삭제]처럼 꼭대기 span 이 지워지고 그 자리가 <b>표시점보다 작은
+     * rowid</b> 로 다시 차면, 재확인({@code rowid >=} 표시점)은 새 참조를 못 본다. 회수는 그 원문을 지우지 않고
+     * <b>실행을 접어야</b> 한다.
+     *
+     * <p>픽스처: 후보 둘 · 회전 크기 1(회전이 둘 필요) · 첫 회전 <b>커밋 뒤</b> 꼭대기 span 둘을 지우고 남은
+     * 후보를 가리키는 span 하나를 넣는다. 새 rowid 는 남은 최대 + 1 이라 표시점보다 작다(AUTOINCREMENT 없음).
+     *
+     * <p>기록(2026-09-25 실측): 표시점 판정이 없는 판에서 돌리면 <b>빨갛다</b> — 둘째 회전이 남은 후보를 지워
+     * 끊긴 참조가 1 이 된다.
+     */
+    @Test
+    void foldsTheRunWhenSpansShrinkBelowTheWatermarkAfterTheScan() throws Exception {
+        String first = hash('g');
+        String second = hash('h');
+        insertStatement(first);
+        insertStatement(second);
+        insertSpan("s-top-1", "{\"http.method\":\"GET\"}");
+        insertSpan("s-top-2", "{\"http.method\":\"GET\"}");
+        insertSpan("s-top-3", "{\"http.method\":\"GET\"}");
+        long maxRowidBefore = count("SELECT MAX(rowid) FROM spans");
+
+        AfterFirstCommitTx wrapped = new AfterFirstCommitTx(txManager, () -> {
+            jdbc.update("DELETE FROM spans WHERE span_id IN ('s-top-2', 's-top-3')");
+            String survivor = jdbc.queryForObject(
+                    "SELECT stmt_hash FROM sql_statements WHERE stmt_hash IN (?, ?)", String.class, first, second);
+            insertSpan("s-refill", refJson(survivor));
+        });
+        setTx(wrapped);
+        List<ILoggingEvent> events = captureEvents(() ->
+                service.gcUnreferencedSqlStatements(1, 8_000L, System::nanoTime));
+        List<String> info = lines(events, Level.INFO);
+
+        // 전제 — 표시점이 0 이 아니고, 끼워 넣기가 첫 커밋 뒤에 일어났고, 새 rowid 가 표시점보다 작고,
+        //   표시점 행이 실제로 사라졌다.
+        long watermark = scanWatermark(info);
+        assertNotEquals(0L, watermark, "전제: 표시점이 0 이면 판정이 비켜 간다 — 실제: " + info);
+        assertEquals(maxRowidBefore, watermark, "전제: 표시점은 끼워 넣기 전의 최대 rowid 다");
+        assertEquals(2, scanReclaimable(info), "전제: 후보 둘 · 회전 크기 1 — 실제: " + info);
+        assertTrue(wrapped.injectedAfterFirstCommit, "전제: 첫 회전 커밋 뒤에 끼워 넣었다");
+        long refillRowid = count("SELECT rowid FROM spans WHERE span_id = 's-refill'");
+        assertTrue(refillRowid < watermark, "전제: 새 rowid(" + refillRowid + ")가 표시점보다 작아 재확인 밖이다");
+        assertEquals(0, count("SELECT COUNT(*) FROM spans WHERE rowid = " + watermark),
+                "전제: 표시점 행이 실제로 사라졌다");
+
+        // 판정 — 접는 줄 1 · 요약 줄 1(첫 회전 몫만) · 남은 후보 생존 · 끊긴 참조 0.
+        List<String> folds = lines(events, Level.WARN).stream()
+                .filter(m -> m.startsWith("sql statement gc folded: watermarkRowid=" + watermark
+                        + " watermarkRowGone=1 "))
+                .toList();
+        assertEquals(1, folds.size(), "접는 줄이 한 줄 남는다 — 실제: " + lines(events, Level.WARN));
+        assertEquals(List.of(1, 1), summary(info), "접은 실행도 요약 줄을 남긴다(첫 회전 몫) — 실제: " + info);
+        assertEquals(1, count("SELECT COUNT(*) FROM sql_statements"), "새로 참조된 남은 후보는 살아남는다");
+        assertEquals(0, danglingRefs(), "끊긴 참조 0");
+        assertTrue(lines(events, Level.ERROR).isEmpty(), "접기는 실패가 아니다 — 실제: " + lines(events, Level.ERROR));
+    }
+
+    /**
+     * [Phase R27] R27/AC-27-02-4 — 회전 줄의 세 구간이 <b>주입한 시계</b>에서 나온다. 구간마다 다른 폭으로
+     * 가짜 시계를 민다: 트랜잭션에 들어갈 때 3 ms · 삭제 문장 5 ms · 나올 때 7 ms. 세 값이 각 증분과 같아야
+     * 한다(폭이 같으면 두 구간이 서로 바뀌어도 초록이 된다).
+     */
+    @Test
+    void logsAcquireStatementAndCommitSectionsFromTheInjectedClock() throws Exception {
+        String candidate = hash('i');
+        insertStatement(candidate);
+        insertSpan("s-http", "{\"http.method\":\"GET\"}");
+
+        AtomicLong nanos = new AtomicLong();
+        setJdbc(new ClockAdvancingJdbc(jdbc, nanos, 5L));
+        setTx(new ClockSteppingTx(txManager, nanos, 3L, 7L));
+        List<String> info = captureInfo(() -> service.gcUnreferencedSqlStatements(500, 8_000L, nanos::get));
+
+        assertEquals(1, scanReclaimable(info), "전제: 후보 하나 — 회전이 실제로 돈다 · 실제: " + info);
+        List<String> roundLines = info.stream().filter(l -> ROUND_LINE.matcher(l).matches()).toList();
+        assertEquals(1, roundLines.size(), "회전 줄 하나 — 실제: " + info);
+        assertTrue(roundLines.get(0).endsWith(" acquireMs=3 statementMs=5 commitMs=7"),
+                "세 구간 = 들어가기 3 · 문장 5 · 끝내기 7 — 실제: " + roundLines.get(0));
+        assertEquals(List.of(1, 1), summary(info));
+        assertEquals(0, countStatement(candidate));
+        assertEquals(0, danglingRefs(), "끊긴 참조 0");
+    }
+
+    /**
+     * [Phase R27] R27/AC-27-02-1 — 상한 검사 뒤 · 삭제 전에 꼭대기 둘이 지워지고 두 행이 새로 들어와 <b>최대
+     * rowid 가 다시 표시점과 같아진</b> 경우. 최대 rowid 만 견주면 이 갈래를 못 본다 — 그래서 판정을 「표시점
+     * <b>행</b>(rowid + span_id)이 그대로인가」로 하고, 그 판정을 삭제 문장 <b>안</b>에 둔다.
+     *
+     * <p>새 두 행 중 표시점보다 작은 쪽이 후보를 가리키고, 표시점 자리를 다시 받은 쪽은 참조가 없다 — 재확인은
+     * 표시점 이후만 보므로 후보를 가리키는 행을 못 본다.
+     *
+     * <p>기록(2026-09-25 실측): 「최대 rowid 가 표시점보다 작으면 접는다」 판(설계 본편 가드)에서 돌리면
+     * <b>빨갛다</b> — 최대 rowid 가 같아 안 접고, 후보를 지워 끊긴 참조가 1 이 된다.
+     */
+    @Test
+    void foldsTheRoundWhenTheWatermarkRowIsReplacedBeforeTheDelete() throws Exception {
+        String candidate = hash('j');
+        insertStatement(candidate);
+        insertSpan("s-top-1", "{\"http.method\":\"GET\"}");
+        insertSpan("s-top-2", "{\"http.method\":\"GET\"}");
+        insertSpan("s-top-3", "{\"http.method\":\"GET\"}");
+        long maxRowidBefore = count("SELECT MAX(rowid) FROM spans");
+
+        AfterCapCheckJdbc spy = new AfterCapCheckJdbc(jdbc, () -> {
+            jdbc.update("DELETE FROM spans WHERE span_id IN ('s-top-2', 's-top-3')");
+            insertSpan("s-refill-ref", refJson(candidate));             // 표시점 − 1 → 재확인 밖
+            insertSpan("s-refill-top", "{\"http.method\":\"GET\"}");  // 표시점 자리를 다시 받는다
+        });
+        setJdbc(spy);
+        List<ILoggingEvent> events = captureEvents(() ->
+                service.gcUnreferencedSqlStatements(500, 8_000L, System::nanoTime));
+        List<String> info = lines(events, Level.INFO);
+
+        // 전제 — 끼워 넣기가 상한 검사 뒤에 일어났고, 최대 rowid 는 표시점과 같은데 그 행이 다른 span 이다.
+        assertTrue(spy.injected, "전제: 상한 검사 직후에 끼워 넣었다");
+        long watermark = scanWatermark(info);
+        assertNotEquals(0L, watermark, "전제: 표시점이 0 이 아니다 — 실제: " + info);
+        assertEquals(maxRowidBefore, watermark, "전제: 표시점은 끼워 넣기 전의 최대 rowid 다");
+        assertEquals(1, scanReclaimable(info), "전제: 후보 하나 — 실제: " + info);
+        assertEquals(watermark, count("SELECT MAX(rowid) FROM spans"),
+                "전제: 최대 rowid 가 표시점과 같다(최대 rowid 비교로는 못 보는 갈래)");
+        assertEquals("s-refill-top", jdbc.queryForObject(
+                        "SELECT span_id FROM spans WHERE rowid = " + watermark, String.class),
+                "전제: 표시점 자리의 행이 훑기 때와 다른 span 이다");
+        assertTrue(count("SELECT rowid FROM spans WHERE span_id = 's-refill-ref'") < watermark,
+                "전제: 후보를 가리키는 새 행은 표시점보다 작아 재확인 밖이다");
+
+        // 판정 — 삭제 0 · 접는 줄 1 · 후보 생존 · 끊긴 참조 0.
+        List<String> folds = lines(events, Level.WARN).stream()
+                .filter(m -> m.startsWith("sql statement gc folded: watermarkRowid=" + watermark
+                        + " watermarkRowGone=1 "))
+                .toList();
+        assertEquals(1, folds.size(), "접는 줄이 한 줄 남는다 — 실제: " + lines(events, Level.WARN));
+        assertEquals(List.of(0, 0), summary(info), "아무것도 안 지우고 접는다 — 실제: " + info);
+        assertEquals(1, countStatement(candidate), "새 행이 가리키는 후보는 살아남는다");
         assertEquals(0, danglingRefs(), "끊긴 참조 0");
     }
 
@@ -576,6 +732,28 @@ class SqlStatementGcNetTest {
         return messages(appender, Level.INFO);
     }
 
+    /** INFO 를 켠 채 action 을 돌리고 모든 수준의 이벤트를 돌려준다. 레벨은 원래대로 되돌린다. */
+    private static List<ILoggingEvent> captureEvents(Runnable action) {
+        ch.qos.logback.classic.Logger logger = retentionLogger();
+        ListAppender<ILoggingEvent> appender = attach(logger);
+        Level previous = logger.getLevel();
+        logger.setLevel(Level.INFO);
+        try {
+            action.run();
+        } finally {
+            logger.setLevel(previous);
+            detach(logger, appender);
+        }
+        return List.copyOf(appender.list);
+    }
+
+    private static List<String> lines(List<ILoggingEvent> events, Level level) {
+        return events.stream()
+                .filter(e -> e.getLevel() == level)
+                .map(ILoggingEvent::getFormattedMessage)
+                .toList();
+    }
+
     private static ListAppender<ILoggingEvent> attach(ch.qos.logback.classic.Logger logger) {
         ListAppender<ILoggingEvent> appender = new ListAppender<>();
         appender.start();
@@ -677,6 +855,32 @@ class SqlStatementGcNetTest {
                 injected = true;
                 afterCheck.run();
             }
+            return out;
+        }
+    }
+
+    /**
+     * [Phase R27] 트랜잭션에 <b>들어갈 때</b>와 <b>나올 때</b> 가짜 시계를 정해진 폭만큼 민다 — 세 구간 중
+     * 들어가기·끝내기 흉내. 삭제 문장 몫은 {@link ClockAdvancingJdbc} 가 민다.
+     */
+    @SuppressWarnings("serial")
+    private static final class ClockSteppingTx extends TransactionTemplate {
+        private final AtomicLong nanos;
+        private final long enterMillis;
+        private final long exitMillis;
+
+        ClockSteppingTx(PlatformTransactionManager tm, AtomicLong nanos, long enterMillis, long exitMillis) {
+            super(tm);
+            this.nanos = nanos;
+            this.enterMillis = enterMillis;
+            this.exitMillis = exitMillis;
+        }
+
+        @Override
+        public <T> T execute(TransactionCallback<T> action) {
+            nanos.addAndGet(enterMillis * 1_000_000L);
+            T out = super.execute(action);
+            nanos.addAndGet(exitMillis * 1_000_000L);
             return out;
         }
     }

@@ -10,7 +10,7 @@
 //   rejectsWindowLocationOrigin / hidesServiceNameInstruction 같은 반대 방향 동사 0건
 //   "사용자 앱을 구분할 이름을 입력해 주세요" R9 잔존 카피 0 hit
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes } from 'react-router';
 import type { ReactNode } from 'react';
@@ -298,5 +298,244 @@ describe('Setup wizard — [R10] 회수 검증', () => {
     expect(next).toBeEnabled();
     fireEvent.click(next);
     expect(await screen.findByLabelText('Service Name')).toBeInTheDocument();
+  });
+});
+
+// ── [R27/FR-27-10 · FR-27-11] 설치 400 사유 줄 · 초점 · 포트 상한 ──────────────────────────
+//
+// 검증 의무 (정방향 동사 — EXT-003 lock-in 회귀 가드):
+//   showsTheServerReasonNearTheButtonsOnComplete400 · keepsTheOldToastOnComplete500
+//   showsTheServerReasonInsideTheSkipModalOn400 · keepsTheOldToastOnSkip500
+//   showsHttp400WhenTheBodyHasNoReason · clearsTheReasonOnRetryCancelAndEscape
+//   rejectsAPortAboveTheServerMaximum(포트 상한 = 정방향 동작이 「막는다」)
+//
+// UC-08 문면 원문: `서버가 거절한 이유: {사유}` · UC-02: `Setup 완료 실패 — 입력값을 확인해 주세요`.
+
+const REASON = 'serverUrl must include a host (예: http://192.168.0.10:8765)';
+
+type CompleteReply = () => Promise<Response>;
+
+/** /v1/setup/complete 는 replies 를 차례로(마지막 것 반복). 나머지는 200. */
+function mockFetchComplete(replies: CompleteReply[]): { completeCalls: () => number } {
+  let n = 0;
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: RequestInfo | URL) => {
+    const url = typeof input === 'string' ? input : input.toString();
+    if (url.includes('/v1/setup/complete')) {
+      const reply = replies[Math.min(n, replies.length - 1)]!;
+      n += 1;
+      return reply();
+    }
+    if (url.includes('/v1/setup/agent-jar-path')) {
+      return new Response(JSON.stringify({ path: '/Users/foo/.apilens/apilens-agent.jar' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+  });
+  return { completeCalls: () => n };
+}
+
+const reply400 = (body: string): CompleteReply => () =>
+  Promise.resolve(new Response(body, { status: 400, headers: { 'Content-Type': 'application/json' } }));
+const reply500: CompleteReply = () =>
+  Promise.resolve(
+    new Response(JSON.stringify({ error: 'boom' }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    }),
+  );
+
+/** 시험이 풀어 줄 때까지 기다리는 응답(실시간 대기 0) — 「요청 중」 렌더를 한 번 그리게 하는 용도. */
+function deferred(reply: CompleteReply): { reply: CompleteReply; release: () => void } {
+  let release: () => void = () => undefined;
+  return {
+    reply: () => new Promise<Response>((resolve) => {
+      release = () => void reply().then(resolve);
+    }),
+    release: () => release(),
+  };
+}
+
+async function goToStep4(): Promise<void> {
+  fireEvent.click(screen.getByRole('button', { name: '다음' }));
+  const svcInput = await screen.findByLabelText('Service Name');
+  fireEvent.change(svcInput, { target: { value: 'my-api' } });
+  fireEvent.blur(svcInput);
+  fireEvent.click(screen.getByRole('button', { name: '다음' }));
+  await screen.findByText('Capture Options');
+  fireEvent.click(screen.getByRole('button', { name: '다음' }));
+  await screen.findByRole('button', { name: '완료' });
+}
+
+/** 헤더 [건너뛰기 →]에 초점을 둔 채 모달을 연다(모달이 닫힐 때 돌아올 자리). */
+async function openSkipModal(): Promise<HTMLElement> {
+  const headerSkip = screen.getByRole('button', { name: '건너뛰기' });
+  headerSkip.focus();
+  fireEvent.click(headerSkip);
+  const dialog = await screen.findByRole('dialog');
+  // 열릴 때 첫 초점 = 모달 [취소](다음 tick).
+  await waitFor(() => expect(within(dialog).getByRole('button', { name: '취소' })).toHaveFocus());
+  return dialog;
+}
+
+describe('Setup wizard — [R27] 설치 400 사유 · 포트 상한', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // TZ-32 — [완료] 400: 알림 UC-02 한 줄 + 사유 줄(글자 그대로) · 초점 [완료] · [이전] 뒤에도 남음 · 입력 변경 시 사라짐.
+  it('showsTheServerReasonNearTheButtonsOnComplete400', async () => {
+    mockFetchComplete([reply400(JSON.stringify({ error: REASON }))]);
+    const { Wrapper } = makeWrapper();
+    render(<Wrapper />);
+    await goToStep4();
+
+    fireEvent.click(screen.getByRole('button', { name: '완료' }));
+
+    expect(await screen.findByText('Setup 완료 실패 — 입력값을 확인해 주세요')).toBeInTheDocument();
+    const reasonLine = await screen.findByText(`서버가 거절한 이유: ${REASON}`);
+    expect(reasonLine).toHaveAttribute('role', 'alert');
+    // 서버 원문은 알림에 싣지 않는다(UXD-11).
+    expect(screen.queryByText(new RegExp(`서버 응답:`))).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('button', { name: '완료' })).toHaveFocus());
+
+    // [이전] 뒤에도 남는다(RP-10 ④).
+    fireEvent.click(screen.getByRole('button', { name: '이전' }));
+    await screen.findByText('Capture Options');
+    expect(screen.getByText(`서버가 거절한 이유: ${REASON}`)).toBeInTheDocument();
+
+    // 이름 입력이 바뀌면 사라진다.
+    fireEvent.click(screen.getByRole('button', { name: '이전' }));
+    const svcInput = await screen.findByLabelText('Service Name');
+    fireEvent.change(svcInput, { target: { value: 'my-api-2' } });
+    expect(screen.queryByText(/서버가 거절한 이유/)).not.toBeInTheDocument();
+  });
+
+  // TZ-33 — [완료] 500 은 지금 문구 그대로 · 사유 줄 0. 전제: 알림은 보인다.
+  it('keepsTheOldToastOnComplete500', async () => {
+    mockFetchComplete([reply500]);
+    const { Wrapper } = makeWrapper();
+    render(<Wrapper />);
+    await goToStep4();
+    fireEvent.click(screen.getByRole('button', { name: '완료' }));
+    expect(await screen.findByText('Setup 완료 실패 — 잠시 후 다시 시도해 주세요')).toBeInTheDocument();
+    expect(screen.queryByText(/서버가 거절한 이유/)).not.toBeInTheDocument();
+  });
+
+  // TZ-34 — [건너뛰기] 400: 알림 없음 · 모달 안 사유 줄 · 모달 열린 채 · 초점 [취소].
+  //   더함(§2 TZ-34): 400 → [취소] → 초점이 헤더 [건너뛰기 →]로 돌아간다(모달 닫기 콜백 고정).
+  it('showsTheServerReasonInsideTheSkipModalOn400', async () => {
+    // 응답을 붙잡아 「요청 중」 렌더(단추 잠김)가 실제로 한 번 그려지게 한다 — 즉시 응답이면
+    //   잠김·풀림이 한 렌더로 합쳐져 초점 가둠 효과의 재실행이 안 드러난다.
+    const held = deferred(reply400(JSON.stringify({ error: REASON })));
+    mockFetchComplete([held.reply]);
+    const { Wrapper } = makeWrapper();
+    render(<Wrapper />);
+    const dialog = await openSkipModal();
+
+    // 실제 브라우저는 누른 단추에 초점을 준다 — fireEvent.click 은 안 주므로 먼저 옮긴다.
+    const modalSkip = within(dialog).getByRole('button', { name: '건너뛰기' });
+    modalSkip.focus();
+    fireEvent.click(modalSkip);
+    await waitFor(() => expect(modalSkip).toBeDisabled());
+    held.release();
+
+    const reasonLine = await within(dialog).findByText(`서버가 거절한 이유: ${REASON}`);
+    expect(reasonLine).toHaveAttribute('role', 'alert');
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(screen.queryByText(/건너뛰기 실패/)).not.toBeInTheDocument();
+    const cancel = within(dialog).getByRole('button', { name: '취소' });
+    await waitFor(() => expect(cancel).toBeEnabled());
+    await waitFor(() => expect(cancel).toHaveFocus());
+
+    fireEvent.click(cancel);
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: '건너뛰기' }));
+  });
+
+  // TZ-35 — [건너뛰기] 500 은 지금 문구 그대로.
+  it('keepsTheOldToastOnSkip500', async () => {
+    mockFetchComplete([reply500]);
+    const { Wrapper } = makeWrapper();
+    render(<Wrapper />);
+    const dialog = await openSkipModal();
+    fireEvent.click(within(dialog).getByRole('button', { name: '건너뛰기' }));
+    expect(await screen.findByText('건너뛰기 실패 — 잠시 후 다시 시도해 주세요')).toBeInTheDocument();
+    expect(screen.queryByText(/서버가 거절한 이유/)).not.toBeInTheDocument();
+  });
+
+  // TZ-36 — 본문 없는 400 → `서버가 거절한 이유: HTTP 400`.
+  it('showsHttp400WhenTheBodyHasNoReason', async () => {
+    mockFetchComplete([reply400('')]);
+    const { Wrapper } = makeWrapper();
+    render(<Wrapper />);
+    await goToStep4();
+    fireEvent.click(screen.getByRole('button', { name: '완료' }));
+    expect(await screen.findByText('서버가 거절한 이유: HTTP 400')).toBeInTheDocument();
+  });
+
+  // TZ-37 — 재요청 · [취소] · Esc 세 길에서 사유 줄이 사라진다. 전제: 매번 먼저 보였다.
+  it('clearsTheReasonOnRetryCancelAndEscape', async () => {
+    let releaseRetry: (() => void) | null = null;
+    const pendingThen400: CompleteReply = () =>
+      new Promise<Response>((resolve) => {
+        releaseRetry = () =>
+          resolve(new Response(JSON.stringify({ error: REASON }), { status: 400, headers: { 'Content-Type': 'application/json' } }));
+      });
+    mockFetchComplete([
+      reply400(JSON.stringify({ error: REASON })),
+      pendingThen400,
+      reply400(JSON.stringify({ error: REASON })),
+    ]);
+    const { Wrapper } = makeWrapper();
+    render(<Wrapper />);
+    const reasonText = `서버가 거절한 이유: ${REASON}`;
+
+    // ① 재요청 중에 사라진다.
+    let dialog = await openSkipModal();
+    fireEvent.click(within(dialog).getByRole('button', { name: '건너뛰기' }));
+    await within(dialog).findByText(reasonText);
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: '건너뛰기' })).toBeEnabled());
+    fireEvent.click(within(dialog).getByRole('button', { name: '건너뛰기' }));
+    await waitFor(() => expect(screen.queryByText(reasonText)).not.toBeInTheDocument());
+    expect(releaseRetry).not.toBeNull();
+    releaseRetry!();
+    await within(dialog).findByText(reasonText);
+
+    // ② [취소]로 닫으면 사라진다(다시 열어도 없음).
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: '취소' })).toBeEnabled());
+    fireEvent.click(within(dialog).getByRole('button', { name: '취소' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    dialog = await openSkipModal();
+    expect(within(dialog).queryByText(reasonText)).not.toBeInTheDocument();
+
+    // ③ Esc 로 닫아도 사라진다.
+    fireEvent.click(within(dialog).getByRole('button', { name: '건너뛰기' }));
+    await within(dialog).findByText(reasonText);
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: '취소' })).toBeEnabled());
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    dialog = await openSkipModal();
+    expect(within(dialog).queryByText(reasonText)).not.toBeInTheDocument();
+  });
+
+  // TZ-38 — 65536 이상 포트는 서버와 같은 기준으로 막는다 · [다음] 잠김.
+  it('rejectsAPortAboveTheServerMaximum', () => {
+    mockFetchOk();
+    const { Wrapper } = makeWrapper();
+    render(<Wrapper />);
+    const input = screen.getByLabelText('Server URL');
+    fireEvent.change(input, { target: { value: 'http://host:65536' } });
+    fireEvent.blur(input);
+    expect(screen.getByRole('alert')).toHaveTextContent('URL 포트 형식 오류 (예: :8765)');
+    expect(screen.getByRole('button', { name: '다음' })).toBeDisabled();
+    // 상한 그 자체(65535)는 통과.
+    fireEvent.change(input, { target: { value: 'http://host:65535' } });
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '다음' })).toBeEnabled();
   });
 });

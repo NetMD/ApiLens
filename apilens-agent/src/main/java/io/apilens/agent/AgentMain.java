@@ -50,12 +50,47 @@ import java.util.UUID;
  */
 public final class AgentMain {
 
-    // [Phase R18] FR-03/게이트 2 — 단일 jar 제품이라 제품 버전(build.gradle.kts:19)에 정렬.
-    //   0.1→0.4 점프는 정직(agent v0.1~v0.3 무변경, v0.4.0 이 agent 첫 변경 라운드).
-    //   손코딩 리터럴은 빌드 타임 주입(EXT-010 (B) 이상형) 미충족 surface — backlog(CHANGELOG).
-    // [Phase R20] R20/AC-13-1 — 0.4→0.6 점프도 정직(v0.5.0 은 agent 소스 diff 0 라운드 — AGENT_VERSION
-    //   0.4.0 유지가 의도였고, v0.6.0 이 두 번째 agent 변경 라운드). 위 낡은 좌표 :13 → :19 동반 정정.
-    public static final String AGENT_VERSION = "0.6.0";
+    // [v0.8.0] agent 가 보고하는 버전 = 제품 버전(build.gradle.kts 의 allprojects version 한 곳).
+    //   예전에는 agent 가 마지막으로 바뀐 라운드 번호(0.6.0)를 손으로 박아 두었는데, jar 파일은 0.8.0 인데
+    //   화면은 0.6.0 을 보여 주어 운영자가 배포가 안 된 줄 알고 헷갈렸다(사용자 결정 2026-09-27).
+    //   이제 빌드가 agent-version.properties 에 제품 버전을 심고, agent 는 그 값을 읽기만 한다.
+    public static final String AGENT_VERSION = readAgentVersion();
+
+    /** Value reported when neither the build-stamped resource nor the jar manifest carries a version. */
+    static final String UNKNOWN_VERSION = "unknown";
+
+    /**
+     * Reads the product version stamped into {@code agent-version.properties} at build time,
+     * falling back to the jar manifest's {@code Implementation-Version}, then {@link #UNKNOWN_VERSION}.
+     * Never throws — this runs in the host application's class initialisation.
+     */
+    static String readAgentVersion() {
+        // 1순위: 빌드가 심은 리소스 — 단위 시험에서도(jar 없이) 같은 값을 읽는다.
+        try (java.io.InputStream in = AgentMain.class.getResourceAsStream("agent-version.properties")) {
+            if (in != null) {
+                java.util.Properties props = new java.util.Properties();
+                props.load(in);
+                String v = props.getProperty("version");
+                // 치환이 안 된 원본(${version})이 섞여 들어오면 버전으로 쓰지 않는다.
+                if (v != null && !v.isBlank() && !v.contains("${")) {
+                    return v.trim();
+                }
+            }
+        } catch (Throwable ignored) {
+            // silent — 다음 출처로 넘어간다
+        }
+        // 2순위: jar 매니페스트(shadowJar 가 같은 제품 버전을 적는다).
+        try {
+            Package pkg = AgentMain.class.getPackage();
+            String v = pkg == null ? null : pkg.getImplementationVersion();
+            if (v != null && !v.isBlank()) {
+                return v.trim();
+            }
+        } catch (Throwable ignored) {
+            // silent
+        }
+        return UNKNOWN_VERSION;
+    }
 
     private AgentMain() {
     }

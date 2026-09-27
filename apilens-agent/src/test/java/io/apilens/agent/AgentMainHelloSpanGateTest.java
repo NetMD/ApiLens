@@ -56,6 +56,10 @@ class AgentMainHelloSpanGateTest {
         assertEquals(AgentMain.AGENT_VERSION,
                 hello.attributes().get("apilens.agent.version"),
                 "서비스별 agent 버전 표시의 원천 attribute 유지(R19 P-1 회귀 가드)");
-        assertEquals("0.6.0", AgentMain.AGENT_VERSION, "AGENT_VERSION = 제품 버전 정렬(두 번째 agent 변경 라운드)");
+        // [v0.8.0] 손으로 박은 번호가 아니라 빌드가 심은 제품 버전과 같아야 한다(jar 이름과 화면 버전 일치).
+        String expected = System.getProperty("apilens.expectedProductVersion");
+        assertNotNull(expected, "빌드 설정이 시험에 제품 버전을 넘겨야 한다");
+        assertEquals(expected, AgentMain.AGENT_VERSION, "AGENT_VERSION = 제품 버전(build.gradle.kts 한 곳)");
+        assertEquals(expected, AgentMain.readAgentVersion(), "리소스에서 다시 읽어도 같은 값");
     }
 }

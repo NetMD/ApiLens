@@ -1,7 +1,13 @@
 // [2026-09-24] 화면 주소 검사가 서버(java.net.URI.getHost)와 같은 판정을 내는지.
 // 기대값은 JDK 21(openjdk 21.0.12.1) 의 new URI(u).getHost() 로 잰 값이다 — 추정으로 채우지 말 것.
+// [R27/UA-R27-3] 포트 상한 65535 는 서버도 본다 — 아래 serverUrlProblemLikeServer 13 벡터는
+//   JDK 21 의 getHost·getPort 를 2026-09-25 에 직접 잰 값이고, 서버 SetupServiceTest 와 같은 벡터다.
 import { describe, expect, it } from 'vitest';
-import { hostOfLikeJavaUri, portProblemLikeJavaUri } from '../lib/javaUriHost';
+import {
+  hostOfLikeJavaUri,
+  portProblemLikeJavaUri,
+  serverUrlProblemLikeServer,
+} from '../lib/javaUriHost';
 
 describe('hostOfLikeJavaUri — Java URI.getHost 와 같은 판정', () => {
   it.each([
@@ -131,4 +137,29 @@ describe('portProblemLikeJavaUri — 포트만 틀린 주소 가리기', () => {
       expect(portProblemLikeJavaUri(url)).toBe(false);
     },
   );
+});
+
+// [R27/TZ-39] 서버 거부 여부와 같은 판정 — 거부 7 · 통과 6.
+// JDK 21(openjdk 21.0.12.1) 실측: new URI(u) 의 getHost / getPort
+//   :65536 · :065536 · user@host:65536 · :0000000000000065536 → host 있음 · port 65536 → 서버 상한 거부
+//   :99999 → 99999 · [::1]:65536 → [::1] · 65536 · :2147483648 → host null(서버는 호스트 없음 갈래로 거부)
+//   :65535 → 65535 · :0 → 0 · host: · [::1]: · host · u:99999@x → port -1 → 통과
+describe('serverUrlProblemLikeServer — 서버(SetupService)와 같은 거부 여부', () => {
+  it.each([
+    ['http://host:65536', 'port'],
+    ['http://host:065536', 'port'],
+    ['http://host:99999', 'port'],
+    ['http://[::1]:65536', 'port'],
+    ['http://host:2147483648', 'port'],
+    ['http://user@host:65536', 'port'],
+    ['http://host:0000000000000065536', 'port'],
+    ['http://host:65535', null],
+    ['http://host:0', null],
+    ['http://host:', null],
+    ['http://[::1]:', null],
+    ['http://host', null],
+    ['http://u:99999@x', null],
+  ] as const)('serverUrlProblemLikeServer(%s) → %s', (url, expected) => {
+    expect(serverUrlProblemLikeServer(url)).toBe(expected);
+  });
 });

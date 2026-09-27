@@ -269,6 +269,17 @@ public class RetentionCleanupService {
      */
     static final int SQL_STMT_GC_RECLAIMABLE_LIMIT = 50_000;
 
+    /**
+     * [Phase R27] R27/AC-27-02-1 — 「훑기 때의 표시점 <b>행</b>이 그대로인가」 술어 한 벌. 인자 = 표시점 rowid ·
+     * 표시점 span_id. 삭제 문장 안 가드와 접기 판정이 <b>이 한 문자열</b>을 함께 쓴다 — 두 자리가 다른 술어로
+     * 갈리면 「가드는 막았는데 접기는 안 접는」 식으로 어긋난다.
+     *
+     * <p>rowid 만 보지 않고 span_id 까지 보는 이유: 꼭대기가 지워졌다가 새 행이 <b>같은 rowid</b> 를 다시 받으면
+     * 최대 rowid 는 표시점과 같아진다(AUTOINCREMENT 없음). 그 자리를 다른 span 이 받았으면 span_id 로 갈린다 —
+     * 같은 span_id 가 같은 rowid 로 다시 들어온 드문 경우는 못 가린다(스키마 변경 없이 막지 않기로 한 한계).
+     */
+    private static final String WATERMARK_ROW_ALIVE = "SELECT 1 FROM spans WHERE rowid = ? AND span_id = ?";
+
     private final JdbcTemplate jdbc;
     private final TransactionTemplate tx;
     private final SettingsService settingsService;
@@ -682,8 +693,23 @@ public class RetentionCleanupService {
      *
      * <p><b>이 한계를 어떻게 처분했나</b> — [Phase R26] DF-R26-01 · 사용자 명시 결정(2026-09-15):
      * <b>알고 내보낸다</b>. ① 운영 규칙 = [전체 삭제]는 <b>수신을 멈춘 상태에서만</b> 누르고 04:00 정리 창은
-     * 피한다. ② 회전마다 표시점을 다시 보는 가드와 그 경계 시험은 <b>다음 라운드 첫 묶음</b>에 넣는다
-     * (백로그 SEC-R26-04 · RA-R26-04).
+     * 피한다. ② 회전마다 표시점을 다시 보는 가드와 그 경계 시험은 R27 에 넣었다(아래 문단).
+     *
+     * <p><b>[Phase R27] 가드가 하는 것과 못 하는 것</b> — R27/AC-27-02-1/R27/AC-27-02-2 · 사용자 명시 결정(UD-4):
+     * <ol>
+     *   <li><b>하는 것</b>: 회전마다 삭제 문장 <b>안에서</b> 훑기 때의 표시점 <b>행</b>(rowid + span_id)이 그대로인지
+     *       보고, 달라졌으면 그 회전은 아무것도 지우지 않고 실행을 접는다(접는 줄 한 줄 · 요약 줄은 남긴다).
+     *       판정은 삭제와 <b>같은 쓰기 잠금 안</b>에서 rowid + span_id 로 표시점 행이 그대로인지 본다 — 꼭대기가
+     *       지워진 뒤 같은 rowid 를 <b>다른</b> span 이 다시 받은 경우도 여기서 걸린다. 다만 같은 rowid 에
+     *       <b>같은 span_id</b> 가 다시 들어온 드문 경우는 못 가린다(세대 표식이 필요하고, 스키마 변경 없이는 막지
+     *       않기로 한 한계다).</li>
+     *   <li><b>못 하는 것</b>: 표시점 행이 지워진 경우를 알아챌 뿐이고, 다른 겹침 갈래가 없다는 증명은 아니다.
+     *       접기 전에 이미 커밋된 회전의 몫은 그대로다(그 회전 시점에는 표시점 행이 살아 있었다).</li>
+     *   <li><b>틀리는 방향</b>: 표시점 행이 [전체 삭제]가 아닌 다른 이유로 지워져도 접는다 — 원문이 남고 다음 밤이
+     *       다시 훑는다(안전한 쪽).</li>
+     *   <li>운영 규칙(수신을 멈추고 [전체 삭제] · 04:00 피함)은 <b>그대로 유효</b>하다. 근본 해소는 여전히
+     *       참조 계수 표(스키마 변경 동반 · 백로그)다.</li>
+     * </ol>
      *
      * <p><b>독립 실패 구간</b>: 예외를 밖으로 안 던진다. {@code finalizeMaintenance} 는 <b>어떤 경우에도</b>
      * 돈다 — 본문 정리({@link #gcUnreferencedPayloadBodies})와 <b>같은 모양</b>이다.
@@ -701,8 +727,17 @@ public class RetentionCleanupService {
      * (진입점 시그니처 불변 봉인).
      *
      * <p><b>다섯 걸음</b> — 순서가 뒤집히면 무엇이 무력화되는지 각 걸음 옆에 적었다.
+     *
+     * <p>[Phase R27] R27/AC-27-02-4 — 예산 시계는 옮기지 않는다(훑기 시간은 예산 밖 그대로). 옮기는 안의 승격 조건 =
+     * 한 실행이 {@code rounds=1} 이면서 {@code reclaimable > batchSize} 이고 <b>그 실행에 시간 예산 경고</b>
+     * ({@code stopped at the time budget})가 있을 때 — R27 기준 미충족(v0.7.1 여덟 밤 {@code reclaimable} 0~130).
      */
     void gcUnreferencedSqlStatements(int batchSize, long budgetMs, LongSupplier nanoClock) {
+        // [Phase R27] R27/AC-27-02-3 — 두 셈을 try **밖**으로 올렸다. 아래 catch 가 읽어 실패 줄에 싣는다.
+        //   값 = 예외 직전까지 **커밋된** 회전의 합(더하기는 삭제 트랜잭션이 돌아온 뒤에만 한다).
+        //   종전 실패 줄은 "아무것도 안 지웠다" 고 적었는데, 앞 회전이 커밋된 뒤 실패하면 그 문장은 거짓이었다.
+        int deleted = 0;
+        int rounds = 0;
         try {
             long started = nanoClock.getAsLong();
             log.info("sql statement gc start: batchSize={} budgetMs={}", batchSize, budgetMs);
@@ -730,8 +765,11 @@ public class RetentionCleanupService {
 
             // ④ ★표시점을 훑기 **앞**에 잡아야 한다. 뒤로 가면 훑기 도중에 들어온 행이 표시점보다 작아져
             //   재확인에서 빠지고, 그 순간 살아 있는 참조를 지운다.
+            //   [Phase R27] R27/AC-27-02-1 — 최대 rowid **값**이 아니라 표시점 **행**(rowid + span_id)을 잡는다.
+            //   아래 삭제 문장이 회전마다 그 행이 그대로인지 본다. 공개 인용 scan 줄은 그대로 rowid 만 싣는다.
             long scanStarted = nanoClock.getAsLong();
-            long watermarkRowid = watermarkOf();
+            WatermarkRow watermark = watermarkRowOf();
+            long watermarkRowid = watermark.rowid();
             // 회수 후보 = 어떤 span 도 안 가리키는 원문. ★IS NOT NULL 은 장식이 아니라 판정식이다 —
             //   빠지면 NULL 하나에 NOT IN 전체가 거짓이 되어 **조용히 0행**을 지우고 로그에는 deleted=0 만
             //   남는다("참조 없는 원문이 없다" 와 구별이 안 된다).
@@ -748,8 +786,6 @@ public class RetentionCleanupService {
                     elapsedMs(scanStarted, nanoClock), reclaimable.size(), watermarkRowid);
 
             // ⑤ 회전 루프 — 예산은 **여기에만** 걸린다(훑기 시간은 예산 밖).
-            int deleted = 0;
-            int rounds = 0;
             boolean budgetExhausted = false;
             for (int from = 0; from < reclaimable.size(); from += batchSize) {
                 // ★첫 회전은 판정 없이 돈다 — 예산이 0 이어도 전진이 멈추지 않는다.
@@ -772,10 +808,41 @@ public class RetentionCleanupService {
                     break;
                 }
                 List<String> chunk = reclaimable.subList(from, Math.min(from + batchSize, reclaimable.size()));
+                // [Phase R27] R27/AC-27-02-4 — 회전 하나를 세 구간으로 잰다. 이름·뜻은 본문 정리 회전 줄과 같다:
+                //   acquireMs = 트랜잭션 진입 → 콜백 시작(풀 대기 + begin · DEFERRED 라 잠금은 아직 없다)
+                //   statementMs = 삭제 한 문장(★쓰기 잠금 대기가 여기에 든다 — 첫 문장이 쓰기이기 때문이다)
+                //   commitMs = 콜백 끝 → 트랜잭션 반환(커밋 + 체크포인트 시도)
+                //   ★시계는 **주입한 nanoClock** 이다(본문 정리처럼 System.nanoTime 을 직접 부르지 않는다) —
+                //   시험의 가짜 시계가 세 값을 결정적으로 만든다. 시계 읽기는 SQL 이 아니라서 콜백 안에 있어도
+                //   「첫 문장은 쓰기」 규율과 무관하다. 왕복 필드는 따로 안 둔다 — 세 값의 합이 왕복이다
+                //   (정수 나눗셈이라 합이 왕복보다 최대 2 ms 작을 수 있다).
+                //   v0.7.1 까지의 statementMs 는 왕복이었다 — 같은 이름의 두 값을 한 열에서 견주지 않는다.
                 long roundStarted = nanoClock.getAsLong();
-                Integer n = tx.execute(status -> deleteReclaimableStatements(chunk, watermarkRowid));
-                log.info("sql statement gc round: round={} deleted={} recheckRows={} statementMs={}",
-                        rounds, n == null ? 0 : n, newSpans, elapsedMs(roundStarted, nanoClock));
+                long[] marks = new long[2];   // [0] 콜백 시작 · [1] 삭제 문장 반환
+                Integer n = tx.execute(status -> {
+                    marks[0] = nanoClock.getAsLong();
+                    Integer changed = deleteReclaimableStatements(chunk, watermark);
+                    marks[1] = nanoClock.getAsLong();
+                    return changed;
+                });
+                long roundEnded = nanoClock.getAsLong();
+                // [Phase R27] R27/AC-27-02-1 — 접기 판정. 삭제 문장 안 가드가 「표시점 행이 사라졌다」를 보면 그
+                //   회전은 한 행도 안 지운다(n == 0). 0 은 「이 묶음이 전부 새로 참조됐다」일 수도 있으므로 그때만
+                //   트랜잭션 **밖**에서 같은 술어로 한 번 더 읽어 가른다 — 평소 경로의 새 질의는 0 이다.
+                //   ★가드의 한계: 표시점 행이 지워진 경우를 알아채고 접을 뿐이고, 다른 겹침 갈래가 없다는 증명은
+                //   아니다(위 메서드 javadoc 「한계 그 자리에」). 틀리는 방향 = 다른 이유로 그 행이 지워져도 접는다
+                //   → 원문이 남고 다음 밤이 다시 훑는다(안전한 쪽).
+                //   ★접힌 회전은 회전 줄을 안 남기고 rounds 에 안 든다 — 아래 접는 줄이 그 회전의 기록이다.
+                if ((n == null || n == 0) && watermarkRowid != 0 && !watermarkRowAlive(watermark)) {
+                    log.warn("sql statement gc folded: watermarkRowid={} watermarkRowGone=1"
+                            + " — the watermark row changed under the scan, the next run rescans", watermarkRowid);
+                    break;
+                }
+                log.info("sql statement gc round: round={} deleted={} recheckRows={} acquireMs={} statementMs={} commitMs={}",
+                        rounds, n == null ? 0 : n, newSpans,
+                        (marks[0] - roundStarted) / 1_000_000L,
+                        (marks[1] - marks[0]) / 1_000_000L,
+                        (roundEnded - marks[1]) / 1_000_000L);
                 deleted += n == null ? 0 : n;
                 rounds++;
             }
@@ -786,7 +853,8 @@ public class RetentionCleanupService {
             log.info("sql statement gc: deleted={} rounds={} elapsedMs={}",
                     deleted, rounds, elapsedMs(started, nanoClock));
         } catch (Exception e) {
-            log.error("sql statement gc failed — nothing was deleted, the next run picks it up", e);
+            // [Phase R27] R27/AC-27-02-3 — 실패 줄이 그때까지 **커밋된** 몫을 말한다(요약 줄은 안 남긴다).
+            log.error("sql statement gc failed: deleted={} rounds={} — the next run picks it up", deleted, rounds, e);
         }
     }
 
@@ -802,14 +870,25 @@ public class RetentionCleanupService {
      * <p>★재확인 서브질의에 {@code json_valid} 가드를 <b>안 넣는다</b>. 넣으면 그것이 곧 금지된
      * "깨진 행 = 참조 없음" 읽기가 된다. 안 넣으면 훑기 뒤에 들어온 깨진 행은 이 문장이 <b>실패</b>하고
      * 아무것도 안 지운다 — 안전한 쪽이다.
+     *
+     * <p>[Phase R27] R27/AC-27-02-1/R27/AC-27-02-5 — 끝 조건 {@code (? = 0 OR EXISTS (표시점 행 술어))} 가
+     * 가드다. 이 문장이 쓰기 잠금을 얻은 뒤 <b>한 스냅숏에서</b> 평가되므로 가드와 삭제 사이에 틈이 없다.
+     * 가드를 따로 앞선 질의로 두지 않은 이유: 트랜잭션 안에 두면 첫 문장이 읽기가 되어 잠금 대기가 죽고,
+     * 트랜잭션 밖에 두면 질의와 삭제 사이에 틈이 남는다. ★그래서 <b>첫 문장은 여전히 이 DELETE 하나</b>다.
+     * 표시점이 0(훑기 때 span 표가 비어 있었음)이면 {@code ? = 0} 이 참이라 가드는 비켜 간다.
+     * 새 인자 셋(표시점 rowid 두 번 · 표시점 span_id)은 전부 바인딩이고 사용자 입력이 닿지 않는다.
+     * 자리 수 = 후보 {@code batchSize}(500) + 4 = 504 로 SQLite 옛 한도 999 안이다.
      */
-    private Integer deleteReclaimableStatements(List<String> chunk, long watermarkRowid) {
+    private Integer deleteReclaimableStatements(List<String> chunk, WatermarkRow watermark) {
         String placeholders = String.join(", ", Collections.nCopies(chunk.size(), "?"));
-        Object[] args = new Object[chunk.size() + 1];
+        Object[] args = new Object[chunk.size() + 4];
         for (int i = 0; i < chunk.size(); i++) {
             args[i] = chunk.get(i);
         }
-        args[chunk.size()] = watermarkRowid;
+        args[chunk.size()] = watermark.rowid();
+        args[chunk.size() + 1] = watermark.rowid();
+        args[chunk.size() + 2] = watermark.rowid();
+        args[chunk.size() + 3] = watermark.spanId();
         return jdbc.update("DELETE FROM sql_statements"
                 + " WHERE stmt_hash IN (" + placeholders + ")"
                 + " AND stmt_hash NOT IN ("
@@ -817,13 +896,28 @@ public class RetentionCleanupService {
                 + "     FROM spans s"
                 + "    WHERE s.rowid >= ?"
                 + "      AND json_extract(s.attributes_json, '$.\"apilens.stmt.ref\"') IS NOT NULL"
-                + " )", args);
+                + " )"
+                + " AND (? = 0 OR EXISTS (" + WATERMARK_ROW_ALIVE + "))", args);
     }
 
-    /** 표시점 — 훑기 시작 시점의 {@code spans} 최대 rowid. 빈 표면 0 이고 {@code rowid >= 0} 은 전체를 본다. */
-    private long watermarkOf() {
-        Long v = jdbc.queryForObject("SELECT COALESCE(MAX(rowid), 0) FROM spans", Long.class);
-        return v == null ? 0L : v;
+    /** [Phase R27] 훑기 때의 표시점 행. span 표가 비어 있었으면 {@code (0, null)}. */
+    private record WatermarkRow(long rowid, String spanId) {
+    }
+
+    /**
+     * [Phase R27] R27/AC-27-02-1 — 표시점 — 훑기 시작 시점의 {@code spans} 최대 rowid <b>행</b>(rowid + span_id).
+     * 빈 표면 {@code (0, null)} 이고 {@code rowid >= 0} 은 전체를 본다. 읽기 전용 자동 커밋(트랜잭션 밖)이다.
+     */
+    private WatermarkRow watermarkRowOf() {
+        WatermarkRow row = jdbc.query("SELECT rowid, span_id FROM spans ORDER BY rowid DESC LIMIT 1",
+                rs -> rs.next() ? new WatermarkRow(rs.getLong(1), rs.getString(2)) : null);
+        return row == null ? new WatermarkRow(0L, null) : row;
+    }
+
+    /** [Phase R27] 표시점 행이 지금도 그대로인가 — 삭제 문장 안 가드와 같은 술어({@link #WATERMARK_ROW_ALIVE}). */
+    private boolean watermarkRowAlive(WatermarkRow watermark) {
+        return countOf("SELECT COUNT(*) FROM (" + WATERMARK_ROW_ALIVE + ")",
+                watermark.rowid(), watermark.spanId()) > 0;
     }
 
     /** {@code COUNT(*)} 한 값을 읽는다. 값이 없으면 0 — 셈이 null 로 새지 않게 한다. */

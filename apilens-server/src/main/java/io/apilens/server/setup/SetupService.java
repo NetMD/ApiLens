@@ -49,6 +49,15 @@ public class SetupService {
      */
     static final int SETUP_SERVICES_MAX = 50;
 
+    /**
+     * [Phase R27] R27/AC-27-04-3 — 서버 주소 포트 상한. 사용자 명시 결정(UA-R27-3 · 서버·화면 동시).
+     * TCP 포트는 16비트라 65535 가 끝이다. {@code java.net.URI} 는 포트를 int 로 읽고 범위를 안 봐서
+     * {@code :65536}·{@code :99999} 를 그대로 돌려준다(JDK 21 실측) — 그래서 여기서 따로 본다.
+     * 화면 {@code javaUriHost.ts} 의 같은 상한과 짝이다(같은 벡터를 양쪽 시험이 함께 돈다).
+     * 하한({@code :0})은 이번 결정 밖이라 통과를 유지한다.
+     */
+    static final int SERVER_URL_PORT_MAX = 65_535;
+
     private final SetupRepository repo;
 
     public SetupService(SetupRepository repo) {
@@ -95,7 +104,10 @@ public class SetupService {
      * <ul>
      *   <li>serverUrl 이 빈 문자열/null → 통과 (skip 경로 — setup_state.server_url 은 NULL 로 저장)</li>
      *   <li>serverUrl 이 있으면 http(s):// 형식 검증</li>
-     *   <li>services 는 null/[]/omit 동등 (Q-01) — 정상 분기. 각 name 만 정규식 검증</li>
+     *   <li>serverUrl 이 있으면 호스트가 있어야 한다 ([Phase R26])</li>
+     *   <li>serverUrl 에 포트가 적혀 있으면 {@value #SERVER_URL_PORT_MAX} 이하여야 한다 ([Phase R27] · 포트를
+     *       안 적은 주소와 빈 포트({@code http://host:})는 통과)</li>
+     *   <li>services 는 null/[]/omit 동등 (Q-01) — 정상 분기. 개수 상한({@value #SETUP_SERVICES_MAX}) · 각 name 정규식 검증</li>
      * </ul>
      */
     private static void validate(SetupCompleteRequest req) {
@@ -113,6 +125,13 @@ public class SetupService {
         //   빈 값·null 은 위 skip 경로 그대로다. 주소 만들기가 실패하면 호스트 없음으로 본다.
         if (url != null && !url.isBlank() && hostOf(url) == null) {
             throw new IllegalArgumentException("serverUrl must include a host (예: http://192.168.0.10:8765)");
+        }
+        // [Phase R27] R27/AC-27-04-3 — 포트 상한(UA-R27-3 · 사용자 명시 결정). 호스트 검사 **뒤**라 여기 닿은 주소는
+        //   이미 주소로 읽힌다. ★D-04(비협상): 빈 값·null 은 위 skip 경로 그대로 — 같은 앞머리
+        //   (url != null && !url.isBlank())를 둬 이 검사가 그 갈래를 좁히지 않는다. CLAUDE.md '아키텍처 핵심 원칙' 인용.
+        //   거부 방향만 넓힌다: 포트를 안 적은 주소는 getPort() = -1 이라 통과한다.
+        if (url != null && !url.isBlank() && portOf(url) > SERVER_URL_PORT_MAX) {
+            throw new IllegalArgumentException("serverUrl port must be 65535 or less");
         }
         // [Phase R26] R26/AC-R26-29 — 서비스 배열 상한(사용자 명시 결정 UA-11). 문면에 **몇 개까지 되는지**를
         //   적는다 — 숫자가 없으면 운영자가 몇 개를 줄여야 하는지 모른다. 거부 방향만 넓힌다.
@@ -144,6 +163,20 @@ public class SetupService {
             return (host == null || host.isBlank()) ? null : host;
         } catch (java.net.URISyntaxException e) {
             return null;
+        }
+    }
+
+    /**
+     * [Phase R27] R27/AC-27-04-3 — 주소에 적힌 포트. 안 적었으면 {@code -1}.
+     *
+     * <p>주소로 못 읽으면({@code URISyntaxException}) {@code -1} — 호스트 검사를 이미 통과한 주소만 여기 오므로
+     * 닿지 않는 갈래이고, 닿더라도 이 검사는 통과시키는 쪽(앞 검사가 이미 거부했을 값)이다.
+     */
+    private static int portOf(String url) {
+        try {
+            return new java.net.URI(url).getPort();
+        } catch (java.net.URISyntaxException e) {
+            return -1;
         }
     }
 

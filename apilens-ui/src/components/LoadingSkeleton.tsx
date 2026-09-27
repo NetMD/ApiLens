@@ -1,4 +1,5 @@
 // 로딩 스켈레톤. 산점도/리스트 영역에 회색 블록.
+// [R27/UB-05] 깜빡임은 움직임 줄이기 설정을 따른다(motion-reduce) — 같은 대시보드에서 차트만 설정을 따르는 어긋남 제거.
 import type { ReactNode } from 'react';
 
 interface Props {
@@ -13,7 +14,7 @@ export function LoadingSkeleton({ variant = 'chart' }: Props): ReactNode {
         {Array.from({ length: 6 }, (_, i) => (
           <div
             key={i}
-            className="h-12 animate-pulse rounded border border-stone-200 bg-stone-50"
+            className="h-12 animate-pulse rounded border border-stone-200 bg-stone-50 motion-reduce:animate-none"
           />
         ))}
       </div>
@@ -23,7 +24,7 @@ export function LoadingSkeleton({ variant = 'chart' }: Props): ReactNode {
     <div
       role="status"
       aria-label="Loading"
-      className="h-full min-h-64 w-full animate-pulse rounded-lg border border-stone-200 bg-stone-50"
+      className="h-full min-h-64 w-full animate-pulse rounded-lg border border-stone-200 bg-stone-50 motion-reduce:animate-none"
     />
   );
 }

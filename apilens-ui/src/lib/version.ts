@@ -18,4 +18,7 @@
 //   ★이번 라운드는 package.json 이 0.6.2 로 두 세대 뒤처져 있던 것을 함께 맞춘다 —
 //     「화면을 여는 첫 라운드에서 맞춘다」가 2026-08-28 확정이고 이번이 그 라운드다.
 //     그래서 이 파일과 package.json 을 **같이** 올린다 (한쪽만 올리면 version.test.ts 가 빨개진다).
-export const APP_VERSION = 'v0.7';
+// [Phase R27] FR-27-12 (설계 §1.2 · 부록 C): v0.7 → v0.8 — v0.8.0 릴리스 UI 표시 라벨 (package.json 0.8.0 동기).
+//   사용자 명시 결정(UD-2 minor). CLAUDE.md ':28' 「9. **버전」 — 제품 버전 원본은 build.gradle.kts, 이 파일은 표시 라벨.
+//   package.json 과 같이 올린다(version.test.ts 가 앞 두 자리 일치를 단언). lock 은 npm 으로 버전 줄만.
+export const APP_VERSION = 'v0.8';

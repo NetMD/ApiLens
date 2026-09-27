@@ -14,11 +14,12 @@
 //
 // step 진행 상태를 URL search 의 ?step=1~4 에 박는다 (요청서 명시 R3 회귀 가드).
 // 입력 값 (serverUrl/serviceName/captureParams/captureResultSet) 은 useState — SH-11.
-import { useId, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { useSearchParams } from 'react-router';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { completeSetup } from '../api/setup';
+import { ApiError } from '../api/client';
 import type { SetupCompleteRequest } from '../types/api';
 import {
   buildAgentOptionPreview,
@@ -31,7 +32,7 @@ import { useSearchPreservingNavigate } from '../hooks/useSearchPreservingNavigat
 import { useAgentJarPath } from '../hooks/useAgentJarPath';
 // Phase R12 (FR-D3, AC-D3-2): 버전 라벨 단일 거주지 (DG-01 — 직전 세션 착수분의 import 누락 보완)
 import { APP_VERSION } from '../lib/version';
-import { hostOfLikeJavaUri, portProblemLikeJavaUri } from '../lib/javaUriHost';
+import { serverUrlProblemLikeServer } from '../lib/javaUriHost';
 import { Stepper } from '../components/Stepper';
 import { Toggle } from '../components/Toggle';
 import { Modal } from '../components/Modal';
@@ -83,6 +84,27 @@ export function Setup(): ReactNode {
   // skip confirm 모달.
   const [skipConfirmOpen, setSkipConfirmOpen] = useState(false);
   const skipCancelRef = useRef<HTMLButtonElement | null>(null);
+  const completeButtonRef = useRef<HTMLButtonElement | null>(null);
+
+  // [R27/FR-27-10] 서버가 400 으로 거절한 이유 — 입력 가까이 시간 제한 없는 한 줄(UXD-18 · UC-08).
+  //   where = 어느 단추가 받은 400 인가([완료] = 하단 단추 줄 위 · [건너뛰기] = 모달 안 단추 줄 위).
+  //   지우는 때 = 새 요청 · 모달 닫힘 · 주소나 이름 입력 변경 · 성공.
+  const [rejectReason, setRejectReason] = useState<{
+    where: 'complete' | 'skip';
+    text: string;
+  } | null>(null);
+  // 400 뒤 초점 예약 — onError 시점에는 단추가 아직 잠겨 있어(뮤테이션이 오류 콜백 뒤에 상태를 바꾼다)
+  //   풀린 렌더의 효과에서 옮긴다. 옮긴 즉시 비운다.
+  const pendingFocusRef = useRef<'complete' | 'skip' | null>(null);
+
+  const changeServerUrl = (next: string): void => {
+    setServerUrl(next);
+    setRejectReason(null);
+  };
+  const changeServiceName = (next: string): void => {
+    setServiceName(next);
+    setRejectReason(null);
+  };
 
   const setStep = (next: StepNum): void => {
     setSearchParams(
@@ -107,10 +129,11 @@ export function Setup(): ReactNode {
     }
     // [2026-09-24 RA-R26-12] 서버 검사(SetupService.hostOf)가 호스트까지 보므로 화면도 같은 기준으로 맞춘다 —
     //   접두만 보면 "http://" 가 통과해 [완료]에서야 400 을 받고 "잠시 후 다시 시도" 라는 틀린 안내를 보게 된다.
-    if (hostOfLikeJavaUri(serverUrl) === null) {
-      if (portProblemLikeJavaUri(serverUrl)) return 'URL 포트 형식 오류 (예: :8765)';
-      return 'URL 호스트 없음 (예: http://your-apilens-host:8765)';
-    }
+    // [R27/UA-R27-3] 서버가 포트 상한 65535 도 보게 되어 같은 커밋에서 화면도 같은 판정 함수 하나로 고른다
+    //   (운영 경로 = 짝 시험 경로 · javaUriHost.test.ts). 새로 막히는 주소 = 65536 이상 포트.
+    const problem = serverUrlProblemLikeServer(serverUrl);
+    if (problem === 'port') return 'URL 포트 형식 오류 (예: :8765)';
+    if (problem === 'host') return 'URL 호스트 없음 (예: http://your-apilens-host:8765)';
     return null;
   })();
   const serviceNameError = ((): string | null => {
@@ -144,7 +167,13 @@ export function Setup(): ReactNode {
   // Setup 완료 mutation (skip + 완료 공통 — POST /v1/setup/complete).
   const completeMutation = useMutation({
     mutationFn: async (body: SetupCompleteRequest) => completeSetup(body),
+    // [R27/FR-27-10] 새 요청을 보낼 때 지난 거절 이유를 지운다.
+    onMutate: () => {
+      setRejectReason(null);
+      pendingFocusRef.current = null;
+    },
     onSuccess: async (_data, vars) => {
+      setRejectReason(null);
       // SH-16 — 두 경로 (skip / 완료) 모두 invalidate.
       await queryClient.invalidateQueries({ queryKey: ['setup', 'state'] });
       await queryClient.invalidateQueries({ queryKey: ['services'] });
@@ -169,8 +198,18 @@ export function Setup(): ReactNode {
         nav('/');
       }
     },
-    onError: (_err, vars) => {
-      if (vars.services && vars.services.length > 0) {
+    onError: (err, vars) => {
+      const where = vars.services && vars.services.length > 0 ? 'complete' : 'skip';
+      // [R27/FR-27-10] 400 만 서버 사유를 보인다 — 서버 원문은 알림이 아니라 입력 가까이 한 줄(UXD-11).
+      //   [완료] = 알림 한 줄(UC-02) + 사유 줄 · [건너뛰기] = 알림 없음(UC-03) · 모달 안 사유 줄.
+      //   400 밖(5xx · 네트워크)은 지금 두 문구 그대로.
+      if (err instanceof ApiError && err.status === 400) {
+        setRejectReason({ where, text: err.message });
+        pendingFocusRef.current = where;
+        if (where === 'complete') toast.error('Setup 완료 실패 — 입력값을 확인해 주세요');
+        return;
+      }
+      if (where === 'complete') {
         toast.error('Setup 완료 실패 — 잠시 후 다시 시도해 주세요');
       } else {
         toast.error('건너뛰기 실패 — 잠시 후 다시 시도해 주세요');
@@ -179,6 +218,34 @@ export function Setup(): ReactNode {
   });
 
   const isCompleting = completeMutation.isPending;
+
+  // [R27/UF-01·02] 400 으로 단추가 다시 살아난 렌더에서 한 번 초점을 옮긴다 —
+  //   [완료] 갈래는 [완료] 단추 · [건너뛰기] 갈래는 모달 [취소](열릴 때 첫 초점과 같은 자리 · Enter 되풀이 방지).
+  useEffect(() => {
+    if (isCompleting) return;
+    const target = pendingFocusRef.current;
+    if (target === null) return;
+    pendingFocusRef.current = null;
+    (target === 'complete' ? completeButtonRef : skipCancelRef).current?.focus();
+  }, [isCompleting, rejectReason]);
+
+  // [R27/RP-10 ③] 모달이 닫히면([취소] · Esc · 바깥 클릭 세 길 전부) 모달 안 사유 줄을 지운다 — 효과 한 곳.
+  useEffect(() => {
+    if (!skipConfirmOpen) {
+      setRejectReason((prev) => (prev?.where === 'skip' ? null : prev));
+    }
+  }, [skipConfirmOpen]);
+
+  // [R27/GT-R27-21] 모달 닫기 콜백을 고정한다 — 인라인 화살표면 렌더마다 초점 가둠 효과가 다시 돌아
+  //   복원 자리를 다시 잡는다(요청 중 렌더에서 모달 안 단추로 바뀌면 [취소] 뒤 초점이 헤더
+  //   [건너뛰기 →]로 안 돌아간다). isCompleting 은 ref 로 읽어 의존성을 비운다.
+  const isCompletingRef = useRef(isCompleting);
+  useEffect(() => {
+    isCompletingRef.current = isCompleting;
+  }, [isCompleting]);
+  const closeSkipModal = useCallback((): void => {
+    if (!isCompletingRef.current) setSkipConfirmOpen(false);
+  }, []);
 
   // 핸들러 ───────────────────────────────────────────────────────
   const handleNext = (e?: FormEvent): void => {
@@ -286,7 +353,7 @@ export function Setup(): ReactNode {
             {step === 1 && (
               <Step1
                 value={serverUrl}
-                onChange={setServerUrl}
+                onChange={changeServerUrl}
                 onBlur={() => setServerUrlBlurred(true)}
                 error={serverUrlBlurred ? serverUrlError : null}
                 onEnter={() => canNextFromStep1 && handleNext()}
@@ -295,7 +362,7 @@ export function Setup(): ReactNode {
             {step === 2 && (
               <Step2
                 value={serviceName}
-                onChange={setServiceName}
+                onChange={changeServiceName}
                 onBlur={() => setServiceNameBlurred(true)}
                 error={serviceNameBlurred ? serviceNameError : null}
                 onEnter={() => canNextFromStep2 && handleNext()}
@@ -322,6 +389,13 @@ export function Setup(): ReactNode {
             )}
           </div>
 
+          {/* [R27/UXD-18] [완료] 400 사유 줄 — 하단 단추 줄 바로 위 · 단계와 상관없이 지우는 때까지 남는다(RP-10 ④). */}
+          {rejectReason?.where === 'complete' && (
+            <p role="alert" className="break-words text-sm text-stone-900">
+              서버가 거절한 이유: {rejectReason.text}
+            </p>
+          )}
+
           {/* footer buttons */}
           <div className="flex items-center justify-between">
             <button
@@ -347,6 +421,7 @@ export function Setup(): ReactNode {
             )}
             {step === 4 && (
               <button
+                ref={completeButtonRef}
                 type="button"
                 onClick={handleComplete}
                 disabled={!canSubmitStep4}
@@ -362,7 +437,7 @@ export function Setup(): ReactNode {
       {/* Skip confirm 모달 */}
       <Modal
         open={skipConfirmOpen}
-        onClose={() => !isCompleting && setSkipConfirmOpen(false)}
+        onClose={closeSkipModal}
         title="Setup 건너뛰기"
         initialFocusRef={skipCancelRef}
       >
@@ -370,6 +445,12 @@ export function Setup(): ReactNode {
           Setup 을 건너뛰시겠어요? <code className="font-mono text-stone-900">docs/setup.md</code>{' '}
           를 참고해 직접 옵션을 만들 수 있어요
         </p>
+        {/* [R27/UXD-18] [건너뛰기] 400 사유 줄 — 모달 본문 안 · 단추 줄 바로 위(모달 밖 알림은 aria-modal 뒤라 못 읽힐 수 있다). */}
+        {rejectReason?.where === 'skip' && (
+          <p role="alert" className="mt-4 break-words text-sm text-stone-900">
+            서버가 거절한 이유: {rejectReason.text}
+          </p>
+        )}
         <div className="mt-5 flex justify-end gap-2">
           <button
             ref={skipCancelRef}

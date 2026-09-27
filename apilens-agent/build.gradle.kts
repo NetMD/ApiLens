@@ -36,6 +36,22 @@ dependencies {
     testImplementation(libs.spring.boot.starter.jdbc)
 }
 
+// [v0.8.0] agent 가 보고하는 버전을 제품 버전에 묶는다 — 빌드가 리소스에 버전을 심고 AgentMain 이 읽는다.
+//   손으로 박은 버전 문자열이 제품 버전과 갈려 화면(0.6.0)과 jar 이름(0.8.0)이 달랐던 혼동을 없앤다.
+// 버전 문자열은 각 블록 안 지역 변수로 잡는다 — 스크립트 최상단 변수를 람다가 잡으면 설정 캐시가 거부한다.
+tasks.processResources {
+    val agentVersionText = project.version.toString()
+    inputs.property("agentVersion", agentVersionText)
+    filesMatching("io/apilens/agent/agent-version.properties") {
+        expand("version" to agentVersionText)
+    }
+}
+
+tasks.test {
+    // 시험이 「빌드가 심은 값 = 제품 버전」을 대조할 기준값.
+    systemProperty("apilens.expectedProductVersion", project.version.toString())
+}
+
 tasks.jar {
     enabled = false
     dependsOn(tasks.shadowJar)

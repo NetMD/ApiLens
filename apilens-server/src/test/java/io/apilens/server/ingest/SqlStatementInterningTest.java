@@ -313,13 +313,17 @@ class SqlStatementInterningTest {
     /**
      * ★삭제 트랜잭션의 <b>첫 문장</b>이 쓰기이고, 재확인이 <b>표시점 이후 span 으로 묶여</b> 있다.
      *
-     * <p>세 가지를 한 시험에서 본다:
+     * <p>네 가지를 한 시험에서 본다:
      * <ol>
-     *   <li>회수 트랜잭션 안에서 처음 실행된 SQL 이 {@code DELETE} 로 시작한다 — 읽기로 시작하면
-     *       SQLite(WAL)가 처음 쓰려 할 때 잠금 대기를 안 부르고 즉시 물러나 <b>수신이 유실된다</b>.</li>
-     *   <li>그 문장에 {@code rowid >=} 와 {@code IS NOT NULL} 이 둘 다 있다 — 앞것이 없으면 표 전체를
-     *       다시 훑어 잠금이 길어지고, 뒷것이 없으면 NULL 하나에 <b>조용히 0행</b>이 된다.</li>
+     *   <li>회수 트랜잭션 안에서 실행된 SQL 이 <b>정확히 한 문장</b>이고 {@code DELETE} 로 시작한다 — 읽기로
+     *       시작하면 SQLite(WAL)가 처음 쓰려 할 때 잠금 대기를 안 부르고 즉시 물러나 <b>수신이 유실된다</b>.</li>
+     *   <li>그 문장에 {@code rowid >=} · {@code IS NOT NULL} · 표시점 행 가드({@code span_id = ?})가 다 있다 —
+     *       [Phase R27] R27/AC-27-02-5: 가드는 별도 질의가 아니라 삭제 문장의 조건이고, 표시점 행 읽기와 상한
+     *       검사는 트랜잭션 <b>밖</b>이다.</li>
      *   <li>훑기와 삭제 <b>사이에</b> 새 span 을 끼워 넣으면 그 원문이 안 지워진다(경쟁 갈래).</li>
+     *   <li>[Phase R27] 기록은 JdbcTemplate 이 아니라 <b>DataSource·Connection 프록시</b>가 한다 — 드라이버에
+     *       실제로 간 SQL 을 모으므로 JdbcTemplate 의 어느 겹쳐쓰기(2-인자 조회 포함)를 거쳤는지와 무관하다.
+     *       기록(2026-09-25 실측): 표시점 행 읽기를 삭제 콜백 <b>안</b>으로 옮긴 판에서 돌리면 빨갛다.</li>
      * </ol>
      */
     @Test
@@ -332,29 +336,39 @@ class SqlStatementInterningTest {
                 "전제: 훑기 시점에 그 원문이 실제로 회수 후보여야 한다");
 
         RetentionCleanupService cleanup = newCleanupService();
+        // 정리 진입점의 jdbc·tx 가 **같은 프록시 DataSource** 를 쓰게 한다(트랜잭션이 같은 연결에 묶인다).
+        SqlRecorder recorder = new SqlRecorder();
+        DataSource recorded = recorder.wrap(jdbc.getDataSource());
         // 훑기(후보 목록 조회)가 끝난 **직후** 새 span 을 끼워 넣는다 — 경합을 타이밍이 아니라 순서로 만든다.
-        StatementGcSpy spy = new StatementGcSpy(jdbc, () ->
-                insertRawSpan("s-late", "t-late", "{\"apilens.stmt.ref\":\"" + reclaimableRef + "\"}"));
-        setCleanupJdbc(cleanup, spy);
-        setCleanupTx(cleanup, new FlaggingTx(new DataSourceTransactionManager(jdbc.getDataSource()), spy));
+        setCleanupJdbc(cleanup, new AfterScanJdbc(recorded, () ->
+                insertRawSpan("s-late", "t-late", "{\"apilens.stmt.ref\":\"" + reclaimableRef + "\"}")));
+        setCleanupTx(cleanup, new TransactionTemplate(new DataSourceTransactionManager(recorded)));
 
         cleanup.cleanup();
 
-        // 트랜잭션마다 **처음 실행된 문장**을 모아 뒀다. 그중 원문 표를 건드리는 것이 회수의 트랜잭션이다.
-        String firstOfStatementTx = spy.firstStatementsPerTx.stream()
-                .filter(s -> s.contains("sql_statements"))
-                .findFirst()
-                .orElse(null);
-        assertNotNull(firstOfStatementTx,
-                "회수 트랜잭션의 첫 문장이 원문 표를 안 건드리면(읽기로 시작하면) 여기서 걸린다 — 실제: "
-                        + spy.firstStatementsPerTx);
-        String head = firstOfStatementTx.stripLeading().toUpperCase(java.util.Locale.ROOT);
+        // 전제 — 표시점 행 읽기(2-인자 조회 · Statement 경로)가 트랜잭션 밖 목록에 실제로 잡혔다.
+        //   이것이 잡히지 않으면 이 기록기가 어떤 경로를 놓치는지 모른 채 「트랜잭션 안 1문장」을 믿게 된다.
+        assertTrue(recorder.outside.stream().anyMatch(q -> q.contains("ORDER BY rowid DESC LIMIT 1")),
+                "전제: 표시점 행 읽기가 트랜잭션 밖에서 잡혀야 한다 — 실제 밖 목록: " + recorder.outside);
+        assertTrue(recorder.outside.stream().anyMatch(q -> q.contains("COUNT(*) FROM spans WHERE rowid >= ?")),
+                "전제: 재확인 상한 검사가 트랜잭션 밖에서 잡혀야 한다 — 실제 밖 목록: " + recorder.outside);
+
+        // 원문 표를 건드리는 트랜잭션이 회수의 트랜잭션이다.
+        List<List<String>> gcTxs = recorder.transactions.stream()
+                .filter(t -> t.stream().anyMatch(q -> q.contains("sql_statements")))
+                .toList();
+        assertEquals(1, gcTxs.size(), "회수 트랜잭션은 하나다(후보 1 · 회전 1) — 실제: " + recorder.transactions);
+        List<String> gcTx = gcTxs.get(0);
+        assertEquals(1, gcTx.size(),
+                "회수 트랜잭션 안의 SQL 은 정확히 한 문장(DELETE)이다 — 가드·상한·표시점 읽기가 들어오면 여기서 걸린다"
+                        + " · 실제: " + gcTx);
+        String only = gcTx.get(0);
+        String head = only.stripLeading().toUpperCase(java.util.Locale.ROOT);
         assertTrue(head.startsWith("DELETE"),
-                "회수 트랜잭션의 첫 문장은 쓰기(DELETE)여야 잠금 대기가 산다 — 실제: " + firstOfStatementTx);
-        assertTrue(firstOfStatementTx.contains("rowid >="),
-                "재확인이 표시점으로 묶여 있어야 한다 — 실제: " + firstOfStatementTx);
-        assertTrue(firstOfStatementTx.contains("IS NOT NULL"),
-                "IS NOT NULL 이 빠지면 조용히 0행이 된다 — 실제: " + firstOfStatementTx);
+                "회수 트랜잭션의 첫 문장은 쓰기(DELETE)여야 잠금 대기가 산다 — 실제: " + only);
+        assertTrue(only.contains("rowid >="), "재확인이 표시점으로 묶여 있어야 한다 — 실제: " + only);
+        assertTrue(only.contains("IS NOT NULL"), "IS NOT NULL 이 빠지면 조용히 0행이 된다 — 실제: " + only);
+        assertTrue(only.contains("span_id = ?"), "표시점 행 가드가 삭제 문장 안에 있다 — 실제: " + only);
 
         assertEquals(1, count("SELECT COUNT(*) FROM spans WHERE span_id = 's-late'"),
                 "전제: 끼워 넣은 span 이 실제로 들어갔어야 경쟁 갈래를 잰 것이 된다");
@@ -425,44 +439,20 @@ class SqlStatementInterningTest {
     }
 
     /**
-     * 회수 훑기가 끝난 <b>직후</b> 주어진 일을 한 번 하고, <b>트랜잭션마다 처음 실행된 SQL</b> 을 모은다.
-     *
-     * <p>회수의 후보 목록 조회는 {@code queryForList(String, Class, Object...)} 한 자리뿐이라 그 호출을
-     * 훑기 종료 신호로 쓴다. 생산 코드는 한 글자도 안 바뀐다 — 시험 전용 주입이다.
+     * 회수 훑기(후보 목록 조회)가 끝난 <b>직후</b> 주어진 일을 한 번 한다. 조회가 끝나 결과를 다 읽은 뒤라
+     * 다른 연결의 쓰기가 막히지 않는다. SQL 기록은 이 클래스가 아니라 {@link SqlRecorder} 가 한다.
      */
-    private static final class StatementGcSpy extends JdbcTemplate {
+    private static final class AfterScanJdbc extends JdbcTemplate {
         private final Runnable afterScan;
         private boolean scanned = false;
-        private final List<String> firstStatementsPerTx = new java.util.ArrayList<>();
-        private boolean inTx = false;
-        private String firstOfCurrentTx = null;
 
-        StatementGcSpy(JdbcTemplate delegate, Runnable afterScan) {
-            super(java.util.Objects.requireNonNull(delegate.getDataSource()));
+        AfterScanJdbc(DataSource dataSource, Runnable afterScan) {
+            super(dataSource);
             this.afterScan = afterScan;
-        }
-
-        void txStarted() {
-            inTx = true;
-            firstOfCurrentTx = null;
-        }
-
-        void txEnded() {
-            inTx = false;
-            if (firstOfCurrentTx != null) {
-                firstStatementsPerTx.add(firstOfCurrentTx);
-            }
-        }
-
-        private void note(String sql) {
-            if (inTx && firstOfCurrentTx == null) {
-                firstOfCurrentTx = sql;
-            }
         }
 
         @Override
         public <T> List<T> queryForList(String sql, Class<T> elementType, Object... args) {
-            note(sql);
             List<T> out = super.queryForList(sql, elementType, args);
             if (!scanned && sql.contains("FROM sql_statements")) {
                 scanned = true;
@@ -470,59 +460,89 @@ class SqlStatementInterningTest {
             }
             return out;
         }
-
-        @Override
-        public int update(String sql, Object... args) {
-            note(sql);
-            return super.update(sql, args);
-        }
-
-        @Override
-        public int update(String sql) {
-            note(sql);
-            return super.update(sql);
-        }
-
-        @Override
-        public <T> T queryForObject(String sql, Class<T> requiredType, Object... args) {
-            note(sql);
-            return super.queryForObject(sql, requiredType, args);
-        }
-
-        @Override
-        public Map<String, Object> queryForMap(String sql, Object... args) {
-            note(sql);
-            return super.queryForMap(sql, args);
-        }
     }
 
-    /** 트랜잭션의 시작·끝을 spy 에 알린다. 같은 DataSource 라 Spring 트랜잭션에 함께 묶인다. */
-    @SuppressWarnings("serial")
-    private static final class FlaggingTx extends TransactionTemplate {
-        private final StatementGcSpy spy;
+    /**
+     * [Phase R27] R27/AC-27-02-5 — DataSource·Connection·Statement 를 프록시로 감싸 <b>드라이버에 실제로 간 SQL</b>
+     * 을 연결별로 모은다. {@code setAutoCommit(false)} ~ {@code commit}/{@code rollback} 사이는 그 트랜잭션의 목록,
+     * 그 밖은 {@link #outside} 목록이다. {@code prepareStatement}·{@code prepareCall} 은 준비할 때의 SQL 을,
+     * {@code createStatement} 는 돌려준 Statement 의 {@code execute*}·{@code addBatch} SQL 을 적는다.
+     *
+     * <p>★JdbcTemplate 겹쳐쓰기로 모으던 종전 스파이는 2-인자 {@code queryForObject(String, Class)} 가 가변 인자판을
+     * 거치지 않아 그 경로를 놓쳤다(spring-jdbc 6.2.1). 이 기록기는 겹쳐쓰기와 무관하다.
+     * {@code equals}·{@code hashCode} 는 프록시 자신 기준이다 — Spring 이 DataSource·연결을 열쇠로 쓴다.
+     */
+    private static final class SqlRecorder {
+        final List<List<String>> transactions = new java.util.ArrayList<>();
+        final List<String> outside = new java.util.ArrayList<>();
+        private final Map<java.sql.Connection, List<String>> open = new java.util.IdentityHashMap<>();
 
-        FlaggingTx(PlatformTransactionManager tm, StatementGcSpy spy) {
-            super(tm);
-            this.spy = spy;
+        DataSource wrap(DataSource target) {
+            return proxy(DataSource.class, target, (p, m, a) -> {
+                Object out = invoke(target, m, a);
+                if (m.getName().equals("getConnection") && out instanceof java.sql.Connection c) {
+                    return wrapConnection(c);
+                }
+                return out;
+            });
         }
 
-        @Override
-        public <T> T execute(org.springframework.transaction.support.TransactionCallback<T> action) {
-            spy.txStarted();
-            try {
-                return super.execute(action);
-            } finally {
-                spy.txEnded();
-            }
+        private java.sql.Connection wrapConnection(java.sql.Connection target) {
+            java.sql.Connection[] self = new java.sql.Connection[1];
+            self[0] = proxy(java.sql.Connection.class, target, (p, m, a) -> {
+                String name = m.getName();
+                if ((name.equals("prepareStatement") || name.equals("prepareCall")) && a != null
+                        && a[0] instanceof String sql) {
+                    note(self[0], sql);
+                }
+                Object out = invoke(target, m, a);
+                if (name.equals("setAutoCommit") && a != null && Boolean.FALSE.equals(a[0])) {
+                    open.put(self[0], new java.util.ArrayList<>());
+                } else if (name.equals("commit") || name.equals("rollback")) {
+                    List<String> done = open.remove(self[0]);
+                    if (done != null) {
+                        transactions.add(done);
+                    }
+                } else if (name.equals("createStatement") && out instanceof java.sql.Statement st) {
+                    return wrapStatement(self[0], st);
+                }
+                return out;
+            });
+            return self[0];
         }
 
-        @Override
-        public void executeWithoutResult(Consumer<TransactionStatus> action) {
-            spy.txStarted();
+        private java.sql.Statement wrapStatement(java.sql.Connection owner, java.sql.Statement target) {
+            return proxy(java.sql.Statement.class, target, (p, m, a) -> {
+                String name = m.getName();
+                if ((name.startsWith("execute") || name.equals("addBatch")) && a != null && a.length > 0
+                        && a[0] instanceof String sql) {
+                    note(owner, sql);
+                }
+                return invoke(target, m, a);
+            });
+        }
+
+        private void note(java.sql.Connection owner, String sql) {
+            List<String> tx = open.get(owner);
+            (tx != null ? tx : outside).add(sql);
+        }
+
+        @SuppressWarnings("unchecked")
+        private static <T> T proxy(Class<T> type, Object target, java.lang.reflect.InvocationHandler h) {
+            return (T) java.lang.reflect.Proxy.newProxyInstance(type.getClassLoader(), new Class<?>[]{type},
+                    (p, m, a) -> switch (m.getName()) {
+                        case "equals" -> p == a[0];
+                        case "hashCode" -> System.identityHashCode(p);
+                        case "toString" -> "Recorded(" + target + ")";
+                        default -> h.invoke(p, m, a);
+                    });
+        }
+
+        private static Object invoke(Object target, java.lang.reflect.Method m, Object[] a) throws Throwable {
             try {
-                super.executeWithoutResult(action);
-            } finally {
-                spy.txEnded();
+                return m.invoke(target, a);
+            } catch (java.lang.reflect.InvocationTargetException e) {
+                throw e.getCause();
             }
         }
     }

@@ -30,7 +30,7 @@ Wizard 가 자동으로 안 열리면 헤더 우측 `[+]` 버튼이나 `/service
 | 라벨 | `Server URL` |
 | placeholder | `http://your-apilens-host:8765` |
 | 안내 | 운영망에서는 사용자 앱이 접근 가능한 IP/hostname 을 입력해 주세요 |
-| 유효성 | 비어 있지 않고 `http://` 또는 `https://` 로 시작 |
+| 유효성 | 비어 있지 않고 `http://` 또는 `https://` 로 시작 · 호스트가 있어야 함 · 포트를 적으면 65535 이하 |
 
 ### Step 2 — Service Name
 

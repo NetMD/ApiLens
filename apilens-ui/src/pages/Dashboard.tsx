@@ -7,7 +7,7 @@
 // 필터는 listTraces 쿼리 파라미터로 적용 → LatencyScatter 와 TraceList 가 동시 필터됨 (의도된
 // 동작 — "에러만 보기" 시 산점도도 에러만, UX §3.5).
 import type { ReactNode } from 'react';
-import { Suspense, lazy, useEffect, useState } from 'react';
+import { Suspense, lazy, useEffect, useMemo, useState } from 'react';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { ApiError } from '../api/client';
 import { Header } from '../components/Header';
@@ -20,9 +20,32 @@ import { LoadingSkeleton } from '../components/LoadingSkeleton';
 import { useDashboardState } from '../hooks/useDashboardState';
 import { useMaintenanceStatus } from '../hooks/useMaintenanceStatus';
 import { listServices, listTraces } from '../api/traces';
-import { computeWindow } from '../lib/time';
+import {
+  LIVE_POLL_MS,
+  SCROLL_LAG_MS,
+  advancePinnedUntil,
+  computeScrollWindow,
+  computeWindow,
+  isClockRange,
+  nextPageAt,
+} from '../lib/time';
+import type { RangePreset } from '../lib/time';
+import { chartLimitNotice, sampleTracesPerSecond, yUpperBound } from '../lib/chartSample';
+import type { TracesResponse } from '../types/api';
+import type { ChartWindow } from '../components/LatencyScatter';
 
 const TRACES_LIMIT = 100;
+// [R27/RP-05] Live ON · 1m·5m·10m 에서만 500(서버 MAX_LIMIT 과 같음 · 서버 무접촉).
+//   1h 이상과 Live OFF 는 위 100 그대로다(UA-R27-1 「1h 이상은 최신 N 유지」 · FR-27-01 「Live OFF 지금 그대로」).
+const TRACES_LIMIT_SCROLL = 500;
+
+/** [R27/FR-27-04] 화면 안 전용 — 응답에 그 요청이 실제로 쓴 조회 창을 붙인다(서버 응답 형식 불변). */
+type DashboardTracesData = TracesResponse & {
+  requestWindow: { since: number; until: number };
+  /** [v0.8.0] 이 응답을 부른 조건 — Live OFF 차트 창을 「응답과 같은 창」으로 그릴 때 대조한다. */
+  requestLive: boolean;
+  requestRange: RangePreset;
+};
 
 // [R21/AC-04-3] 차트(recharts) 지연 마운트 — 공동 확정 (UX §10 + 설계 §9.2). 판단 사유:
 // 라우트 lazy 만으로는 recharts 가 Dashboard 청크 안에 남아 첫 화면(/) 로드가 recharts 파싱을
@@ -37,13 +60,33 @@ export function Dashboard(): ReactNode {
     useDashboardState();
 
   // 시간 윈도우 처리:
-  //   Live ON  → queryFn 안에서 매 호출마다 Date.now() 사용 (슬라이딩 윈도우)
+  //   Live ON  → [R27] queryFn 이 요청을 보내는 순간 F 를 읽고 computeScrollWindow 로 조회 창을 낸다.
+  //              표시 창은 차트 안 프레임 시계가 같은 함수로 계산한다(이 페이지는 5초 주기로만 다시 그린다).
   //   Live OFF → pinnedUntil 사용 (range 선택/Live OFF 토글 시점에 freeze)
+  //              [v0.8.0] 그 뒤 선택한 시간마다 한 칸씩 앞으로 넘긴다(아래 타이머).
   // queryKey에 시간을 직접 넣지 않는다 — 매 호출마다 키 바뀌면 캐시 의미 없음.
+  //   [v0.8.0] 단 Live OFF 의 pinnedUntil 은 한 칸 넘길 때만 바뀌므로 키에 넣는다(넘기면 새로 조회).
   const [pinnedUntil, setPinnedUntil] = useState<number>(() => Date.now());
-  useEffect(() => {
+  // range·live 가 바뀐 그 렌더에서 곧바로 다시 고정한다 — 효과로 미루면 옛 고정 시각으로 한 번 더 조회한다.
+  const [pinnedFor, setPinnedFor] = useState({ range, live });
+  if (pinnedFor.range !== range || pinnedFor.live !== live) {
+    setPinnedFor({ range, live });
     setPinnedUntil(Date.now());
-  }, [range, live]);
+  }
+
+  // [v0.8.0] 차트 일시 정지 — 누른 순간의 응답(frozen)을 차트와 목록에 그대로 보여 준다.
+  //   Live ON 은 뒤에서 조회를 계속하고, Live OFF 는 한 칸 넘김을 멈춘다. 다시 누르면 지금 시각으로 돌아간다
+  //   (Live ON = 최신 응답 · Live OFF = 지금 시각으로 다시 고정해 새로 조회) — 그동안 들어온 요청이 모두 보인다.
+  //   서비스·범위·Live·필터를 바꾸면 풀린다(멈춘 응답이 새 조건과 맞지 않는다).
+  const [chartPaused, setChartPaused] = useState(false);
+  const [frozen, setFrozen] = useState<{ data: DashboardTracesData; updatedAt: number } | null>(null);
+  const viewKey = JSON.stringify([service, range, live, status, q]);
+  const [pausedFor, setPausedFor] = useState(viewKey);
+  if (pausedFor !== viewKey) {
+    setPausedFor(viewKey);
+    setChartPaused(false);
+    setFrozen(null);
+  }
 
   // 서비스 목록 — 빈 상태 분기용 (헤더 ServiceSelector도 같은 queryKey로 dedupe)
   const servicesQuery = useQuery({
@@ -66,21 +109,36 @@ export function Dashboard(): ReactNode {
 
   // [R12] AC-C1-2/AC-C2-3 — queryKey 에 status/q 포함 (캐시 분리) + listTraces 전달.
   // placeholderData: keepPreviousData 채택 (UX §5.3 — 세그먼트 전환 시 스켈레톤 깜빡임 방지).
+  const clockRange = isClockRange(range);
+  const limit = live && clockRange ? TRACES_LIMIT_SCROLL : TRACES_LIMIT;
   const tracesQuery = useQuery({
-    queryKey: ['traces', { service, range, live, status, q, limit: TRACES_LIMIT }] as const,
-    queryFn: ({ signal }) => {
-      const { since, until } = computeWindow({ range, live, pinnedUntil });
-      return listTraces(
+    queryKey: ['traces', { service, range, live, status, q, limit, pinned: live ? null : pinnedUntil }] as const,
+    queryFn: async ({ signal }): Promise<DashboardTracesData> => {
+      // [R27/RP-08] 두 갈래 모두 그 요청의 조회 창을 응답에 싣는다(anchorAt·queryUntil 이 늘 유한수).
+      let since: number;
+      let until: number;
+      if (live) {
+        // ★순서 의존: 조회 창은 요청을 보내는 순간 F 로 먼저 정한다 — 도착 시각을 F 로 쓰면
+        //   오른쪽 부등식(표시 ≤ 조회)이 응답 시간만큼 깨진다.
+        const requestedAt = Date.now();
+        const w = computeScrollWindow({ range, requestedAt, nowMs: requestedAt, lagMs: SCROLL_LAG_MS });
+        since = w.querySince;
+        until = w.queryUntil;
+      } else {
+        ({ since, until } = computeWindow({ range, live: false, pinnedUntil, now: pinnedUntil }));
+      }
+      const res = await listTraces(
         {
           ...(service !== null ? { service } : {}),
           since,
           until,
           ...(status !== null ? { status } : {}),
           ...(q.trim() !== '' ? { q } : {}),
-          limit: TRACES_LIMIT,
+          limit,
         },
         signal,
       );
+      return { ...res, requestWindow: { since, until }, requestLive: live, requestRange: range };
     },
     // [Phase K] (US-05, AC-05-1): 401 수신 시 enabled=false → 자동 재조회 차단 (무한루프 0).
     enabled: service !== null && !auth401,
@@ -90,10 +148,21 @@ export function Dashboard(): ReactNode {
     refetchOnWindowFocus: false,
     // [Phase K] (US-05, AC-05-1): 401 이면 live 여도 폴링 중단 (refetchInterval false).
     // [Phase R15] AC-B5-1: 수신 일시정지(paused) 중에도 폴링 중단(새 데이터 0). 사용자 명시 비협상 결정(D05/D06). CLAUDE.md '아키텍처 핵심 원칙'.
-    refetchInterval: live && !auth401 && !paused ? 5_000 : false,
+    refetchInterval: live && !auth401 && !paused ? LIVE_POLL_MS : false,
     refetchIntervalInBackground: false,
     placeholderData: keepPreviousData,
   });
+
+  // [v0.8.0] Live OFF 한 칸 넘김 — 다음 칸이 다 차고 여유(PAGE_SETTLE_MS)까지 지나면 고정 시각을 한 칸 옮긴다.
+  //   401 이면 넘기지 않는다(자동 재조회 0 · AC-05-1). 탭이 뒤에 있어 늦게 돌면 다 찬 칸만큼 한 번에 건너뛴다.
+  useEffect(() => {
+    if (live || auth401 || chartPaused) return;
+    const timer = setTimeout(
+      () => setPinnedUntil((p) => advancePinnedUntil(p, range, Date.now())),
+      Math.max(0, nextPageAt(pinnedUntil, range) - Date.now()),
+    );
+    return () => clearTimeout(timer);
+  }, [live, auth401, chartPaused, range, pinnedUntil]);
 
   // [Phase K] (US-05, AC-05-1): tracesQuery 에러가 401 로 바뀌면 auth401 ON + Live 강제 off (폴링 중단).
   //   401 해소(토큰 재입력 후 사용자가 다시 진입/refetch)는 ErrorState '설정으로 이동' → /settings 흐름.
@@ -110,13 +179,48 @@ export function Dashboard(): ReactNode {
   // 자동 스케일하면 매 polling 마다 이상치(오래된/시계 어긋난 trace)에 축이 출렁여(rubber-band)
   // 점이 몰렸다 퍼졌다 한다. 윈도우로 고정하면 점이 진짜 시각 위치에 안정적으로 박힌다.
   // Live 면 until = 마지막 fetch 시각(dataUpdatedAt)으로 데이터와 정렬 (Date.now() per-render jitter 회피).
-  const { since: windowSince, until: windowUntil } = computeWindow({
-    range,
-    live,
-    pinnedUntil,
-    // dataUpdatedAt 은 첫 fetch 전 0 → 그때만 Date.now() 폴백.
-    now: tracesQuery.dataUpdatedAt || Date.now(),
-  });
+  // [R27/FR-27-04] Live 의 until 은 이제 프레임 시계(now − lag) — 조회 창은 보낸 시각 F 에서 같은 함수로
+  //   계산하고, 두 부등식(조회 ⊇ 표시)이 식으로 선다. 위 옛 문장은 이력으로 둔다. Live OFF 는 아래 fixed 창.
+  const data = chartPaused && frozen !== null ? frozen.data : tracesQuery.data;
+  const dataUpdatedAt = chartPaused && frozen !== null ? frozen.updatedAt : tracesQuery.dataUpdatedAt;
+  const rawTraces = data?.traces ?? [];
+
+  // [R27/RP-05] 표본·한도 알림은 Live ON · 1m·5m·10m 에서만 · Y 상한은 Live ON 전 범위. 목록은 응답 그대로(UXD-08 ③).
+  //   의존성에 range 를 넣지 않는다 — 1m↔5m↔10m 전환은 다시 뽑지 않는다(호출 수 = 응답 수).
+  const sampleOn = live && clockRange;
+  const chartTraces = useMemo(() => {
+    // 응답 전(data 없음)에는 뽑지 않는다 — 표본 호출 수 = 응답 수(TZ-29).
+    if (data === undefined) return [];
+    return sampleOn ? sampleTracesPerSecond(data.traces) : data.traces;
+  }, [data, sampleOn]);
+  const yMax = useMemo(() => (live ? yUpperBound(chartTraces) : null), [live, chartTraces]);
+  const limitNotice = live ? chartLimitNotice(range, rawTraces.length, TRACES_LIMIT_SCROLL) : 'none';
+
+  // [R27/FR-27-05] 시계 게이트 — 폴링 식(refetchInterval)의 부분집합 + 응답 ≥ 1.
+  //   ★!auth401 은 오류가 도착한 렌더와 setLive(false) 효과 사이 한 렌더를 덮는 방어 항이다 —
+  //   빼도 시험이 빨강이 안 되는 항이라 여기에 적어 둔다(RP-30 ②).
+  const scrollEnabled = live && !auth401 && !paused && !chartPaused && rawTraces.length > 0;
+  const chartWindow: ChartWindow =
+    live && data !== undefined
+      ? {
+          kind: 'scroll',
+          range,
+          scrollEnabled,
+          querySince: data.requestWindow.since,
+          queryUntil: data.requestWindow.until,
+          // 자리표시 데이터(범위 전환 중)는 도착 시각이 0 → 그 데이터의 조회 창 끝으로 대신한다.
+          anchorAt: dataUpdatedAt > 0 ? dataUpdatedAt : data.requestWindow.until,
+        }
+      : {
+          kind: 'fixed',
+          range,
+          // [v0.8.0] 창은 지금 보이는 점을 불러온 응답의 창으로 그린다 — 한 칸 넘길 때 새 응답이 올 때까지
+          //   옛 점이 옛 창에 그대로 있고, 도착하면 차트가 새 창으로 미끄러진다. 응답이 다른 조건의 것
+          //   (Live 를 막 끔 · 범위를 막 바꿈)이면 지금처럼 고정 시각으로 계산한다.
+          ...(data !== undefined && !data.requestLive && data.requestRange === range
+            ? data.requestWindow
+            : computeWindow({ range, live: false, pinnedUntil, now: pinnedUntil })),
+        };
 
   // [R12] UX §3.5 — 필터 활성 여부 (0건 이중 분기 + T-30 노출 판단).
   const filterActive = status !== null || q.trim() !== '';
@@ -169,7 +273,8 @@ export function Dashboard(): ReactNode {
     }
 
     // 4) 에러 — 기존 ErrorState 분기 유지 (필터 바는 유지)
-    if (tracesQuery.isError) {
+    //    [v0.8.0] 차트 일시 정지 중에는 뒤쪽 조회가 실패해도 멈춘 화면을 그대로 둔다(다시 누르면 드러난다).
+    if (tracesQuery.isError && !(chartPaused && frozen !== null)) {
       return (
         <div className="space-y-4">
           {filterBar}
@@ -180,7 +285,7 @@ export function Dashboard(): ReactNode {
 
     // 5) traces 0건 — 이중 분기 (T-30 vs 기존 EmptyState, UX §3.5):
     //    필터 활성 + 0건 → T-30 (필터 바 유지 — 해제 가능해야 함) / 비활성 + 0건 → 기존 no-traces.
-    const traces = tracesQuery.data?.traces ?? [];
+    const traces = rawTraces;
     if (traces.length === 0) {
       return (
         <div className="space-y-4">
@@ -216,9 +321,19 @@ export function Dashboard(): ReactNode {
               </div>
             }
           >
-            <LatencyScatter traces={traces} since={windowSince} until={windowUntil} />
+            <LatencyScatter traces={chartTraces} window={chartWindow} yMax={yMax} />
           </Suspense>
-          <ScatterLegend />
+          <ScatterLegend
+            limitNotice={
+              limitNotice === 'none'
+                ? undefined
+                : {
+                    // UC-01 — 숫자는 한도 상수에서 읽는다.
+                    text: `최근 ${TRACES_LIMIT_SCROLL}건까지만 불러와요 — 왼쪽 빈 구간에도 trace 가 있어요`,
+                    shown: limitNotice === 'shown',
+                  }
+            }
+          />
         </div>
         {filterBar}
         <TraceList traces={traces} />
@@ -235,6 +350,18 @@ export function Dashboard(): ReactNode {
         onServiceChange={setService}
         onRangeChange={setRange}
         onLiveChange={setLive}
+        chartPaused={chartPaused}
+        onChartPausedChange={(next) => {
+          if (next) {
+            if (tracesQuery.data === undefined) return; // 보여 줄 응답이 아직 없으면 멈출 것도 없다
+            setFrozen({ data: tracesQuery.data, updatedAt: tracesQuery.dataUpdatedAt });
+            setChartPaused(true);
+          } else {
+            setChartPaused(false);
+            setFrozen(null);
+            if (!live) setPinnedUntil(Date.now()); // Live OFF — 지금 시각으로 다시 고정(새로 조회)
+          }
+        }}
       />
       <main className="flex-1 overflow-auto px-6 py-4">
         <div className="mx-auto max-w-6xl">
@@ -242,6 +369,11 @@ export function Dashboard(): ReactNode {
           {paused && (
             <p role="status" className="mb-3 text-center text-xs text-amber-700">
               수신 일시정지 중이라 실시간 갱신을 멈췄어요.
+            </p>
+          )}
+          {chartPaused && (
+            <p role="status" className="mb-3 text-center text-xs text-stone-500">
+              차트를 일시 정지했어요. 다시 누르면 지금 시각으로 돌아가 그동안 들어온 요청을 모두 보여 줘요.
             </p>
           )}
           {renderBody()}

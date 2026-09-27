@@ -14,6 +14,7 @@ import { BrandNav } from './BrandNav';
 import { ServiceSelector } from './ServiceSelector';
 import { TimeRangeSelector } from './TimeRangeSelector';
 import { LiveToggle } from './LiveToggle';
+import { ChartPauseButton } from './ChartPauseButton';
 
 interface Props {
   service: string | null;
@@ -22,6 +23,9 @@ interface Props {
   onServiceChange: (next: string | null) => void;
   onRangeChange: (next: RangePreset) => void;
   onLiveChange: (next: boolean) => void;
+  /** [v0.8.0] 차트 일시 정지 — 넘기지 않으면 버튼을 그리지 않는다. */
+  chartPaused?: boolean;
+  onChartPausedChange?: (next: boolean) => void;
   /** Dashboard 페이지 외부에서 헤더만 재사용할 때 우측 컨트롤 숨김 (Services 페이지 등 향후 확장 대비). */
   hideDashboardControls?: boolean;
 }
@@ -33,6 +37,8 @@ export function Header({
   onServiceChange,
   onRangeChange,
   onLiveChange,
+  chartPaused = false,
+  onChartPausedChange,
   hideDashboardControls = false,
 }: Props): ReactNode {
   const [searchParams] = useSearchParams();
@@ -61,6 +67,9 @@ export function Header({
           </Link>
           <TimeRangeSelector value={range} onChange={onRangeChange} />
           <LiveToggle value={live} onChange={onLiveChange} />
+          {onChartPausedChange !== undefined && (
+            <ChartPauseButton value={chartPaused} onChange={onChartPausedChange} />
+          )}
         </div>
       )}
     </header>

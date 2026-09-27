@@ -53,7 +53,12 @@ allprojects {
     //   ⚠️ db/migration 의 V1~V7 은 주석 한 글자도 손대지 않는다 — 이번 라운드는 새 마이그레이션도 없다.
     //   ★이 줄을 올리면 OpenApiDocsIntegrationTest 의 assertEquals("0.7.1", …) 도 **같은 접촉에서**
     //   올려야 한다(안 올리면 RED — 게이트가 살아 있다는 신호다).
-    version = "0.7.1"
+    // [Phase R27] R27/AC-27-05-1 — 0.7.1 → 0.8.0 (minor: 사용자가 알아볼 기능이 늘었다 — 대시보드 차트가 시계에
+    //   맞춰 흐른다 · 설치 마법사가 서버가 거절한 이유를 보인다. 사용자 명시 결정(UD-2). **스키마 변경 0 ·
+    //   agent 변경 0** — 마이그레이션이 없어 되돌리는 길은 이전 jar 로 바꾸는 것뿐이고, 계측기를 다시
+    //   배포할 필요가 없다. AgentMain 의 AGENT_VERSION 은 "0.6.0" 고정 그대로다).
+    //   ★OpenApiDocsIntegrationTest 의 info.version 단언도 이번 접촉에서 함께 올렸다.
+    version = "0.8.0"
 }
 
 subprojects {

@@ -24,6 +24,10 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.sqlite.SQLiteDataSource;
 
@@ -347,5 +351,127 @@ class SetupServiceTest {
                 "빈 값은 여전히 통과한다(설치 건너뛰기 경로 보존)");
         assertTrue(service.complete(new SetupCompleteRequest(null, null)).completed(),
                 "없는 값도 여전히 통과한다(설치 건너뛰기 경로 보존)");
+    }
+
+    // ── [Phase R27] R27/AC-27-04-3 — 서버 주소 포트 상한 65535(UA-R27-3 · 사용자 명시 결정) ──
+    //
+    //  AC-27-04-3 원문: "포트 65536 이상 → 서버 400 + 화면 「URL 포트 형식 오류 (예: :8765)」 · 65535 → 둘 다 통과 ·
+    //  빈 값·null skip 경로(SetupService.java:106-108) 불변 · 서버·화면 **같은 커밋**".
+    //  ★D-04(비협상): 빈 값·null 통과는 위 shouldAcceptBlank* 두 시험과 rejectsAServerUrlWithoutAHost 가 그대로 잰다.
+
+    /**
+     * 화면 {@code javaUriHost.test.ts} 의 {@code serverUrlProblemLikeServer} 와 <b>같은 13 벡터</b>로 서버의 거부 여부를 잰다
+     * (거부 7 · 통과 6). 두 시험이 같은 벡터에서 같은 답을 내야 화면이 서버와 같은 기준으로 [다음]을 잠근다.
+     *
+     * <p>JDK 21 실측(2026-09-25 · openjdk 21.0.12.1): {@code URI.getPort()} 는 {@code :65536}·{@code :065536}·
+     * {@code user@host:65536}·{@code :0000000000000065536} 에서 65536, {@code :99999} 에서 99999 를 그대로 돌려준다.
+     * {@code :2147483648} 은 int 를 넘어 호스트가 null 이 되므로 <b>호스트 없음</b> 문구로 거부된다 — 화면은 포트 형식
+     * 오류로 거부한다. 문구는 갈리고 거부 여부만 같다(범위 밖으로 둔 갈림). 사용자 정보 속 숫자({@code u:99999@x})는
+     * 포트가 아니다.
+     */
+    @ParameterizedTest(name = "[{index}] {0} → rejected={1}")
+    @CsvSource(delimiter = '|', value = {
+            "http://host:65536 | true",
+            "http://host:065536 | true",
+            "http://host:99999 | true",
+            "http://[::1]:65536 | true",
+            "http://host:2147483648 | true",
+            "http://user@host:65536 | true",
+            "http://host:0000000000000065536 | true",
+            "http://host:65535 | false",
+            "http://host:0 | false",
+            "http://host: | false",
+            "http://[::1]: | false",
+            "http://host | false",
+            "http://u:99999@x | false",
+    })
+    void judgesTheSharedPortBoundaryLikeTheScreen(String url, boolean rejected) {
+        if (rejected) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> service.complete(new SetupCompleteRequest(url, null)),
+                    "서버는 이 주소를 거부한다 — 화면도 거부해야 한다");
+        } else {
+            assertTrue(service.complete(new SetupCompleteRequest(url, null)).completed(),
+                    "서버는 이 주소를 받는다 — 화면도 받아야 한다");
+            assertEquals(url, service.getState().serverUrl(), "받은 주소는 그대로 저장된다");
+        }
+    }
+
+    /**
+     * 상한 바로 위({@code :65536})의 거부 문면에 <b>몇까지 되는지</b>(65535)가 들어 있고, 거부된 요청은 아무것도
+     * 저장하지 않는다. 문면은 영어 한 문장 · 내부 정보 0 이다(설치 400 은 인증 없이 보이는 응답이다).
+     */
+    @Test
+    void rejectsAPortAboveTheMaximumWithTheLimitInTheMessage() {
+        // 전제: 상한 자리(65535)는 통과해 저장된다 — 아래 거부가 「상한 때문」 임이 여기서 확정된다.
+        assertTrue(service.complete(new SetupCompleteRequest("http://apilens-host:65535", null)).completed(),
+                "전제: 경계값 65535 는 통과한다");
+        assertEquals("http://apilens-host:65535", service.getState().serverUrl(), "전제: 경계값 주소가 저장됐다");
+
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                () -> service.complete(new SetupCompleteRequest("http://apilens-host:65536", null)));
+        assertEquals("serverUrl port must be 65535 or less", e.getMessage(),
+                "문면에 상한 숫자가 들어야 운영자가 무엇을 고칠지 안다");
+        assertEquals("http://apilens-host:65535", service.getState().serverUrl(),
+                "거부된 요청은 아무것도 저장하지 않는다(검사가 저장보다 앞선다)");
+        assertEquals(SetupService.SERVER_URL_PORT_MAX, 65_535, "상한 상수는 TCP 포트 끝 값이다");
+    }
+
+    // ── [Phase R27] SEC-R27-L1 — 무인증 400 사유는 고정 문면 7종 중 하나다(시험만 · 생산 코드 변경 0) ──
+    //
+    //  설치 400 의 사유는 인증 면제 경로(POST /v1/setup/complete)의 응답이고, R27 부터 화면에 글자 그대로 뜬다.
+    //  지금 7종은 전부 고정 문면이지만, 나중에 문면에 요청 값이나 예외 원문을 이어 붙이면 그 값이 무인증 응답과
+    //  화면에 실린다. 그것을 막는 자동 장치가 이 시험이다.
+
+    /** validate 가 던지는 고정 문면 7종 — 새 거부 갈래를 더하면 이 목록도 함께 늘린다(안 늘리면 빨강). */
+    private static final java.util.Set<String> FIXED_REJECT_SENTENCES = java.util.Set.of(
+            "request body is required",
+            "serverUrl must start with http:// or https://",
+            "serverUrl must include a host (예: http://192.168.0.10:8765)",
+            "serverUrl port must be 65535 or less",
+            "too many services — at most 50 are allowed",
+            "service name is required",
+            "service name format invalid");
+
+    /** 요청 값에 심는 표식 — 사유 문면에 이 조각이 하나라도 보이면 요청 값이 응답에 새어 나간 것이다. */
+    private static final List<String> MARKERS = List.of("zz-marker-zz", "<script>", "/etc/passwd");
+
+    static java.util.stream.Stream<Arguments> markedRejectRequests() {
+        List<ServiceRegistration> fiftyOneMarked = java.util.stream.IntStream.range(0, 51)
+                .mapToObj(i -> new ServiceRegistration("zz-marker-zz-" + i))
+                .toList();
+        return java.util.stream.Stream.of(
+                Arguments.of("접두 틀림", new SetupCompleteRequest("ftp://zz-marker-zz/etc/passwd<script>", null),
+                        "serverUrl must start with http:// or https://"),
+                Arguments.of("호스트 없음", new SetupCompleteRequest("http:///zz-marker-zz/etc/passwd<script>", null),
+                        "serverUrl must include a host (예: http://192.168.0.10:8765)"),
+                Arguments.of("포트 초과", new SetupCompleteRequest("http://zz-marker-zz:65536/etc/passwd", null),
+                        "serverUrl port must be 65535 or less"),
+                Arguments.of("서비스 51개", new SetupCompleteRequest("http://apilens-host:8765", fiftyOneMarked),
+                        "too many services — at most 50 are allowed"),
+                Arguments.of("이름 형식 틀림", new SetupCompleteRequest("http://apilens-host:8765",
+                                List.of(new ServiceRegistration("zz-marker-zz <script>/etc/passwd"))),
+                        "service name format invalid"));
+    }
+
+    /**
+     * 표식 글자를 실은 요청 5갈래(접두 틀림 · 호스트 없음 · 포트 초과 · 서비스 51개 · 이름 형식 틀림)를 거부시키고,
+     * 사유가 ⓐ 그 갈래의 고정 문면이고 ⓑ 7종 목록에 들며 ⓒ 표식 조각을 하나도 안 싣는지 본다.
+     *
+     * <p>★갈래마다 기대 문면을 따로 단언한다 — 모든 입력이 앞 검사 하나에서 걸리면 뒤 갈래를 안 밟고도 초록이
+     * 되는 빈 그물이 된다. 기록(2026-09-25 실측): 포트 문면에 요청 주소를 임시로 이어 붙인 판에서 빨갛다.
+     */
+    @ParameterizedTest(name = "[{index}] {0}")
+    @MethodSource("markedRejectRequests")
+    void keepsEveryRejectReasonToAFixedSentence(String branch, SetupCompleteRequest request, String expected) {
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> service.complete(request),
+                "전제: 이 갈래(" + branch + ")는 거부된다");
+        assertEquals(expected, e.getMessage(), "전제: 이 입력이 실제로 그 갈래(" + branch + ")에서 걸렸다");
+        assertTrue(FIXED_REJECT_SENTENCES.contains(e.getMessage()),
+                "무인증 400 사유는 고정 문면 7종 중 하나다 — 실제: " + e.getMessage());
+        for (String marker : MARKERS) {
+            assertFalse(e.getMessage().contains(marker),
+                    "사유에 요청 값 조각(" + marker + ")이 실리면 안 된다 — 실제: " + e.getMessage());
+        }
     }
 }
