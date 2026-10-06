@@ -1,19 +1,26 @@
 // ApiLens read 엔드포인트 호출 함수.
 // F1 사용처: GET /v1/traces, GET /v1/services.
 // F2 추가: GET /v1/traces/{id}, GET /v1/traces/{id}/spans/{spanId}/payloads.
+// [R28] 추가: GET /v1/trace-points (대시보드 산점도의 대표 점).
 import { ApiError, getJson } from './client';
 import type {
   ListTracesParams,
   PayloadsResponse,
   ServicesResponse,
   TraceDetailResponse,
+  TracePointsParams,
+  TracePointsResponse,
   TracesResponse,
 } from '../types/api';
 
 /**
- * 대시보드 산점도 + 리스트 데이터 소스.
+ * 대시보드 아래 trace 목록(TraceList) 데이터 소스.
  *
- * NOTE: LatencyScatter / TraceList 는 같은 queryKey로 dedupe된다 (한 번만 호출).
+ * [R28/FR-28-08] 산점도는 이제 이 응답을 쓰지 않는다 — 산점도는 아래 `listTracePoints`(대표 점)를 따로 부른다.
+ *   두 조회는 키가 다르다(`['traces','list',…]` · `['traces','points',…]`). 옛 머리 주석의 「같은 queryKey 로 dedupe」는
+ *   이 라운드부터 거짓이라 고쳐 적었다.
+ * [R28/AC-28-03-1] 검색어 `q` 를 주소에 싣는다 — 그동안 이 함수가 `q` 를 빠뜨려 검색이 서버로 가지 않았다
+ *   (주소에 검색어가 있던 탭은 이제 결과가 줄어 보이는 것이 정상).
  */
 export async function listTraces(
   params: ListTracesParams,
@@ -25,6 +32,7 @@ export async function listTraces(
       since: params.since,
       until: params.until,
       status: params.status,
+      q: params.q,
       limit: params.limit,
       cursor: params.cursor,
     },
@@ -33,6 +41,31 @@ export async function listTraces(
     fetchOpts.signal = signal;
   }
   return getJson<TracesResponse>('/v1/traces', fetchOpts);
+}
+
+/**
+ * [R28/FR-28-05] 대시보드 산점도 데이터 소스 — 시간 칸마다 가장 느린 정상 trace 하나와 오류(설계 §2.1).
+ *
+ * 칸 크기는 서버가 창 길이로 고른다(화면은 칸 크기를 보내지 않는다). 서버가 바쁘면 503 — 부르는 쪽이
+ * 오류 화면으로 바꾸지 않고 잠시 뒤 다시 부른다(본문 글은 화면에 안 보임 · UC-R28-17).
+ */
+export async function listTracePoints(
+  params: TracePointsParams,
+  signal?: AbortSignal,
+): Promise<TracePointsResponse> {
+  const fetchOpts: { signal?: AbortSignal; query: Record<string, string | number | boolean | undefined> } = {
+    query: {
+      service: params.service,
+      since: params.since,
+      until: params.until,
+      status: params.status,
+      q: params.q,
+    },
+  };
+  if (signal) {
+    fetchOpts.signal = signal;
+  }
+  return getJson<TracePointsResponse>('/v1/trace-points', fetchOpts);
 }
 
 /** 헤더 ServiceSelector 데이터 소스. */

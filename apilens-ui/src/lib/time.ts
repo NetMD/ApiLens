@@ -60,6 +60,18 @@ export function computeWindow(opts: {
 /** [R27/FR-27-04] P — Live 폴링 주기. Dashboard 의 refetchInterval 값 그대로(리터럴 → 상수). */
 export const LIVE_POLL_MS = 5_000;
 /**
+ * [R28/AC-28-02-3 · UQ-R28-07] 긴 창(24시간·7일) Live ON 의 대표 점 폴링 주기. 칸이 2분·15분이라 5초마다 받아도
+ * 바뀌는 것은 오른쪽 끝 칸 하나다 — 서버 연결 점유를 줄인다. 목록 조회는 그대로 LIVE_POLL_MS.
+ */
+export const LONG_RANGE_POINTS_POLL_MS = 30_000;
+/** [R28/DD-28-13] 대표 점 조회가 바쁨(503)일 때 다시 부르는 간격 — 새 숫자 0(Live 폴링 주기를 그대로 쓴다). */
+export const POINTS_BUSY_RETRY_MS = LIVE_POLL_MS;
+
+/** [R28/UQ-R28-07] 대표 점 폴링 주기 — 24h·7d 는 30초 · 그 밖은 Live 폴링 주기(B-14). */
+export function pointsPollMs(range: RangePreset): number {
+  return range === '24h' || range === '7d' ? LONG_RANGE_POINTS_POLL_MS : LIVE_POLL_MS;
+}
+/**
  * [R27/RP-01] L — 표시 창 오른쪽 끝을 지금보다 이만큼 늦춘다. 사용자 확정은 「5초」 이고, 설계가
  * 폴링 타이머 재설정(응답 도착 뒤 다시 걸림)과 수집 지연을 더해 8초로 정했다(STEP 19 확인 후보 1).
  * L ≥ P + 2·δ + D 를 시험(TZ-05)이 잰다.

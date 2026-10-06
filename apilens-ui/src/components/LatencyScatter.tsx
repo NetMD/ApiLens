@@ -23,8 +23,10 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import type { TraceSummary } from '../types/api';
+import type { TracePoint } from '../types/api';
 import { STATUS_HEX, statusColorKey } from '../lib/colors';
+import { lookupBucket } from '../lib/chartSample';
+import type { BucketCounts } from '../lib/chartSample';
 import {
   PAGE_SLIDE_MS,
   SCROLL_LAG_MS,
@@ -61,12 +63,25 @@ export type ChartWindow =
     };
 
 interface Props {
-  traces: ReadonlyArray<TraceSummary>;
+  /** [R28/AC-28-02-1] 차트 입력 = 서버가 칸마다 골라 보낸 대표 점(그리는 응답의 점 그대로 · 화면은 다시 고르지 않는다). */
+  points: ReadonlyArray<TracePoint>;
+  /**
+   * [R28/UXD-23] 말풍선 셋째 줄용 칸 표 — 부르는 쪽이 그리는 응답 때 한 번 만든다(프레임마다 안 만듦).
+   * 가장자리 칸은 처음부터 빠져 있다(DD-28-34). null 이면 셋째 줄 없음.
+   */
+  bucketCounts?: BucketCounts | null;
   /** X축 도메인의 출처. dataMin/dataMax 자동 스케일의 출렁임 차단(R12 뜻 유지 · 입력만 표시 창). */
   window: ChartWindow;
   /** Live ON 의 Y 상한(응답 사이 불변). null 이면 지금처럼 'dataMax'. */
   yMax: number | null;
 }
+
+/**
+ * [R28/UXD-31 · AC-28-04-2ⓐ] 오른쪽 여백(px) — 16 → 28. 오른쪽 끝 눈금 글자(`HH:mm:ss` ≈42~46px · 11px 글꼴)의
+ * 반쪽이 여백 밖으로 잘리지 않게 「가장 넓은 눈금 글자 폭의 절반 + 4px」 이상으로 둔다. 축 범위 · 눈금 배열은 그대로.
+ * 값은 UX 권장 한 값 그대로다 — 실브라우저 실측(V-R28-11 · 1분 Live ON · 10분 Live OFF)은 이 단계가 못 했다.
+ */
+const CHART_MARGIN_RIGHT_PX = 28;
 
 /** recharts CartesianGrid 가 세로 격자 생성기에 넘기는 인자 중 여기서 쓰는 것만. */
 interface GridGeneratorProps {
@@ -77,7 +92,7 @@ interface GridGeneratorProps {
 interface Point {
   x: number; // startTime (epoch ms)
   y: number; // durationMs
-  trace: TraceSummary;
+  trace: TracePoint;
 }
 
 /** [v0.8.0] Live OFF 한 칸 넘김 중인 미끄러짐 — 옛 창에서 새 창으로, 그동안 옛 점도 함께 그린다. */
@@ -100,25 +115,34 @@ interface TooltipPayloadItem {
 function CustomTooltip({
   active,
   payload,
+  bucketCounts = null,
 }: {
   active?: boolean | undefined;
   payload?: ReadonlyArray<TooltipPayloadItem> | undefined;
+  bucketCounts?: BucketCounts | null;
 }): ReactNode {
   if (!active || !payload || payload.length === 0) return null;
   const first = payload[0];
   if (!first || !first.payload) return null;
   const t = first.payload.trace;
+  // [R28/UXD-23 · UC-R28-14] 그 점이 대표하는 칸의 건수 — 칸 표에 없으면(가장자리 칸 · 넘김 중 옛 점) 줄을 생략한다(0 으로 안 씀).
+  const bucket = lookupBucket(bucketCounts, t.startTime);
   return (
     <div className="rounded border border-stone-200 bg-white p-2 text-xs text-stone-900 shadow">
       <div className="font-medium">{t.rootOperation}</div>
       <div className="text-stone-500">
         {formatHms(t.startTime)} · {t.durationMs}ms · {t.status}
       </div>
+      {bucket !== null && (
+        <div className="text-stone-500 tabular-nums">
+          이 칸 전체 {bucket.count.toLocaleString()}건 · 오류 {bucket.errorCount.toLocaleString()}건
+        </div>
+      )}
     </div>
   );
 }
 
-export function LatencyScatter({ traces, window: w, yMax }: Props): ReactNode {
+export function LatencyScatter({ points: input, bucketCounts = null, window: w, yMax }: Props): ReactNode {
   const navigate = useNavigate();
   // dashboard 필터를 trace 상세로 가져갈 때 보존 — 뒤로가기 시 history 복원 위함.
   const [searchParams] = useSearchParams();
@@ -126,7 +150,23 @@ export function LatencyScatter({ traces, window: w, yMax }: Props): ReactNode {
   // [R27/RP-07] 누르는 동안 시계를 붙잡는다 — 점 <g> 의 key 에 x 좌표가 있어(recharts Scatter)
   //   누르는 사이 창이 밀리면 mousedown·mouseup 이 다른 노드에 떨어져 클릭 이동이 실패한다.
   //   마우스를 올리기만 해서는 멈추지 않는다(UXD-17 과 충돌 0).
+  // [R28/UXD-30 · AC-28-04-1] 켜짐 = 주 단추(button 0 — 마우스 왼쪽 · 터치 · 펜)를 누를 때만. 풀림 = 뗌 · 취소 · 나감 +
+  //   창 포커스 잃음 · 문서 숨김 · 문맥 메뉴(새 셋). 누른 채 다른 창으로 가거나 오른쪽 클릭 메뉴가 뜨면 「뗌」이
+  //   이 요소로 안 와 흐름이 선 채 남았다(RA-R27-06). 풀림 듣기는 붙잡은 동안만 건다 — 사건 듣기뿐(새 프레임 루프 0).
   const [hold, setHold] = useState(false);
+  useEffect(() => {
+    if (!hold) return;
+    const release = (): void => setHold(false);
+    const releaseWhenHidden = (): void => {
+      if (document.visibilityState === 'hidden') setHold(false);
+    };
+    window.addEventListener('blur', release);
+    document.addEventListener('visibilitychange', releaseWhenHidden);
+    return () => {
+      window.removeEventListener('blur', release);
+      document.removeEventListener('visibilitychange', releaseWhenHidden);
+    };
+  }, [hold]);
   // [v0.8.0] Live OFF 한 칸 넘김 — 넘어가는 0.5초 동안만 같은 프레임 시계를 돌린다.
   const [slide, setSlide] = useState<PageSlide | null>(null);
   const reducedMotion = usePrefersReducedMotion();
@@ -187,12 +227,12 @@ export function LatencyScatter({ traces, window: w, yMax }: Props): ReactNode {
 
   const points = useMemo<Point[]>(
     () =>
-      traces.map((t) => ({
+      input.map((t) => ({
         x: t.startTime,
         y: clampForLog(t.durationMs),
         trace: t,
       })),
-    [traces],
+    [input],
   );
 
   // [v0.8.0] Live OFF 한 칸 넘김 감지 — 새 창이 옛 창 바로 다음 칸이면 미끄러짐을 건다.
@@ -233,9 +273,9 @@ export function LatencyScatter({ traces, window: w, yMax }: Props): ReactNode {
       data !== null &&
       'payload' in data &&
       typeof (data as { payload: unknown }).payload === 'object' &&
-      (data as { payload: { trace?: TraceSummary } }).payload?.trace
+      (data as { payload: { trace?: TracePoint } }).payload?.trace
     ) {
-      const trace = (data as { payload: { trace: TraceSummary } }).payload.trace;
+      const trace = (data as { payload: { trace: TracePoint } }).payload.trace;
       navigate({ pathname: `/traces/${trace.traceId}`, search: searchAcrossRoutes(searchParams) });
     }
   };
@@ -245,9 +285,12 @@ export function LatencyScatter({ traces, window: w, yMax }: Props): ReactNode {
       role="img"
       aria-label="Latency scatter"
       className="h-80 w-full rounded-lg border border-stone-200 bg-white p-3"
-      onPointerDown={() => setHold(true)}
+      onPointerDown={(e) => {
+        if (e.button === 0) setHold(true);
+      }}
       onPointerUp={() => setHold(false)}
       onPointerCancel={() => setHold(false)}
+      onContextMenu={() => setHold(false)}
       onPointerMove={hover.onPointerMove}
       onPointerLeave={() => {
         setHold(false);
@@ -255,7 +298,7 @@ export function LatencyScatter({ traces, window: w, yMax }: Props): ReactNode {
       }}
     >
       <ResponsiveContainer width="100%" height="100%">
-        <ScatterChart margin={{ top: 12, right: 16, bottom: 12, left: 16 }}>
+        <ScatterChart margin={{ top: 12, right: CHART_MARGIN_RIGHT_PX, bottom: 12, left: 16 }}>
           {clockTicks !== null ? (
             <CartesianGrid
               stroke="#e7e5e4"
@@ -295,7 +338,7 @@ export function LatencyScatter({ traces, window: w, yMax }: Props): ReactNode {
           {/* [R27/UXD-04] 툴팁 이동 · 점 등장 애니메이션 끔 — 5초마다 점이 반짝이는 「튐」 제거. */}
           {/* [v0.8.0] 마우스가 점 위에 없으면 active=false 로 툴팁과 안내선을 함께 끈다(남는 선 방지). */}
           <Tooltip
-            content={<CustomTooltip />}
+            content={<CustomTooltip bucketCounts={bucketCounts} />}
             cursor={{ stroke: '#d6d3d1' }}
             isAnimationActive={false}
             {...(hover.overPoint ? {} : { active: false })}

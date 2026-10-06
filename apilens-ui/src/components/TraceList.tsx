@@ -1,5 +1,7 @@
 // 최근 trace 리스트 — 시간 역순 최대 10개.
 // status별 시맨틱 칩 (OK/ERR + slow). stone 팔레트로 본문 회색 통일.
+// [R28/UXD-25 · UC-R28-11 · AC-28-02-13] 머리 = `최근 {k}건`(k = 그린 행 ≤ 10). 옛 `{k} / {응답 길이}` 의 뒤 숫자가
+//   범례 「전체 N건」(창 전체)과 같은 「건」으로 읽혀 지웠다 — 「전체」 ↔ 「최근」 낱말로 가른다.
 import type { ReactNode } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import type { TraceSummary } from '../types/api';
@@ -35,7 +37,7 @@ export function TraceList({ traces }: Props): ReactNode {
     <div className="rounded-lg border border-stone-200 bg-white">
       <div className="flex items-center justify-between border-b border-stone-200 px-4 py-2">
         <h2 className="text-sm font-medium text-stone-900">Recent traces</h2>
-        <span className="text-xs text-stone-500">{recent.length} / {traces.length}</span>
+        <span className="text-xs tabular-nums text-stone-500">최근 {recent.length}건</span>
       </div>
       <ul className="divide-y divide-stone-200">
         {recent.map((t) => {

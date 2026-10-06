@@ -114,7 +114,8 @@ class OpenApiDocsIntegrationTest {
         // [Phase R26] AC-R26-48 — bump(0.7.0 → 0.7.1) 동반 정정. 이번에는 **빨개지기 전에** 같은 접촉에서
         //   함께 올렸다(build.gradle.kts 의 version 줄에도 그 사실을 적어 두었다).
         // [Phase R27] R27/AC-27-05-1 — bump(0.7.1 → 0.8.0) 동반 정정. 이번에도 빨개지기 전에 같은 접촉에서 올렸다.
-        assertEquals("0.8.0", info.get("version").asText(), "info.version must track the Gradle build version");
+        // [Phase R28] AC-28-06-1 — bump(0.8.0 → 0.9.0) 동반 정정. 이번에도 빨개지기 전에 같은 접촉에서 올렸다.
+        assertEquals("0.9.0", info.get("version").asText(), "info.version must track the Gradle build version");
         assertEquals("ApiLens API", info.get("title").asText());
     }
 
@@ -136,6 +137,33 @@ class OpenApiDocsIntegrationTest {
         ResponseEntity<String> res = rest.getForEntity("/v1/traces", String.class);
         assertEquals(HttpStatus.UNAUTHORIZED, res.getStatusCode(),
                 "/v1/traces without token must be 401 — proves the filter is active");
+    }
+
+    /**
+     * [Phase R28] AC-28-01-12 — 새 대표 점 경로는 {@code /v1/setup/} 로 시작하지 않아 기본 차단이다(인증 면제 목록
+     * 무접촉). 키를 설정한 상태에서 토큰 없이 부르면 <b>401</b> — 대표 점 본문이 나오지 않는다. 단위 시험(standalone
+     * MockMvc)은 필터를 안 거치므로 이 판정은 통합 케이스로만 잰다.
+     */
+    @Test
+    void returns401OnTracePointsWithoutToken() {
+        ResponseEntity<String> res =
+                rest.getForEntity("/v1/trace-points?service=x&since=0&until=1", String.class);
+        assertEquals(HttpStatus.UNAUTHORIZED, res.getStatusCode(),
+                "/v1/trace-points without token must be 401 — default-deny 자동 보호(화이트리스트 무수정)");
+        assertTrue(res.getBody() == null || !res.getBody().contains("bucketMs"),
+                "401 본문에 대표 점 응답이 실리지 않는다 — 실제: " + res.getBody());
+    }
+
+    /**
+     * [Phase R28] AC-28-01-12 — 새 대표 점 경로가 요약 글과 함께 명세에 실린다(springdoc 자동 도출).
+     */
+    @Test
+    void documentsTracePointsOperationWithSummary() throws Exception {
+        ResponseEntity<String> res = rest.getForEntity("/v3/api-docs", String.class);
+        assertEquals(HttpStatus.OK, res.getStatusCode());
+        JsonNode paths = MAPPER.readTree(res.getBody()).path("paths");
+
+        assertOperationSummary(paths, "/v1/trace-points", "get");
     }
 
     /**

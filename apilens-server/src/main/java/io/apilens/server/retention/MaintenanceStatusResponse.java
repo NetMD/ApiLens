@@ -40,6 +40,11 @@ package io.apilens.server.retention;
  * // CLAUDE.md '데이터 모델' (in-memory, 스키마 변경 0) 인용 — 새 세 값도 스키마 변경 0 이다
  * // (앞의 하나는 인메모리, 뒤의 둘은 PRAGMA 읽기).
  *
+ * <p>// [Phase R28] AC-28-05-4 — 1필드 additive 확장(7 → 8). <b>기존 7필드는 이름 · 타입 · 순서 · 의미가 모두
+ * // 불변</b>이고 <b>맨 뒤에만</b> 붙였다(I-11 — 응답 계약은 추가만). 사용자 명시 결정(UD-3 「화면으로 [최적화]를
+ * // 권함」). CLAUDE.md '데이터 모델' (in-memory, 스키마 변경 0) 인용 — 새 값도 인메모리다. 조립 시각을 따로
+ * // 싣지 않는다(화면이 안 쓴다 · DD-28-23).
+ *
  * @param paused                 현재 수신 일시정지 여부.
  * @param pausedAt               일시정지 시작 epoch millis. paused=false 면 null(echo 일관성, AC-A3-2).
  * @param sqliteBusyEncountered  적재 경합으로 SQLITE_BUSY 예외를 만난 누적 횟수(재시작 시 0).
@@ -47,9 +52,12 @@ package io.apilens.server.retention;
  * @param traceSummaryDeferred   요약을 저장하지 못한 누적 흐름 수(인메모리, 재시작 시 0).
  * @param dbSizeBytes            DB 파일 크기 = 페이지 수 × 페이지 크기(바이트). 관측 실패 시 0.
  * @param freePageBytes          회수 가능한 빈 공간 = 빈 페이지 수 × 페이지 크기(바이트). 관측 실패 시 0.
+ * @param optimizeAdvised        밤 정리가 [최적화]를 권하는가(인메모리 — 재기동 뒤 첫 밤 정리 전까지 false 정상 ·
+ *                               [최적화] 성공 · 다음 밤 판정이 임계 아래면 false 로 돌아간다).
  */
 public record MaintenanceStatusResponse(boolean paused, Long pausedAt,
                                         long sqliteBusyEncountered, long sqliteBusyDropped,
                                         long traceSummaryDeferred,
-                                        long dbSizeBytes, long freePageBytes) {
+                                        long dbSizeBytes, long freePageBytes,
+                                        boolean optimizeAdvised) {
 }

@@ -6,6 +6,9 @@
 //   - SH-06 / NFR-02 / R3 회귀 가드 — 모든 Link 에서 search params 보존
 //   - SH-12 활성 표시 = bg-stone-100 text-stone-900 font-medium (밑줄 톤 회피)
 //   - SH-17 [+] 버튼 aria-label="Add service" + tooltip "Service 를 추가해요"
+// [R28/UXD-35 · AC-28-04-2ⓑ] 접힘 장치 — 한 줄에 안 들어가면 오른쪽 조작 묶음 전체가 아래 줄 오른쪽으로 내려간다
+//   (넓은 창은 지금과 같은 한 줄 56px · 아주 좁은 창은 오른쪽 묶음도 안에서 줄을 바꾼다 — 어느 폭에서도 화면 밖 조작 0).
+//   클래스만 바꾼다 — 새 요소 0 · hideDashboardControls 게이트 그대로(이 헤더를 쓰는 화면은 대시보드 하나).
 import type { ReactNode } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { searchAcrossRoutes } from '../lib/routeSearch';
@@ -46,15 +49,15 @@ export function Header({
   const search = searchAcrossRoutes(searchParams);
 
   return (
-    <header className="flex h-14 items-center justify-between border-b border-stone-200 bg-white px-6">
+    <header className="flex min-h-14 flex-wrap items-center justify-between gap-x-6 gap-y-2 border-b border-stone-200 bg-white px-6 py-2">
       {/* Phase R12 (FR-B4, AC-B4-1): 좌측부 (로고+버전+네비) → BrandNav 공통 승격 (UX-G-01 / 설계 §3.2.1).
           W-03 가로 메뉴 / SH-06 search 보존 / SH-12 활성 표시는 BrandNav 내부로 이동 — 의미 변경 0. */}
-      <div className="flex items-center gap-3">
+      <div className="flex shrink-0 items-center gap-3">
         <BrandNav />
         <div aria-hidden className="mx-2 h-6 border-r border-stone-200" />
       </div>
       {!hideDashboardControls && (
-        <div className="flex items-center gap-3">
+        <div className="ml-auto flex flex-wrap items-center justify-end gap-3">
           <ServiceSelector value={service} onChange={onServiceChange} />
           {/* W-02: 별도 [+] 버튼 (ServiceSelector dropdown 안 진입 금지) / SH-17 a11y + tooltip / SH-06 search 보존 */}
           <Link

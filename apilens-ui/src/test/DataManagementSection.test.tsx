@@ -24,7 +24,14 @@
 //   showsDiskUsageInItsOwnSection — 「디스크 사용량」이 「적재 상태」와 다른 구획에 뜬다 (AC-07-2 비협상)
 //   showsZeroFreeSpaceAsPlainValue — 회수 가능한 빈 공간 0 → "0 B" (결함 아님 — 전체 삭제 직후 정상값)
 //   keepsExistingHelpTextAndButtonsUnchanged — 기존 도움말·라벨·버튼 3개 문구 무변경 (T-R23-09/10)
-// 반대 방향 lock-in 동사(hides*/rejects*/skips*) 0건.
+//
+// [R28] AC-28-05-3·10·11·12 · AC-28-02-8 추가 검증 (설계 부록 D W01~W05):
+//   showsTheAdviceBoxWithItsOwnSentencesWhenAdvised · hidesTheAdviceBoxWhenFalseNullOrAbsent(3판)
+//   refetchesStatusRightAfterOptimizeSuccessAndDropsTheBox · invalidatesPointsAndListKeysAfterMaintenance
+//   keepsTheBoxWhenOptimizeIsBusy
+//   ★W02 의 이름은 설계 부록 D 가 정한 이름 그대로다 — 뜻은 「권고 없음 갈래 셋에서 상자 0」의 정방향 단언이다.
+// [R28/DD-28-30] 상태 응답 고정값마다 `optimizeAdvised: false` 를 더했다(R23 고정값 규약 — 낡은 고정값이 쌓이지 않게).
+// 반대 방향 lock-in 동사(hides*/rejects*/skips*) 0건 — W02 한 건은 설계 지정 이름(위 ★).
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -60,7 +67,7 @@ function mockApi(
 
     // [Phase R15] 수신 일시정지 상태 폴링 — DataManagementSection 이 useMaintenanceStatus 공유(기본 paused=false).
     if (url.includes('/v1/maintenance/status')) {
-      return Promise.resolve(jsonResponse({ paused: false, pausedAt: null, sqliteBusyEncountered: 0, sqliteBusyDropped: 0, traceSummaryDeferred: 0, dbSizeBytes: 1_442_205_696, freePageBytes: 179_621_888 }));
+      return Promise.resolve(jsonResponse({ paused: false, pausedAt: null, sqliteBusyEncountered: 0, sqliteBusyDropped: 0, traceSummaryDeferred: 0, dbSizeBytes: 1_442_205_696, freePageBytes: 179_621_888, optimizeAdvised: false }));
     }
 
     if (method === 'POST' && url.includes('/v1/maintenance/cleanup')) {
@@ -103,10 +110,11 @@ function mockApi(
   return log;
 }
 
-function renderSection(): void {
-  const queryClient = new QueryClient({
+function renderSection(
+  queryClient: QueryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
-  });
+  }),
+): void {
   render(
     <QueryClientProvider client={queryClient}>
       <ToastProvider>
@@ -332,7 +340,7 @@ function mockToggleApi(paused: boolean, behavior: 'ok' | 'toggleFail' = 'ok'): T
     if (method === 'GET' && url.includes('/v1/maintenance/status')) {
       log.statusInvalidations += 1;
       return Promise.resolve(
-        jsonResponse({ paused, pausedAt: paused ? 1_730_000_000_000 : null, sqliteBusyEncountered: 0, sqliteBusyDropped: 0, traceSummaryDeferred: 0, dbSizeBytes: 1_442_205_696, freePageBytes: 179_621_888 }),
+        jsonResponse({ paused, pausedAt: paused ? 1_730_000_000_000 : null, sqliteBusyEncountered: 0, sqliteBusyDropped: 0, traceSummaryDeferred: 0, dbSizeBytes: 1_442_205_696, freePageBytes: 179_621_888, optimizeAdvised: false }),
       );
     }
     if (method === 'POST' && url.includes('/v1/maintenance/pause')) {
@@ -340,11 +348,11 @@ function mockToggleApi(paused: boolean, behavior: 'ok' | 'toggleFail' = 'ok'): T
       if (behavior === 'toggleFail') {
         return Promise.resolve(jsonResponse({ error: 'boom' }, 500));
       }
-      return Promise.resolve(jsonResponse({ paused: true, pausedAt: 1_730_000_000_000, sqliteBusyEncountered: 0, sqliteBusyDropped: 0, traceSummaryDeferred: 0, dbSizeBytes: 1_442_205_696, freePageBytes: 179_621_888 }));
+      return Promise.resolve(jsonResponse({ paused: true, pausedAt: 1_730_000_000_000, sqliteBusyEncountered: 0, sqliteBusyDropped: 0, traceSummaryDeferred: 0, dbSizeBytes: 1_442_205_696, freePageBytes: 179_621_888, optimizeAdvised: false }));
     }
     if (method === 'POST' && url.includes('/v1/maintenance/resume')) {
       log.resumeCalls += 1;
-      return Promise.resolve(jsonResponse({ paused: false, pausedAt: null, sqliteBusyEncountered: 0, sqliteBusyDropped: 0, traceSummaryDeferred: 0, dbSizeBytes: 1_442_205_696, freePageBytes: 179_621_888 }));
+      return Promise.resolve(jsonResponse({ paused: false, pausedAt: null, sqliteBusyEncountered: 0, sqliteBusyDropped: 0, traceSummaryDeferred: 0, dbSizeBytes: 1_442_205_696, freePageBytes: 179_621_888, optimizeAdvised: false }));
     }
     return Promise.resolve(jsonResponse({ error: 'unexpected' }, 500));
   });
@@ -399,7 +407,7 @@ describe('DataManagementSection — 수신 일시정지/재개 토글 (R15)', ()
         typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
       const method = init?.method ?? 'GET';
       if (url.includes('/v1/maintenance/status')) {
-        return Promise.resolve(jsonResponse({ paused: false, pausedAt: null, sqliteBusyEncountered: 0, sqliteBusyDropped: 0, traceSummaryDeferred: 0, dbSizeBytes: 1_442_205_696, freePageBytes: 179_621_888 }));
+        return Promise.resolve(jsonResponse({ paused: false, pausedAt: null, sqliteBusyEncountered: 0, sqliteBusyDropped: 0, traceSummaryDeferred: 0, dbSizeBytes: 1_442_205_696, freePageBytes: 179_621_888, optimizeAdvised: false }));
       }
       if (method === 'POST' && url.includes('/v1/maintenance/cleanup')) {
         return new Promise<Response>((resolve) => {
@@ -479,6 +487,7 @@ describe('DataManagementSection — 적재 상태 카운터 (R21/AC-03-1)', () =
             traceSummaryDeferred: deferred,
             dbSizeBytes,
             freePageBytes,
+            optimizeAdvised: false,
           }),
         );
       }
@@ -559,6 +568,7 @@ describe('DataManagementSection — 요약 실패 흐름 · 디스크 사용량 
             traceSummaryDeferred: deferred,
             dbSizeBytes,
             freePageBytes,
+            optimizeAdvised: false,
           }),
         );
       }
@@ -644,5 +654,159 @@ describe('DataManagementSection — 요약 실패 흐름 · 디스크 사용량 
     expect(screen.getByRole('button', { name: '지난 데이터 정리' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '전체 삭제' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '최적화' })).toBeInTheDocument();
+  });
+});
+
+// ── [R28] AC-28-05-3 · 10 · 11 · 12 · AC-28-02-8 — [최적화] 권고 상자 · 거둠 · 두 조회 키 무효화 ─────────────────
+//
+// 권고 상자 = 최적화 블록 머리 줄 바로 뒤 · 두 문장(UC-R28-12 · 13 ⓐ) · role="status" · 어떤 disabled 식에도 안 들어감.
+// 거둠 = [최적화] 성공 처리에서 상태를 곧바로 다시 받아 그 응답에서 사라짐(먼저 숨기기 0) · busy · 실패 = 서버 값 그대로.
+describe('DataManagementSection — [최적화] 권고 (R28/AC-28-05-10·11)', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const ADVICE_1 = '밤 정리 때 빈 공간이 많이 쌓여 있었어요. 저사용 시간대에 최적화를 실행해 주세요.';
+  const ADVICE_2 = '서버를 다시 시작하면 다음 밤 정리 전까지는 이 안내가 나오지 않아요.';
+
+  /**
+   * 상태 응답의 권고 값만 바꾼다 — `advised` 차례(마지막 것은 반복) · 'absent' = 칸 없음(옛 서버).
+   * optimize 는 'ok'(busy 거짓) · 'busy'(전체락 부분 회수) 중 하나. 상태 GET 호출 수를 센다.
+   */
+  function mockAdviceApi(
+    advised: ReadonlyArray<boolean | null | 'absent'>,
+    optimize: 'ok' | 'busy' = 'ok',
+  ): { statusCalls: number; optimizeCalls: number } {
+    const log = { statusCalls: 0, optimizeCalls: 0 };
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+      const url =
+        typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      const method = init?.method ?? 'GET';
+      if (method === 'GET' && url.includes('/v1/maintenance/status')) {
+        const v = advised[Math.min(log.statusCalls, advised.length - 1)];
+        log.statusCalls += 1;
+        const body: Record<string, unknown> = {
+          paused: false,
+          pausedAt: null,
+          sqliteBusyEncountered: 0,
+          sqliteBusyDropped: 0,
+          traceSummaryDeferred: 0,
+          dbSizeBytes: 1_073_741_824,
+          freePageBytes: 41_943_040,
+        };
+        if (v !== 'absent') body.optimizeAdvised = v;
+        return Promise.resolve(jsonResponse(body));
+      }
+      if (method === 'POST' && url.includes('/v1/maintenance/optimize')) {
+        log.optimizeCalls += 1;
+        return Promise.resolve(
+          jsonResponse(
+            optimize === 'busy'
+              ? { deletedTraces: 0, freedBytes: 1048576, dbSizeBytes: 41943040, busy: true }
+              : { deletedTraces: 0, freedBytes: 53687091200, dbSizeBytes: 41943040, busy: false },
+          ),
+        );
+      }
+      if (method === 'POST' && url.includes('/v1/maintenance/cleanup')) {
+        return Promise.resolve(jsonResponse({ deletedTraces: 1, freedBytes: 0, dbSizeBytes: 41943040 }));
+      }
+      return Promise.resolve(jsonResponse({ error: 'unexpected' }, 500));
+    });
+    return log;
+  }
+
+  /** 최적화 블록(머리 줄 · 권고 상자 · 확인 문구를 담은 묶음). */
+  const optimizeBlock = (): HTMLElement =>
+    screen.getByText('디스크 조각 정리(최적화)').closest('div.flex.flex-col') as HTMLElement;
+
+  // W01 — 참 → 두 문장 · role="status" · 도움말 요소와 다른 요소 · [최적화] disabled 불변(C-09).
+  it('showsTheAdviceBoxWithItsOwnSentencesWhenAdvised', async () => {
+    mockAdviceApi([true]);
+    renderSection();
+    const first = await screen.findByText(ADVICE_1);
+    const box = screen.getByTestId('optimize-advice');
+    expect(box).toHaveAttribute('role', 'status');
+    expect(within(box).getByText(ADVICE_1)).toBe(first);
+    expect(within(box).getByText(ADVICE_2)).toBeInTheDocument();
+    // 자기 문장 — 「디스크 사용량」 도움말 요소 안이 아니다.
+    const diskHelp = screen.getByText(/DB 파일에서 바로 읽는 값이라/);
+    expect(diskHelp.contains(box)).toBe(false);
+    expect(box.contains(diskHelp)).toBe(false);
+    // 자리 = 최적화 블록 안 · 머리 줄 바로 뒤 형제.
+    const block = optimizeBlock();
+    expect(block.contains(box)).toBe(true);
+    expect(box.previousElementSibling?.contains(screen.getByRole('button', { name: '최적화' }))).toBe(true);
+    // 권고는 막지 않는다 — [최적화] 단추는 그대로 눌린다.
+    expect(screen.getByRole('button', { name: '최적화' })).toBeEnabled();
+  });
+
+  // W02 — 거짓 · null · 칸 없음 → 상자 0 · 「권고 아님」 글자 0.
+  it.each([
+    ['거짓', false],
+    ['null', null],
+    ['칸 없음(옛 서버)', 'absent'],
+  ] as const)('hidesTheAdviceBoxWhenFalseNullOrAbsent — %s', async (_label, advised) => {
+    mockAdviceApi([advised]);
+    renderSection();
+    // ★전제: 같은 응답의 다른 값(DB 크기)이 화면에 **보인 뒤** 단언한다 — 응답 전 렌더에서 재고 끝나는 빈 통과 0.
+    await screen.findByText('1 GB');
+    expect(screen.queryByTestId('optimize-advice')).toBeNull();
+    expect(screen.queryByText(ADVICE_1)).toBeNull();
+    expect(screen.queryByText(/권고 아님|권고가 없/)).toBeNull();
+  });
+
+  // W03 — [최적화] 성공(busy 거짓) → 시계를 흘리지 않아도 상태를 곧바로 다시 받아 그 응답에서 상자가 사라진다.
+  it('refetchesStatusRightAfterOptimizeSuccessAndDropsTheBox', async () => {
+    const log = mockAdviceApi([true, false]);
+    renderSection();
+    await screen.findByText(ADVICE_1);
+    const statusBefore = log.statusCalls;
+    expect(statusBefore).toBe(1); // 전제: 첫 상태 조회 1회 · 상자 보임
+
+    fireEvent.click(screen.getByRole('button', { name: '최적화' }));
+    fireEvent.click(screen.getByRole('button', { name: '확인' }));
+    await screen.findByText(/파일 조각을 정리했어요/);
+    await waitFor(() => expect(log.statusCalls).toBe(statusBefore + 1));
+    await waitFor(() => expect(screen.queryByTestId('optimize-advice')).toBeNull());
+    expect(log.optimizeCalls).toBe(1);
+  });
+
+  // W04 — 같은 QueryClient 에 대시보드의 두 조회 키를 두고 정리 성공 → 둘 다 무효(접두 ['traces'] · DD-28-12).
+  it('invalidatesPointsAndListKeysAfterMaintenance', async () => {
+    mockAdviceApi([false]);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+    });
+    const pointsKey = ['traces', 'points', { service: 'svc', range: '10m', live: false, status: null, q: '', pinned: 1 }];
+    const listKey = ['traces', 'list', { service: 'svc', range: '10m', live: false, status: null, q: '', pinned: 1 }];
+    queryClient.setQueryData(pointsKey, { totalCount: 1 });
+    queryClient.setQueryData(listKey, { traces: [] });
+    // 전제: 두 키가 캐시에 있고 아직 무효가 아니다.
+    expect(queryClient.getQueryState(pointsKey)?.isInvalidated).toBe(false);
+    expect(queryClient.getQueryState(listKey)?.isInvalidated).toBe(false);
+    renderSection(queryClient);
+
+    fireEvent.click(screen.getByRole('button', { name: '지난 데이터 정리' }));
+    fireEvent.click(screen.getByRole('button', { name: '확인' }));
+    await screen.findByText(/지난 데이터를 정리했어요/);
+    expect(queryClient.getQueryState(pointsKey)?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(listKey)?.isInvalidated).toBe(true);
+  });
+
+  // W05 — [최적화] busy 참 · 서버가 권고를 유지 → 상자 그대로(먼저 숨기기 0).
+  it('keepsTheBoxWhenOptimizeIsBusy', async () => {
+    const log = mockAdviceApi([true], 'busy');
+    renderSection();
+    await screen.findByText(ADVICE_1);
+    fireEvent.click(screen.getByRole('button', { name: '최적화' }));
+    fireEvent.click(screen.getByRole('button', { name: '확인' }));
+    await screen.findByText(/적재 중이라 일부만 회수됐어요/);
+    // 전제: 성공 처리 뒤 상태를 다시 받았다(그 응답도 참).
+    await waitFor(() => expect(log.statusCalls).toBeGreaterThanOrEqual(2));
+    expect(screen.getByTestId('optimize-advice')).toBeInTheDocument();
+    expect(screen.getByText(ADVICE_1)).toBeInTheDocument();
   });
 });

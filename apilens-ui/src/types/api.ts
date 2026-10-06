@@ -22,6 +22,55 @@ export interface TracesResponse {
   nextCursor: string | null;
 }
 
+// ────────────────────────────────────────────────────────────────────────────
+// [R28/FR-28-05·06] GET /v1/trace-points — 대시보드 산점도의 대표 점(설계 §2.1 응답 JSON 예시 1:1).
+// 서버가 시간 칸마다 가장 느린 정상 trace 하나와 오류를 골라 보낸다(대표 점은 전부가 아니다).
+// [S-64] BE↔FE 타입 대조(설계 §2.1 · BE record `TracePointsResponse` + 중첩 `TracePoint` · `TraceBucket`):
+//   - bucketMs · totalCount · errorCount : long → number (밀리초 · trace 건수 · trace 건수)
+//   - errorsReduced : boolean → boolean. 화면은 null·칸 없음도 「모름」(UC-R28-03)으로 받는다(옛 서버 · 서버 불리언 칸 네 값).
+//   - TracePoint.traceId : String → string (식별자 · number 로 선언하지 않는다)
+//   - TracePoint.startTime · durationMs : long → number (epoch 밀리초 · 밀리초)
+//   - TraceBucket.start : long → number (epoch 밀리초 — 왼쪽 끝 칸은 since 보다 앞일 수 있다 · CR-28-17)
+// ────────────────────────────────────────────────────────────────────────────
+
+/** 대표 점 하나 — 목록 요약(`TraceSummary`)의 부분 모양(서비스 이름 · span 수 없음). */
+export interface TracePoint {
+  traceId: string;
+  rootOperation: string;
+  startTime: number; // epoch millis
+  durationMs: number;
+  status: TraceStatus;
+  hasError: boolean;
+}
+
+/** 시간 칸 하나 — 행이 하나라도 든 칸만 온다(시작 시각 오름차순). 가장자리 칸의 건수는 창 안 몫만이다. */
+export interface TraceBucket {
+  start: number; // epoch millis (칸 시작)
+  count: number; // 그 칸의 trace 건수(창 안)
+  errorCount: number; // 그 칸의 오류 trace 건수(창 안)
+}
+
+/** GET /v1/trace-points 응답 body. */
+export interface TracePointsResponse {
+  bucketMs: number;
+  totalCount: number;
+  errorCount: number;
+  /** 오류가 안전 상한을 넘어 칸마다 가장 느린 오류 하나로 줄였는가. null·칸 없음 = 모름. */
+  errorsReduced?: boolean | null;
+  points: TracePoint[];
+  buckets: TraceBucket[];
+}
+
+/** GET /v1/trace-points 호출 파라미터 — 창·서비스 필수(서버가 칸 크기를 고른다 · 칸 크기 인자는 없다). */
+export interface TracePointsParams {
+  service: string;
+  since: number;
+  until: number;
+  status?: TraceStatus;
+  /** 앞뒤 공백을 뺀 값이 비면 싣지 않는다. LIKE escape 는 BE 단일 책임(E-07). */
+  q?: string;
+}
+
 /**
  * Service healthStatus — D-03 비협상 4분기 (sliding window 5분 / 30분 임계).
  *   - active   : ≤ 5분 전 마지막 trace
@@ -216,6 +265,11 @@ export interface MaintenanceResult {
  *   카운터 3종(3·4·5번)은 BE in-memory — 서버 재시작 시 0 복귀가 정상 (BE javadoc "재시작 시 0", T-16 출처).
  *   6·7번은 DB 파일에서 PRAGMA 로 읽는 값이라 재시작해도 0 이 되지 않는다 — 성질이 달라서
  *   화면 구획도 갈라 놓았다(설계 §2.5-A 비협상). PRAGMA 읽기 실패 시에만 BE 가 0 으로 폴백한다(설계 §2.4-D).
+ *
+ * [R28] AC-28-05-4 — 8번째 필드 `boolean optimizeAdvised` 를 맨 뒤에 더한다(앞 7필드 이름·타입·순서 불변 —
+ *   「추가만 허용」 규약 그대로). 밤 정리가 [최적화]를 권하는가 · 서버 메모리라 다시 뜬 뒤 첫 밤 정리 전까지 false.
+ *   - optimizeAdvised : boolean(primitive) → `?: boolean`. 옛 서버·로딩 중에는 칸이 없다 — 칸 없음이 계약이고
+ *     뷰가 `?? false` 로 받는다(CR-28-50 · 「권고 아님」 글자 0).
  */
 export interface MaintenanceStatusResponse {
   paused: boolean;
@@ -225,6 +279,7 @@ export interface MaintenanceStatusResponse {
   traceSummaryDeferred: number; // R23/AC-06-1 — 단위는 흐름 수(건). 인메모리 — 재시작 시 0 복귀 정상.
   dbSizeBytes: number; // R23/AC-07-1 — 바이트. PRAGMA page_count × page_size (BE 조립).
   freePageBytes: number; // R23/AC-07-1 — 바이트. PRAGMA freelist_count × page_size. 0 도 정상값.
+  optimizeAdvised?: boolean; // R28/AC-28-05-4 — 밤 정리의 [최적화] 권고(메모리). 칸 없음 = 권고 없음.
 }
 
 /** 마스킹 룰 타입 — V1 rule_type 컬럼 값 그대로. */

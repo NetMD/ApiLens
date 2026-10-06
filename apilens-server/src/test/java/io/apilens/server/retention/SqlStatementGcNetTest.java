@@ -78,6 +78,14 @@ class SqlStatementGcNetTest {
                     + " acquireMs=-?\\d+ statementMs=-?\\d+ commitMs=-?\\d+$");
     private static final Pattern SUMMARY_LINE =
             Pattern.compile("^sql statement gc: deleted=(\\d+) rounds=(\\d+) elapsedMs=-?\\d+$");
+    /** [Phase R28] AC-28-05-7 — 형식 검사 구간 새 줄. 끝의 {@code $} 그대로(필드가 더 붙으면 빨개져야 한다). */
+    private static final Pattern VALIDATE_LINE =
+            Pattern.compile("^sql statement gc validate: validateMs=(-?\\d+) malformedAttributes=(\\d+)$");
+    /** [Phase R28] AC-28-05-7 — 접는 줄에 제자리로 더한 세 구간(회전 줄과 같은 이름 = 같은 구간). */
+    private static final Pattern FOLDED_LINE =
+            Pattern.compile("^sql statement gc folded: watermarkRowid=(\\d+) watermarkRowGone=1"
+                    + " acquireMs=(-?\\d+) statementMs=(-?\\d+) commitMs=(-?\\d+)"
+                    + " — the watermark row changed under the scan, the next run rescans$");
 
     @TempDir
     Path tempDir;
@@ -607,6 +615,102 @@ class SqlStatementGcNetTest {
         assertEquals(0, danglingRefs(), "끊긴 참조 0");
     }
 
+    // ─── [Phase R28] AC-28-05-7 — 형식 검사 구간 새 줄 · 접는 줄 세 구간 ─────────────────────────
+
+    /**
+     * L01 — 형식 검사 구간이 <b>주입한 시계</b>에서 나온다. 걸음마다 다른 폭으로 민다: 빈 표 검사 11 ms · 깨진 행 세기
+     * 13 ms → validateMs = 24. ★시계 읽기를 더하지 않았으므로 회전 줄 세 값은 그대로다(3 · 5 · 7) — 읽기를 하나라도
+     * 더했다면 이 값들이 밀린다.
+     */
+    @Test
+    void logsTheValidateSectionFromTheInjectedClock() throws Exception {
+        String candidate = hash('k');
+        insertStatement(candidate);
+        insertSpan("s-http", "{\"http.method\":\"GET\"}");
+
+        AtomicLong nanos = new AtomicLong();
+        setJdbc(new ValidateClockJdbc(jdbc, nanos, 11L, 13L, 5L, null));
+        setTx(new ClockSteppingTx(txManager, nanos, 3L, 7L));
+        List<String> info = captureInfo(() -> service.gcUnreferencedSqlStatements(500, 8_000L, nanos::get));
+
+        assertEquals(1, scanReclaimable(info), "전제: 후보 하나 — 회전이 실제로 돈다 · 실제: " + info);
+        List<String> validate = info.stream().filter(l -> VALIDATE_LINE.matcher(l).matches()).toList();
+        assertEquals(List.of("sql statement gc validate: validateMs=24 malformedAttributes=0"), validate,
+                "검사 구간 = 11 + 13 · 실제: " + info);
+        int startAt = indexOf(info, "sql statement gc start:");
+        int validateAt = info.indexOf(validate.get(0));
+        int scanAt = indexOf(info, "sql statement gc scan:");
+        assertTrue(startAt < validateAt && validateAt < scanAt, "start → validate → scan 순서 · 실제: " + info);
+        assertTrue(info.get(scanAt).startsWith("sql statement gc scan: scanMs=0 "), "scanMs 의 뜻은 그대로(훑기 구간만) · 실제: " + info);
+        List<String> roundLines = info.stream().filter(l -> ROUND_LINE.matcher(l).matches()).toList();
+        assertEquals(1, roundLines.size(), "회전 줄 하나 — 실제: " + info);
+        assertTrue(roundLines.get(0).endsWith(" acquireMs=3 statementMs=5 commitMs=7"),
+                "기존 회전 줄 값 불변 — 실제: " + roundLines.get(0));
+        assertEquals(List.of(1, 1), summary(info));
+    }
+
+    /** L02 — 깨진 행이 있어 건너뛰는 갈래도 검사 줄을 건너뜀 줄 <b>앞</b>에 남긴다. */
+    @Test
+    void logsTheValidateLineBeforeTheSkippedLineWhenAttributesAreMalformed() throws Exception {
+        insertStatement(hash('m'));
+        insertSpan("s-broken", "{not valid json");
+        assertEquals(1, count("SELECT COUNT(*) FROM spans WHERE json_valid(attributes_json) = 0"),
+                "전제: 깨진 행이 실제로 하나 있다");
+
+        AtomicLong nanos = new AtomicLong();
+        setJdbc(new ValidateClockJdbc(jdbc, nanos, 11L, 13L, 5L, null));
+        List<ILoggingEvent> events = captureEvents(() -> service.gcUnreferencedSqlStatements(500, 8_000L, nanos::get));
+        List<String> all = events.stream().map(ILoggingEvent::getFormattedMessage).toList();
+
+        int validateAt = all.indexOf("sql statement gc validate: validateMs=24 malformedAttributes=1");
+        int skippedAt = all.indexOf("sql statement gc skipped: malformedAttributes=1");
+        assertTrue(skippedAt >= 0, "전제: 건너뜀 갈래를 밟았다 — 실제: " + all);
+        assertTrue(validateAt >= 0 && validateAt < skippedAt, "검사 줄이 건너뜀 줄 앞에 한 줄 — 실제: " + all);
+        assertEquals(Level.INFO, events.get(validateAt).getLevel());
+        assertEquals(1, all.stream().filter(m -> VALIDATE_LINE.matcher(m).matches()).count(), "검사 줄은 한 줄");
+    }
+
+    /** L03 — 접는 줄이 세 구간을 싣는다(가짜 시계 3 · 5 · 7 — 폭이 서로 달라 두 구간이 바뀌면 빨갛다). */
+    @Test
+    void logsTheThreeSectionsOnTheFoldedLine() throws Exception {
+        String candidate = hash('n');
+        insertStatement(candidate);
+        insertSpan("s-top-1", "{\"http.method\":\"GET\"}");
+        insertSpan("s-top-2", "{\"http.method\":\"GET\"}");
+        insertSpan("s-top-3", "{\"http.method\":\"GET\"}");
+
+        AtomicLong nanos = new AtomicLong();
+        ValidateClockJdbc spy = new ValidateClockJdbc(jdbc, nanos, 0L, 0L, 5L, () -> {
+            jdbc.update("DELETE FROM spans WHERE span_id IN ('s-top-2', 's-top-3')");
+            insertSpan("s-refill-ref", refJson(candidate));
+            insertSpan("s-refill-top", "{\"http.method\":\"GET\"}");
+        });
+        setJdbc(spy);
+        setTx(new ClockSteppingTx(txManager, nanos, 3L, 7L));
+        List<ILoggingEvent> events = captureEvents(() -> service.gcUnreferencedSqlStatements(500, 8_000L, nanos::get));
+        List<String> info = lines(events, Level.INFO);
+
+        assertTrue(spy.injected, "전제: 상한 검사 직후에 끼워 넣었다");
+        long watermark = scanWatermark(info);
+        assertNotEquals(0L, watermark, "전제: 표시점이 0 이 아니다 — 실제: " + info);
+        List<String> folds = lines(events, Level.WARN).stream().filter(m -> FOLDED_LINE.matcher(m).matches()).toList();
+        assertEquals(List.of("sql statement gc folded: watermarkRowid=" + watermark + " watermarkRowGone=1"
+                        + " acquireMs=3 statementMs=5 commitMs=7"
+                        + " — the watermark row changed under the scan, the next run rescans"), folds,
+                "접는 줄 세 구간 = 들어가기 3 · 문장 5 · 끝내기 7 — 실제: " + lines(events, Level.WARN));
+        assertEquals(List.of(0, 0), summary(info), "아무것도 안 지우고 접는다");
+        assertEquals(1, countStatement(candidate), "새 행이 가리키는 후보는 살아남는다");
+    }
+
+    private static int indexOf(List<String> lines, String prefix) {
+        for (int i = 0; i < lines.size(); i++) {
+            if (lines.get(i).startsWith(prefix)) {
+                return i;
+            }
+        }
+        throw new AssertionError("line not found: " + prefix + " in " + lines);
+    }
+
     // ─── 헬퍼 ────────────────────────────────────────────────────────────
 
     /** 64자 지문 흉내 — 같은 문자를 64번. 표는 지문 형식을 검사하지 않는다. */
@@ -786,6 +890,52 @@ class SqlStatementGcNetTest {
             super(Objects.requireNonNull(delegate.getDataSource()));
             this.nanos = nanos;
             this.perDeleteMillis = perDeleteMillis;
+        }
+
+        @Override
+        public int update(String sql, Object... args) {
+            int n = super.update(sql, args);
+            if (sql.startsWith("DELETE FROM sql_statements")) {
+                nanos.addAndGet(perDeleteMillis * 1_000_000L);
+            }
+            return n;
+        }
+    }
+
+    /**
+     * [Phase R28] 형식 검사 두 문장(빈 표 검사 · 깨진 행 세기)과 삭제 문장마다 가짜 시계를 정해진 폭만큼 민다.
+     * {@code afterCapCheck} 가 있으면 재확인 상한 검사 문장이 값을 읽은 <b>직후</b> 한 번 실행한다(접기 갈래 만들기).
+     */
+    private static final class ValidateClockJdbc extends JdbcTemplate {
+        private final AtomicLong nanos;
+        private final long emptyCheckMillis;
+        private final long malformedCountMillis;
+        private final long perDeleteMillis;
+        private final Runnable afterCapCheck;
+        private boolean injected = false;
+
+        ValidateClockJdbc(JdbcTemplate delegate, AtomicLong nanos, long emptyCheckMillis, long malformedCountMillis,
+                          long perDeleteMillis, Runnable afterCapCheck) {
+            super(Objects.requireNonNull(delegate.getDataSource()));
+            this.nanos = nanos;
+            this.emptyCheckMillis = emptyCheckMillis;
+            this.malformedCountMillis = malformedCountMillis;
+            this.perDeleteMillis = perDeleteMillis;
+            this.afterCapCheck = afterCapCheck;
+        }
+
+        @Override
+        public <T> T queryForObject(String sql, Class<T> requiredType, Object... args) {
+            T out = super.queryForObject(sql, requiredType, args);
+            if (sql.contains("COUNT(*) FROM sql_statements")) {
+                nanos.addAndGet(emptyCheckMillis * 1_000_000L);
+            } else if (sql.contains("json_valid(attributes_json) = 0")) {
+                nanos.addAndGet(malformedCountMillis * 1_000_000L);
+            } else if (afterCapCheck != null && !injected && isRecheckCapCheck(sql)) {
+                injected = true;
+                afterCapCheck.run();
+            }
+            return out;
         }
 
         @Override

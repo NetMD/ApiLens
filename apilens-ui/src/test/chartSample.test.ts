@@ -1,111 +1,19 @@
-// [R27/FR-27-02·03 · UXD-07·08] 흐르는 차트의 표본 · Y 상한 · 한도 알림 — 순수 함수 시험.
+// [R27/FR-27-03 · UXD-09] Y 상한 · [R28/AC-28-02-6 · UXD-23 · DD-28-34] 차트 자리 분기 판정 · 말풍선 칸 표 — 순수 함수 시험.
+//
+// [R28/AC-28-02-12 · 설계 §4.7] 이 파일에서 지운 시험 9건(화면 표본 5 · 한도 알림 4행)은 서버 대표 점 시험이
+//   결과로 대신한다(설계 부록 D P01 · P02 · P04 · P12 · P20 · P21 · 범례 안내 줄 시험 U07~U09). 이름은 여기 다시 적지 않는다.
 //
 // 검증 의무 (정방향 동사 — EXT-003 lock-in 회귀 가드):
-//   keepsEveryErrorTrace · picksTheSlowestTracePerSecond · returnsTheSameSampleForTheSameInputInAnyOrder
-//   alignsBucketsToEpochSeconds · returnsEmptyForEmptyInput · roundsTheYCeilingUpToAPowerOfTen
-//   decidesTheLimitNoticeByRange
+//   roundsTheYCeilingUpToAPowerOfTen · decidesTheChartSlotStateByPriority · mapsBucketsByStart · findsThePointBucketOrNothing
 import { describe, expect, it } from 'vitest';
-import { chartLimitNotice, sampleTracesPerSecond, yUpperBound } from '../lib/chartSample';
-import type { TraceSummary } from '../types/api';
-
-const BASE = 1_730_000_000_000; // epoch 초 경계
-
-function trace(
-  traceId: string,
-  startTime: number,
-  durationMs: number,
-  status: 'OK' | 'ERROR' = 'OK',
-): TraceSummary {
-  return {
-    traceId,
-    rootOperation: `GET /${traceId}`,
-    serviceName: 'svc',
-    startTime,
-    durationMs,
-    status,
-    spanCount: 1,
-    hasError: status === 'ERROR',
-  };
-}
-
-const ids = (ts: ReadonlyArray<TraceSummary>): string[] => ts.map((t) => t.traceId);
-
-describe('sampleTracesPerSecond — 초당 표본', () => {
-  // TZ-08 — 전제: 입력 오류 ≥ 2 이고 같은 칸에 더 느린 정상 trace 가 함께 있다(빈 통과 금지).
-  it('keepsEveryErrorTrace', () => {
-    const input = [
-      trace('slow-ok', BASE + 100, 900),
-      trace('err-a', BASE + 200, 5, 'ERROR'),
-      trace('err-b', BASE + 300, 7, 'ERROR'),
-      trace('fast-ok', BASE + 400, 3),
-    ];
-    const errorsIn = input.filter((t) => t.status === 'ERROR').length;
-    expect(errorsIn).toBeGreaterThanOrEqual(2);
-    const out = sampleTracesPerSecond(input);
-    expect(out.filter((t) => t.status === 'ERROR').length).toBe(errorsIn);
-    // 오류는 뒤(빨간 점이 위에 그려짐).
-    expect(ids(out)).toEqual(['slow-ok', 'err-a', 'err-b']);
-  });
-
-  // TZ-09 — 같은 입력 두 번 · 뒤섞은 입력 → 같은 출력.
-  it('returnsTheSameSampleForTheSameInputInAnyOrder', () => {
-    const input = [
-      trace('a', BASE + 10, 50),
-      trace('b', BASE + 20, 50), // 같은 지속시간 → traceId 사전순 큰 쪽(b)
-      trace('c', BASE + 1_500, 30),
-      trace('e', BASE + 1_600, 4, 'ERROR'),
-      trace('d', BASE + 2_100, 80),
-    ];
-    const first = sampleTracesPerSecond(input);
-    const again = sampleTracesPerSecond(input);
-    const shuffled = sampleTracesPerSecond([input[3]!, input[0]!, input[4]!, input[2]!, input[1]!]);
-    expect(ids(again)).toEqual(ids(first));
-    expect(ids(shuffled)).toEqual(ids(first));
-    expect(ids(first)).toEqual(['b', 'c', 'd', 'e']);
-  });
-
-  // TZ-10 — 칸마다 가장 느린 1.
-  it('picksTheSlowestTracePerSecond', () => {
-    const input = [
-      trace('s0-fast', BASE + 0, 10),
-      trace('s0-slow', BASE + 999, 400),
-      trace('s0-mid', BASE + 500, 120),
-      trace('s1-only', BASE + 1_000, 5),
-      trace('s2-mid', BASE + 2_000, 60),
-      trace('s2-slow', BASE + 2_001, 61),
-    ];
-    expect(ids(sampleTracesPerSecond(input))).toEqual(['s0-slow', 's1-only', 's2-slow']);
-  });
-
-  // TZ-11 — 칸은 epoch 초 정렬이라 조회 창을 소수 초 민 두 입력에서도 겹치는 칸의 대표점이 같다.
-  //   전제: 겹치는 칸 ≥ 1.
-  it('alignsBucketsToEpochSeconds', () => {
-    const all = [
-      trace('x0', BASE + 100, 20),
-      trace('x1', BASE + 700, 90),
-      trace('y0', BASE + 1_200, 15),
-      trace('y1', BASE + 1_900, 40),
-      trace('z0', BASE + 2_300, 70),
-    ];
-    // 창 A = [BASE+0, BASE+2,000) · 창 B = [BASE+650, BASE+2,650) — 0.65초 민 창.
-    const inA = all.filter((t) => t.startTime >= BASE && t.startTime < BASE + 2_000);
-    const inB = all.filter((t) => t.startTime >= BASE + 650 && t.startTime < BASE + 2_650);
-    const a = sampleTracesPerSecond(inA);
-    const b = sampleTracesPerSecond(inB);
-    const bucketOf = (t: TraceSummary): number => Math.floor(t.startTime / 1_000);
-    const shared = a.filter((ta) => b.some((tb) => bucketOf(tb) === bucketOf(ta)));
-    expect(shared.length).toBeGreaterThanOrEqual(1);
-    for (const ta of shared) {
-      const tb = b.find((x) => bucketOf(x) === bucketOf(ta));
-      expect(tb?.traceId).toBe(ta.traceId);
-    }
-  });
-
-  // TZ-12 — 빈 입력 → 빈 출력(기대값이 빈 배열인 정답 자리).
-  it('returnsEmptyForEmptyInput', () => {
-    expect(sampleTracesPerSecond([])).toEqual([]);
-  });
-});
+import { ApiError } from '../api/client';
+import {
+  buildBucketCounts,
+  chartSlotState,
+  lookupBucket,
+  yUpperBound,
+} from '../lib/chartSample';
+import type { ChartSlotDrawn, ChartSlotInput, ChartSlotStateId, LegendNoticeKind } from '../lib/chartSample';
 
 describe('yUpperBound — Y 축 상한', () => {
   // TZ-13 · BV-06 — 10 의 거듭제곱으로 올림 · 바닥 10.
@@ -120,15 +28,83 @@ describe('yUpperBound — Y 축 상한', () => {
   });
 });
 
-describe('chartLimitNotice — 한도 알림', () => {
-  const LIMIT = 500; // TRACES_LIMIT_SCROLL 과 같은 값(한도 인자)
-  // TZ-14 · BV-07 — 5m·10m 만 · 판정 = 표본 전 응답 길이. Live OFF 는 부르는 쪽이 막는다(TZ-24).
-  it.each([
-    ['5m 한도 도달', '5m', LIMIT, 'shown'],
-    ['5m 한도 − 1', '5m', LIMIT - 1, 'reserved'],
-    ['10m 한도 도달', '10m', LIMIT, 'shown'],
-    ['1h 한도 도달', '1h', LIMIT, 'none'],
-  ] as const)('decidesTheLimitNoticeByRange — %s', (_label, range, count, expected) => {
-    expect(chartLimitNotice(range, count, LIMIT)).toBe(expected);
+// [R28/S01] 분기 표(설계 정정 CR-28-37) 판 13 — 우선순위 401 > 일시 정지 > 바쁨·오류 > 조건 바뀜 > 0건 > 응답 > 첫 응답 전.
+describe('chartSlotState — 차트 자리 분기 판정', () => {
+  const NOW_KEY = JSON.stringify(['svc', '1m', true, null, '']);
+  const OLD_KEY = JSON.stringify(['svc', '10m', true, null, '']);
+  const busy = new ApiError(503, 'trace points query is busy — retry shortly', {
+    error: 'trace points query is busy — retry shortly',
+  });
+  const boom = new ApiError(500, 'boom', { error: 'boom' });
+  const drawn = (
+    totalCount: number,
+    errorsReduced: boolean | null | undefined,
+    requestKey: string = NOW_KEY,
+  ): ChartSlotDrawn =>
+    errorsReduced === undefined ? { requestKey, totalCount } : { requestKey, totalCount, errorsReduced };
+  const base: ChartSlotInput = {
+    blocked: false,
+    chartPaused: false,
+    frozen: false,
+    pointsError: null,
+    drawn: undefined,
+    viewKey: NOW_KEY,
+  };
+
+  it.each<[string, Partial<ChartSlotInput>, ChartSlotStateId, LegendNoticeKind | null]>([
+    ['ST-01 첫 응답 전', {}, 'ST-01', null],
+    ['ST-02 줄여 보내지 않음', { drawn: drawn(12, false) }, 'ST-02', 'normal'],
+    ['ST-03 줄여 보냄', { drawn: drawn(12, true) }, 'ST-03', 'reduced'],
+    ['ST-04 줄여 보냈는지 모름(칸 없음)', { drawn: drawn(12, undefined) }, 'ST-04', 'unknown'],
+    ['ST-05 응답 0건', { drawn: drawn(0, false) }, 'ST-05', null],
+    ['ST-05 바쁨 + 같은 조건 직전 0건(DD-28-33)', { pointsError: busy, drawn: drawn(0, false) }, 'ST-05', null],
+    ['ST-06 일시 정지(얼린 응답 문구 그대로)', { chartPaused: true, frozen: true, drawn: drawn(12, true) }, 'ST-06', 'reduced'],
+    ['ST-07 바쁨 + 같은 조건 직전 응답', { pointsError: busy, drawn: drawn(12, false) }, 'ST-07', 'busy'],
+    ['ST-08 바쁨 + 다른 조건의 옛 점', { pointsError: busy, drawn: drawn(12, false, OLD_KEY) }, 'ST-08', 'busyEmpty'],
+    ['ST-09 오류(401·503 밖)', { pointsError: boom, drawn: drawn(12, false) }, 'ST-09', null],
+    ['ST-10 401 이 일시 정지·바쁨보다 이김', { blocked: true, chartPaused: true, frozen: true, pointsError: busy, drawn: drawn(12, false) }, 'ST-10', null],
+    ['ST-12 옛 응답 거짓 → 문구 숨김', { drawn: drawn(12, false, OLD_KEY) }, 'ST-12', null],
+    ['ST-12 옛 응답 참 → 진한 마디만(DD-28-31)', { drawn: drawn(12, true, OLD_KEY) }, 'ST-12', 'reducedOnly'],
+  ])('decidesTheChartSlotStateByPriority — %s', (_label, input, state, notice) => {
+    expect(chartSlotState({ ...base, ...input })).toEqual({ state, notice });
+  });
+});
+
+// [R28/S02 · S03 · DD-28-34 · B-18 · B-21] 말풍선 셋째 줄의 칸 표 — 응답 때 한 번 만들고 · 가장자리 칸은 처음부터 뺀다.
+describe('buildBucketCounts · lookupBucket — 말풍선 칸 표', () => {
+  const B = 1_000; // 칸 1초
+  const T0 = 1_730_000_000_000; // 칸 경계
+
+  it.each<[string, { since: number; until: number }, number[], number[]]>([
+    // 판 ① 창이 칸 경계와 맞음 → 세 칸 모두 표에 있다(칸 시작 = 창 시작 · 칸 끝 = 창 끝 포함).
+    ['창이 칸 경계와 맞으면 칸마다 표에 있다', { since: T0, until: T0 + 3 * B }, [T0, T0 + B, T0 + 2 * B], []],
+    // 판 ② 창 시작이 칸 한가운데 → 왼쪽 끝 칸(시작 < 창 시작) · 오른쪽 끝 칸(끝 > 창 끝)은 빠진다.
+    ['창 시작이 칸 한가운데면 가장자리 두 칸을 뺀다', { since: T0 + 500, until: T0 + 2 * B + 500 }, [T0 + B], [T0, T0 + 2 * B]],
+  ])('mapsBucketsByStart — %s', (_label, requestWindow, present, absent) => {
+    const buckets = [
+      { start: T0, count: 12, errorCount: 0 },
+      { start: T0 + B, count: 9, errorCount: 1 },
+      { start: T0 + 2 * B, count: 4, errorCount: 2 },
+    ];
+    // 전제: 고정값에 판마다 기대한 칸이 실제로 들어 있다(빈 통과 0 · EXT-003 9항).
+    for (const s of [...present, ...absent]) expect(buckets.some((b) => b.start === s)).toBe(true);
+    const table = buildBucketCounts({ bucketMs: B, buckets, requestWindow });
+    for (const s of present) expect(table.counts.has(s)).toBe(true);
+    for (const s of absent) expect(table.counts.has(s)).toBe(false);
+    expect(table.counts.get(T0 + B)).toEqual({ count: 9, errorCount: 1 });
+  });
+
+  it.each<[string, number[], { count: number; errorCount: number } | null]>([
+    // 판 ① 칸 시작 정확히 · 칸 끝 −1 ms → 같은 칸.
+    ['칸 시작 정확히 · 끝 −1 ms → 같은 칸', [T0 + B, T0 + 2 * B - 1], { count: 9, errorCount: 1 }],
+    // 판 ② 표에 없는 칸(행이 없던 칸 · 바로 다음 칸 시작) → null = 말풍선 줄 생략(0 으로 안 씀).
+    ['칸 없음 → 줄 생략', [T0 + 2 * B, T0 - 1], null],
+  ])('findsThePointBucketOrNothing — %s', (_label, startTimes, expected) => {
+    const table = buildBucketCounts({
+      bucketMs: B,
+      buckets: [{ start: T0 + B, count: 9, errorCount: 1 }],
+      requestWindow: { since: T0, until: T0 + 3 * B },
+    });
+    for (const startTime of startTimes) expect(lookupBucket(table, startTime)).toEqual(expected);
   });
 });

@@ -35,6 +35,11 @@ export interface MaintenanceStatusView {
    * ⚠️ 0 은 결함이 아니다 — 전체 삭제 + 최적화 직후에는 정상값이다(2026-08-13 운영 실측).
    */
   freePageBytes: number;
+  /**
+   * [R28/AC-28-05-10·11] 밤 정리가 [최적화]를 권하는가 — 서버 메모리라 서버를 다시 시작하면 다음 밤 정리 전까지 false.
+   * ⚠️ 위 두 디스크 값과 성질이 다르다(DB 에서 읽는 값이 아니라 한 밤의 판정). 어떤 disabled 식에도 넣지 않는다(C-09).
+   */
+  optimizeAdvised: boolean;
 }
 
 /**
@@ -71,6 +76,9 @@ export function useMaintenanceStatus(): MaintenanceStatusView {
   const traceSummaryDeferred = query.data?.traceSummaryDeferred ?? 0;
   const dbSizeBytes = query.data?.dbSizeBytes ?? 0;
   const freePageBytes = query.data?.freePageBytes ?? 0;
+  // [R28/AC-28-05-11] 같은 꼴 — 옛 서버(칸 없음) · 로딩 중 · 첫 조회 실패 = 권고 없음(「권고 아님」 글자 0 · C-11).
+  //   성공 뒤 조회가 실패하면 React Query 가 마지막 성공 값을 들고 있어 그 값을 그대로 쓴다(UXD-28 · 받아들임).
+  const optimizeAdvised = query.data?.optimizeAdvised ?? false;
 
   return {
     paused,
@@ -81,5 +89,6 @@ export function useMaintenanceStatus(): MaintenanceStatusView {
     traceSummaryDeferred,
     dbSizeBytes,
     freePageBytes,
+    optimizeAdvised,
   };
 }

@@ -139,6 +139,189 @@ public class TraceQueryRepository {
                 .replace("_", "\\_");
     }
 
+    // ══ [Phase R28] 대표 점 조회 (신규 패턴 — 앵커 밀도 2배) ═══════════════════════════════════════
+    //
+    //  [Phase R28] AC-28-01-1/AC-28-01-2/AC-28-01-3/AC-28-01-6/AC-28-01-7/AC-28-01-11 — 사용자 명시 결정
+    //  (UD-2 「오류 아닌 것 중 가장 느린 1 + 오류 전부」 · 확정 ③ 「오류 상한 · 칸마다 오류 하나 이상 · 칸별 오류
+    //  건수를 늘」). CLAUDE.md '데이터 모델 (변경 신중히)' 인용 — 스키마 변경 0 · 기존 두 인덱스만 쓴다.
+    //  되풀이 차단을 위해 아래 다섯을 코드 옆에 남긴다. 다음 조사자가 여기부터 읽는다.
+    //
+    //   (ㄱ) **한 문장 = 한 스냅숏.** 칸 · 점 · 총계를 UNION ALL 한 문장으로 뽑는다. 따로 질의하면 사이에 들어온
+    //        수신이 「범례 총계 ≠ 칸 합」을 만든다(함정 9). 그래서 총계는 SQL 이 아니라 칸 합으로 만든다.
+    //   (ㄴ) **합성 키 = 걸린 시간 19자리 0 채움 + trace_id.** 한 인자 MAX 가 TEXT 를 바이트 순서로 견주므로
+    //        「더 느린 쪽, 같으면 trace_id 가 큰 쪽」이 된다. 걸린 시간을 누르지 않는다(long 전체 = 19자리).
+    //        음수는 **키에서만** 0 으로 올린다 — 응답에는 원래 값이 나간다(DD-28-07).
+    //   (ㄷ) **맨 컬럼에 기대지 않는다.** 키에서 trace_id 를 꺼내 기본 키로 되읽는다 — GROUP BY 의 맨 컬럼은
+    //        SQLite 가 어느 행 값을 줄지 정하지 않는다(함정 5).
+    //   (ㄹ) **창 안에서만.** 대표 · 오류 · 건수 모두 since ≤ start_time < until. 칸 경계는 묶음 키에만 쓴다 —
+    //        그래서 가장자리 칸의 건수는 창 안 몫만이다(RC-10 · DD-28-34).
+    //   (ㅁ) **문장과 인자를 한 곳에서 함께 붙인다.** 검색어는 바인딩 + {@link #escapeLike} 한 곳(목록 경로와 같은
+    //        규칙)이고 문자열 연결로 SQL 에 들어가는 사용자 값은 0 이다. 시험용 문장 꺼내기도 같은 조립을 탄다.
+    //
+    //  ★이 저장소 메서드는 **서비스의 동시 실행 상한을 거쳐서만** 부른다(생산 호출처 = TraceQueryService 한 곳).
+    //   직접 부르면 창 · 칸 검증과 허가가 둘 다 빠진다.
+
+    /**
+     * One row of the representative-point statement: either a bucket row ({@code bucketRow == true} — bucket index,
+     * count, error count) or a point row (the trace columns of one representative).
+     */
+    public record PointRow(
+            boolean bucketRow,
+            long bucketIndex,
+            long count,
+            long errorCount,
+            String traceId,
+            String rootOperation,
+            long startTime,
+            long durationMs,
+            SpanStatus status,
+            boolean hasError
+    ) {
+    }
+
+    /** 문장과 인자 한 벌 — 같은 조립에서 함께 나온다(위 (ㅁ)). */
+    private record PointsStatement(String sql, Object[] args) {
+    }
+
+    /**
+     * Representative points of one window — buckets plus points in a single statement. Callers must go through
+     * {@code TraceQueryService} (window validation + the concurrency permit live there).
+     *
+     * @param bucketMs  bucket size chosen by the service (bound as a Java long — integer division)
+     * @param errorsMax error safety cap; above it errors are reduced to the slowest one per bucket
+     */
+    public List<PointRow> findTracePoints(String service, long since, long until, SpanStatus status, String q,
+                                          long bucketMs, int errorsMax) {
+        // 검색어: 목록 경로와 같은 규칙 — 앞뒤 공백을 뺀 값이 비면 걸지 않는다 · 이스케이프는 escapeLike 한 곳.
+        String likePattern = (q == null || q.isBlank()) ? null : "%" + escapeLike(q.trim()) + "%";
+        PointsStatement st = pointsStatement(service, since, until, status, likePattern, bucketMs, errorsMax);
+        return jdbc.query(st.sql(), POINT_ROW_MAPPER, st.args());
+    }
+
+    /**
+     * 시험 · 측정 틀 전용 — 걸 조건(status · q)의 있고 없음에 따른 문장 원문. 실제 조회와 <b>같은 조립</b>을 타므로
+     * 측정 틀이 복사한 문장이 운영 문장과 어긋나지 않는다(설계 §2.3 · GATE-Q1).
+     */
+    static String pointsSql(boolean withStatus, boolean withQ) {
+        return pointsStatement("", 0L, 1L, withStatus ? SpanStatus.ERROR : null, withQ ? "%%" : null, 1L, 0).sql();
+    }
+
+    private static PointsStatement pointsStatement(String service, long since, long until, SpanStatus status,
+                                                   String likePattern, long bucketMs, int errorsMax) {
+        StringBuilder sql = new StringBuilder();
+        List<Object> args = new ArrayList<>();
+        // ① 칸 크기 · ②③④ 서비스 · 창 — 칸 묶음은 창 안 행을 인덱스 범위로 한 번 훑는다.
+        sql.append(POINTS_AGG_HEAD);
+        args.add(bucketMs);
+        args.add(service);
+        args.add(since);
+        args.add(until);
+        appendPointsFilters(sql, args, "", status, likePattern);                  // ⑤⑥ 있을 때만
+        sql.append(POINTS_AGG_TAIL_AND_REPRESENTATIVES);
+        args.add(errorsMax);                                                       // ⑦ 넘침 갈래 문턱
+        args.add(service);
+        args.add(since);
+        args.add(until);                                                           // ⑧⑨⑩ 평소 갈래 창
+        appendPointsFilters(sql, args, "t.", status, likePattern);                 // ⑪⑫ 있을 때만
+        sql.append(POINTS_EVERY_ERROR_TAIL);
+        args.add(errorsMax);                                                       // ⑬ 평소 갈래 문턱
+        return new PointsStatement(sql.toString(), args.toArray());
+    }
+
+    private static void appendPointsFilters(StringBuilder sql, List<Object> args, String alias,
+                                            SpanStatus status, String likePattern) {
+        if (status != null) {
+            sql.append("                   AND ").append(alias).append("status = ?\n");
+            args.add(status.name());
+        }
+        if (likePattern != null) {
+            sql.append("                   AND ").append(alias).append("root_operation LIKE ? ESCAPE '\\'\n");
+            args.add(likePattern);
+        }
+    }
+
+    /** 칸 묶음 머리 — 창 안 행에서 칸마다 건수 · 오류 건수 · 정상 키 · 오류 키를 만든다. */
+    private static final String POINTS_AGG_HEAD = """
+            WITH agg AS (
+                SELECT start_time / ?                                             AS b
+                     , COUNT(*)                                                   AS cnt
+                     , SUM(err)                                                   AS err_cnt
+                     , MAX(CASE WHEN err = 0 THEN printf('%019d', d) || trace_id END) AS ok_key
+                     , MAX(CASE WHEN err = 1 THEN printf('%019d', d) || trace_id END) AS err_key
+                  FROM (
+                    SELECT trace_id
+                         , start_time
+                         , CASE WHEN duration_ms < 0 THEN 0 ELSE duration_ms END     AS d
+                         , CASE WHEN status = 'ERROR' OR has_error = 1 THEN 1 ELSE 0 END AS err
+                      FROM traces
+                     WHERE service_name = ?
+                       AND start_time >= ?
+                       AND start_time < ?
+            """;
+
+    /** 칸 묶음 꼬리 + 칸 행 + 칸마다 정상 대표 + 넘침 갈래(칸마다 가장 느린 오류) + 평소 갈래 머리. */
+    private static final String POINTS_AGG_TAIL_AND_REPRESENTATIVES = """
+                  )
+                 GROUP BY b
+            ),
+            tot AS (
+                SELECT COALESCE(SUM(err_cnt), 0) AS errs
+                  FROM agg
+            )
+            SELECT 'B'       AS kind
+                 , a.b       AS b
+                 , a.cnt     AS cnt
+                 , a.err_cnt AS err_cnt
+                 , NULL      AS trace_id
+                 , NULL      AS root_operation
+                 , NULL      AS start_time
+                 , NULL      AS duration_ms
+                 , NULL      AS status
+                 , NULL      AS has_error
+              FROM agg a
+            UNION ALL
+            SELECT 'P', a.b, NULL, NULL
+                 , t.trace_id, t.root_operation, t.start_time, t.duration_ms, t.status, t.has_error
+              FROM agg a
+              JOIN traces t ON t.trace_id = substr(a.ok_key, 20)
+             WHERE a.ok_key IS NOT NULL
+            UNION ALL
+            SELECT 'P', a.b, NULL, NULL
+                 , t.trace_id, t.root_operation, t.start_time, t.duration_ms, t.status, t.has_error
+              FROM agg a
+              JOIN traces t ON t.trace_id = substr(a.err_key, 20)
+             WHERE a.err_key IS NOT NULL
+               AND (SELECT errs FROM tot) > ?
+            UNION ALL
+            SELECT 'P', NULL, NULL, NULL
+                 , t.trace_id, t.root_operation, t.start_time, t.duration_ms, t.status, t.has_error
+              FROM traces t
+             WHERE t.service_name = ?
+               AND t.start_time >= ?
+               AND t.start_time < ?
+            """;
+
+    /** 평소 갈래 꼬리 — 창 안 오류가 1 이상 · 상한 이하일 때만 오류 전부(오류 0 이면 이 갈래는 행을 안 낸다). */
+    private static final String POINTS_EVERY_ERROR_TAIL = """
+               AND (t.status = 'ERROR' OR t.has_error = 1)
+               AND (SELECT errs FROM tot) BETWEEN 1 AND ?
+            """;
+
+    private static final RowMapper<PointRow> POINT_ROW_MAPPER = (rs, rowNum) -> {
+        if ("B".equals(rs.getString("kind"))) {
+            return new PointRow(true, rs.getLong("b"), rs.getLong("cnt"), rs.getLong("err_cnt"),
+                    null, null, 0L, 0L, null, false);
+        }
+        String status = rs.getString("status");
+        return new PointRow(false, 0L, 0L, 0L,
+                rs.getString("trace_id"),
+                rs.getString("root_operation"),
+                rs.getLong("start_time"),
+                rs.getLong("duration_ms"),
+                status == null ? null : SpanStatus.valueOf(status),
+                rs.getInt("has_error") == 1);
+    };
+
     public Optional<TraceSummary> findTraceSummary(String traceId) {
         try {
             TraceSummary t = jdbc.queryForObject(

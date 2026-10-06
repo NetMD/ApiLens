@@ -222,8 +222,8 @@ class OrphanSweepTest {
         seedOrphanSpans("o1", "o2", "o3");
         long now = System.currentTimeMillis();
 
-        service.cleanup(now);          // 수동 [보관 기간 즉시 적용] 1회
-        service.cleanup(now + 1);      // 연달아 2회
+        service.cleanupManual(now);          // 수동 [보관 기간 즉시 적용] 1회 — [Phase R28] AC-28-05-1 수동 전용 메서드
+        service.cleanupManual(now + 1);      // 연달아 2회
 
         assertEquals(3, countOrphanSpans(), "수동 정리를 두 번 눌러도 고아 삭제는 0");
         assertEquals(0, countCandidateRows(), "수동 경로는 후보 키를 만들지도 않는다");

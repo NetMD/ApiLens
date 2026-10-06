@@ -58,7 +58,12 @@ allprojects {
     //   agent 변경 0** — 마이그레이션이 없어 되돌리는 길은 이전 jar 로 바꾸는 것뿐이고, 계측기를 다시
     //   배포할 필요가 없다. AgentMain 의 AGENT_VERSION 은 "0.6.0" 고정 그대로다).
     //   ★OpenApiDocsIntegrationTest 의 info.version 단언도 이번 접촉에서 함께 올렸다.
-    version = "0.8.0"
+    // [Phase R28] AC-28-06-1 — 0.8.0 → 0.9.0 (minor: 사용자가 알아볼 기능이 늘었다 — 대시보드 차트가 고른 시간 범위
+    //   전체를 서버가 고른 대표 점으로 보인다 · 밤 정리가 [최적화]를 권한다. **스키마 변경 0 · agent 소스 변경 0** —
+    //   되돌리는 길은 이전 jar 로 바꾸는 것뿐이다. 새로 빌드한 agent jar 는 제품 버전(0.9.0)을 보고하고, 다시
+    //   배포하지 않은 agent 는 계속 0.8.0 으로 보인다 — 둘 다 정상이다).
+    //   ★OpenApiDocsIntegrationTest 의 info.version 단언도 이번 접촉에서 함께 올렸다.
+    version = "0.9.0"
 }
 
 subprojects {

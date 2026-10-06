@@ -33,6 +33,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.OptionalLong;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.LongSupplier;
 
@@ -116,7 +117,17 @@ public class RetentionCleanupService {
      *       // 삭제 전 빈 페이지 수가 <b>4회는 0</b> 이었다. 예산이 모자라서 남는 상태가 아니라 회수할 것
      *       // 자체가 없는 밤이 절반이라, 예산을 올려도 얻을 것이 없고 위 WAL 마진만 줄어든다.
      *       // 다시 판정할 조건: 이 로그의 삭제 전 빈 페이지 수가 <b>예산에 붙어 있는 밤이 이어질 때</b>.
-     *       // 그때는 {@link #RECLAIM_WAL_BYTES_PER_PAGE} 를 다시 재고 트랜잭션 묶음 전환도 함께 본다.</li>
+     *       // 그때는 {@link #RECLAIM_WAL_BYTES_PER_PAGE} 를 다시 재고 트랜잭션 묶음 전환도 함께 본다.
+     *       // [Phase R28] AC-28-05-6 — ★다시 판정했다: <b>5,000 유지</b>. 사용자 명시 결정(UD-3 「밤 회수 예산 유지」).
+     *       // 09-29~10-02 네 밤 연속 삭제 전 빈 페이지가 예산의 7~19배였는데(34,683 → 93,834), 원인은 수신량이
+     *       // 줄어 밤 삭제가 만든 빈 페이지를 낮 적재가 다시 채우지 못한 것이다 — 예산 크기만의 문제가 아니다.
+     *       // 대응 = 밤 정리의 <b>[최적화] 권고 줄</b>({@code optimize advice:})과 설정 화면 권고.
+     *       // ★이 문단의 다시 판정할 조건이 위 R23 문단의 조건(「예산에 붙어 있는 밤이 이어질 때」)을 <b>대신한다</b>:
+     *       // <b>[최적화] 성공</b>({@code optimize succeeded:} 줄) <b>뒤 둘째 밤부터</b> {@code cleanup start:} 줄
+     *       // ({@code [scheduling-1]})의 {@code freelistPagesBeforeDelete} 가 <b>5,000 페이지 이상</b>인 밤이
+     *       // <b>3밤 연속</b>(단위 = 페이지 개수 · 밤 = 04:00 실행 1회 · 비교 = 이상(≥) · [최적화] 다음 첫 밤은
+     *       // 빈 페이지가 늘 ≈0 이라 세지 않는다). 권고대로 [최적화]를 눌렀는데도 다시 쌓인다는 뜻이다 — 그때는
+     *       // 트랜잭션 묶음 전환과 WAL 재측정을 함께 본다(위 ★ 문단).</li>
      * </ol>
      */
     static final int RETENTION_VACUUM_BUDGET_PAGES = 5_000;
@@ -280,6 +291,19 @@ public class RetentionCleanupService {
      */
     private static final String WATERMARK_ROW_ALIVE = "SELECT 1 FROM spans WHERE rowid = ? AND span_id = ?";
 
+    /**
+     * [Phase R28] AC-28-05-1/AC-28-05-2 — [최적화] 권고 임계 ① 삭제 전 빈 페이지 비율의 하한(정수 백분율).
+     * 사용자 명시 결정(UD-3 「빈 공간이 쌓이면 정리 로그와 화면으로 [최적화]를 권함」). 근거 = 설계 §0.4 UQ-R28-08
+     * (다섯 밤 대조: 10-01 28.7% 에 처음 참 · 09-30 23.6% 거짓). 비교는 이상(≥) — 경계값은 권고 쪽.
+     */
+    static final int OPTIMIZE_ADVICE_MIN_FREE_PERCENT = 25;
+
+    /**
+     * [Phase R28] AC-28-05-1/AC-28-05-2 — [최적화] 권고 임계 ② 삭제 전 빈 공간의 하한(<b>바이트</b> = 100 MiB).
+     * 비율만 보면 작은 설치에서 의미 없는 권고가 뜬다 — 그 소음을 막는 바닥이다. 비교는 이상(≥).
+     */
+    static final long OPTIMIZE_ADVICE_MIN_FREE_BYTES = 100L * 1024L * 1024L;
+
     private final JdbcTemplate jdbc;
     private final TransactionTemplate tx;
     private final SettingsService settingsService;
@@ -306,6 +330,23 @@ public class RetentionCleanupService {
      */
     private final AtomicLong lastNightlySweepEndedAtMs = new AtomicLong(0L);
 
+    /**
+     * [Phase R28] AC-28-05-1/AC-28-05-2/AC-28-05-3/AC-28-05-12 — 밤 정리가 [최적화]를 권하는가(<b>인메모리</b>).
+     * 사용자 명시 결정(UD-3). CLAUDE.md '데이터 모델 (변경 신중히)' 인용 — {@code settings} 표에 쓰지 않는다(스키마 ·
+     * 저장 경로 0). 인라인 필드라 생성자 두 벌은 그대로다(진입점 시그니처 불변).
+     *
+     * <p><b>넣는 자리</b> = 밤 정리의 판정 한 곳. <b>거두는 자리</b> = ⓐ [최적화] 성공 ⓑ 다음 밤 판정이 임계 아래
+     * ⓒ 재기동. <b>유지</b> = [최적화] busy(디스크 부족 거부 · VACUUM 실패) · 수동 정리 · 전체 삭제(판정 경로가 없다).
+     *
+     * <p><b>쓰는 주체가 둘</b>(밤 스케줄 스레드 · [최적화] 요청 스레드)이다 — 잠금 없이 「마지막에 쓴 쪽」이 남는다.
+     * 두 순서(판정 → 성공 ⇒ 거짓 · 성공 → 판정 ⇒ 판정 값)는 시험이 결정적으로 잰다.
+     *
+     * <p><b>한계를 그 자리에</b>: 권고는 「지난 밤 한 번의 삭제 전 스냅숏」이다 — 낮에 공간이 더 쌓이거나 줄어도
+     * 다음 밤까지 그대로이고, 재기동 직후에는 다음 밤 정리 전까지 없다(틀리는 방향 = <b>권고가 안 뜨는 쪽</b> · 안전).
+     * 권고는 어떤 단추도 막지 않는다.
+     */
+    private final AtomicBoolean optimizeAdvised = new AtomicBoolean(false);
+
     @Autowired
     public RetentionCleanupService(JdbcTemplate jdbc, PlatformTransactionManager txManager,
                                    SettingsService settingsService) {
@@ -328,8 +369,41 @@ public class RetentionCleanupService {
     public record CleanupResult(int batches, int deletedTraces) {
     }
 
+    /**
+     * <b>Nightly</b> retention cleanup — called by {@link RetentionCleanupJob} only. The manual
+     * "apply retention immediately" button goes through {@link #cleanupManual()} instead.
+     */
     public CleanupResult cleanup() {
         return cleanup(System.currentTimeMillis());
+    }
+
+    /**
+     * [Phase R28] AC-28-05-1/AC-28-05-2 — <b>밤 경로</b>. 삭제 전 관측값으로 [최적화] 권고를 판정한 뒤 정리한다.
+     * 사용자 명시 결정(UD-3). ★판정을 부르는 곳은 <b>이 파일에서 여기 한 곳</b>이다 — 수동 경로는 판정 코드가
+     * <b>경로째 없다</b>(플래그가 아니다 — 다음 라운드에 누가 켜서 뚫을 자리가 없다 · DD-28-19).
+     * 판정은 SQL 0 · 트랜잭션 밖이라 「정리 트랜잭션의 첫 문장은 쓰기」 규율과 무관하다.
+     */
+    CleanupResult cleanup(long nowMs) {
+        // [Phase R22] R22/AC-01-6 관측 로그 ①/3 — 삭제 **전** freelist_count.
+        //   ★이 값이 "주기 최솟값"(하룻밤 사이에 낮 적재가 재사용하고 남은 바닥) 이고, 다음 라운드가
+        //   예산을 얼마까지 키워도 되는지 정하는 **유일한 입력**이다. 빠지면 영원히 모른다.
+        FreelistSnapshot before = logFreelistBeforeDelete();
+        judgeOptimizeAdvice(before);
+        return runRetention(nowMs);
+    }
+
+    /**
+     * [Phase R28] AC-28-05-1 — <b>수동</b> [보관 기간 즉시 적용]. 관측 줄은 그대로 찍고(값은 버린다) 권고 판정은
+     * 하지 않는다 — 권고는 밤 정리의 한 밤 스냅숏이라 낮의 수동 정리가 그 값을 덮지 않는다(DD-28-19).
+     */
+    public CleanupResult cleanupManual() {
+        return cleanupManual(System.currentTimeMillis());
+    }
+
+    /** 수동 경로의 시험용 시각 주입 갈래 — 밤 경로의 {@code cleanup(long)} 과 같은 꼴. */
+    CleanupResult cleanupManual(long nowMs) {
+        logFreelistBeforeDelete();
+        return runRetention(nowMs);
     }
 
     /**
@@ -338,13 +412,11 @@ public class RetentionCleanupService {
      *
      * <p>배치 = 트랜잭션 경계: 배치 사이 트랜잭션을 닫아 ingest writer 에 양보 (락 분산).
      * 같은 트랜잭션 + SQLite 단일 writer 특성으로 3단 사이 집합 불변 — 고아 0 보장 (NFR-02).
+     *
+     * <p>[Phase R28] AC-28-05-13 — 밤 · 수동 두 경로가 함께 쓰는 정리 본문이다. 옛 {@code cleanup(long)} 본문을
+     * <b>문장 · 순서 그대로</b> 옮겼다(삭제 문장 · VACUUM · 트랜잭션 경계 무접촉).
      */
-    CleanupResult cleanup(long nowMs) {
-        // [Phase R22] R22/AC-01-6 관측 로그 ①/3 — 삭제 **전** freelist_count.
-        //   ★이 값이 "주기 최솟값"(하룻밤 사이에 낮 적재가 재사용하고 남은 바닥) 이고, 다음 라운드가
-        //   예산을 얼마까지 키워도 되는지 정하는 **유일한 입력**이다. 빠지면 영원히 모른다.
-        logFreelistBeforeDelete();
-
+    private CleanupResult runRetention(long nowMs) {
         // [Phase R12] AC-A1-6 — D-05 resolve 경유 (settings DB 값 > yml fallback)
         long cutoffMs = nowMs - settingsService.resolveRetentionDays() * DAY_MS;
 
@@ -429,6 +501,11 @@ public class RetentionCleanupService {
         try {
             jdbc.execute("VACUUM");  // 전체 행 재구성 (같은 inode — NFR-05)
             checkpointWal();         // 기존 private 메서드 재사용 (wal_checkpoint TRUNCATE)
+            // [Phase R28] AC-28-05-3 — [최적화] **성공** 갈래에서만 권고를 거둔다(응답을 돌려주기 **전**).
+            //   busy 두 갈래(위 디스크 부족 거부 · 아래 VACUUM 실패)는 권고를 그대로 둔다(AC-28-05-12).
+            //   이 줄이 UQ-R28-11 「[최적화] 성공 뒤」 기준점을 로그로 세는 줄이다(DD-28-35 · 요청 스레드).
+            boolean adviceWasOn = optimizeAdvised.getAndSet(false);
+            log.info("optimize succeeded: adviceCleared={}", adviceWasOn);
             return false;            // 정상
         } catch (Exception e) {
             // BL-11: SQLITE_BUSY / SQLITE_FULL 비전파 — 호스트로 던지지 않고 busy 상태에 반영 (AC-07-3/07-5).
@@ -731,6 +808,7 @@ public class RetentionCleanupService {
      * <p>[Phase R27] R27/AC-27-02-4 — 예산 시계는 옮기지 않는다(훑기 시간은 예산 밖 그대로). 옮기는 안의 승격 조건 =
      * 한 실행이 {@code rounds=1} 이면서 {@code reclaimable > batchSize} 이고 <b>그 실행에 시간 예산 경고</b>
      * ({@code stopped at the time budget})가 있을 때 — R27 기준 미충족(v0.7.1 여덟 밤 {@code reclaimable} 0~130).
+     * [Phase R28] AC-28-05-7 — 같은 조건을 다시 봤다: R28 기준 미충족(다섯 밤 {@code reclaimable} 31~233).
      */
     void gcUnreferencedSqlStatements(int batchSize, long budgetMs, LongSupplier nanoClock) {
         // [Phase R27] R27/AC-27-02-3 — 두 셈을 try **밖**으로 올렸다. 아래 catch 가 읽어 실패 줄에 싣는다.
@@ -757,6 +835,10 @@ public class RetentionCleanupService {
                        AND json_valid(attributes_json) = 0
                     """);
             if (malformed > 0) {
+                // [Phase R28] AC-28-05-7 — 건너뛰는 갈래도 형식 검사 구간 줄을 건너뜀 줄 **앞**에 남긴다. 이 갈래만
+                //   시계를 한 번 더 읽는다 — 바로 return 이라 뒤에 밀릴 읽기가 없다.
+                log.info("sql statement gc validate: validateMs={} malformedAttributes={}",
+                        elapsedMs(started, nanoClock), malformed);
                 // ★보수적 건너뜀: 원문을 **한 행도** 안 지운다. "깨진 행 = 참조 없음" 으로 읽으면
                 //   그 행이 가리키던 원문이 지워져 **살아 있는 참조가 끊긴다** — 무결성이 회수보다 앞선다.
                 log.warn("sql statement gc skipped: malformedAttributes={}", malformed);
@@ -768,6 +850,13 @@ public class RetentionCleanupService {
             //   [Phase R27] R27/AC-27-02-1 — 최대 rowid **값**이 아니라 표시점 **행**(rowid + span_id)을 잡는다.
             //   아래 삭제 문장이 회전마다 그 행이 그대로인지 본다. 공개 인용 scan 줄은 그대로 rowid 만 싣는다.
             long scanStarted = nanoClock.getAsLong();
+            // [Phase R28] AC-28-05-7 — 형식 검사 구간(② 빈 표 검사 + ③ 깨진 행 세기 = 공개 scanMs 앞 구간 전부)을
+            //   **새 줄**로 남긴다(공개 인용 scan 줄 문면 · scanMs 의 뜻 무접촉). ★시계 읽기를 하나도 더하지 않는다 —
+            //   이미 읽은 두 점(started · scanStarted)의 차다. 그래서 기존 가짜 시계 시험의 읽기 순서가 안 밀린다.
+            // [Phase R28] NFR-28-15 — 「validateMs = 밀리초(정수 · 내림) · start 줄과 scan 줄 사이 시각 차 − scanMs ≈
+            //   validateMs(로그 시각은 ms 반올림이라 ±2 ms) · malformedAttributes = span 행 개수.」
+            log.info("sql statement gc validate: validateMs={} malformedAttributes={}",
+                    (scanStarted - started) / 1_000_000L, malformed);
             WatermarkRow watermark = watermarkRowOf();
             long watermarkRowid = watermark.rowid();
             // 회수 후보 = 어떤 span 도 안 가리키는 원문. ★IS NOT NULL 은 장식이 아니라 판정식이다 —
@@ -817,6 +906,10 @@ public class RetentionCleanupService {
                 //   「첫 문장은 쓰기」 규율과 무관하다. 왕복 필드는 따로 안 둔다 — 세 값의 합이 왕복이다
                 //   (정수 나눗셈이라 합이 왕복보다 최대 2 ms 작을 수 있다).
                 //   v0.7.1 까지의 statementMs 는 왕복이었다 — 같은 이름의 두 값을 한 열에서 견주지 않는다.
+                // [Phase R28] AC-28-05-7 — 쓰기 잠금 대기를 따로 재는 필드는 만들지 않는다(statementMs 안에 든다).
+                //   다시 볼 조건(UQ-R28-12): 이 회전 줄(`sql statement gc round:`)의 statementMs 가 1,000 ms 이상인
+                //   회전이 **한 밤이라도** 나오면(단위 = 밀리초 · 비교 = 이상(≥) · 다섯 밤 실측 2~11 ms 의 100배이자
+                //   잠금 대기 한도 10초의 1/10) 잠금 대기 필드를 따로 만들지 다시 본다.
                 long roundStarted = nanoClock.getAsLong();
                 long[] marks = new long[2];   // [0] 콜백 시작 · [1] 삭제 문장 반환
                 Integer n = tx.execute(status -> {
@@ -834,8 +927,16 @@ public class RetentionCleanupService {
                 //   → 원문이 남고 다음 밤이 다시 훑는다(안전한 쪽).
                 //   ★접힌 회전은 회전 줄을 안 남기고 rounds 에 안 든다 — 아래 접는 줄이 그 회전의 기록이다.
                 if ((n == null || n == 0) && watermarkRowid != 0 && !watermarkRowAlive(watermark)) {
+                    // [Phase R28] AC-28-05-7 — 접는 줄에 세 구간을 **제자리에** 더한다(회전 줄과 같은 이름 = 같은 구간).
+                    // [Phase R28] NFR-28-15 — 「접는 줄의 세 값은 회전 줄과 같은 뜻의 밀리초 — acquireMs = 트랜잭션 진입 →
+                    //   콜백 시작 · statementMs = 삭제 한 문장(쓰기 잠금 대기 포함) · commitMs = 콜백 끝 → 반환. 접힌
+                    //   회전은 rounds 에 안 들므로 회전 줄과 한 열에서 더하지 않는다.」
                     log.warn("sql statement gc folded: watermarkRowid={} watermarkRowGone=1"
-                            + " — the watermark row changed under the scan, the next run rescans", watermarkRowid);
+                            + " acquireMs={} statementMs={} commitMs={}"
+                            + " — the watermark row changed under the scan, the next run rescans", watermarkRowid,
+                            (marks[0] - roundStarted) / 1_000_000L,
+                            (marks[1] - marks[0]) / 1_000_000L,
+                            (roundEnded - marks[1]) / 1_000_000L);
                     break;
                 }
                 log.info("sql statement gc round: round={} deleted={} recheckRows={} acquireMs={} statementMs={} commitMs={}",
@@ -1050,9 +1151,13 @@ public class RetentionCleanupService {
      * // 영원히 모른다." 자체 try-catch — 관측 실패가 정리를 막지 않는다.
      *
      * <p>★ {@code purgeAll()} 에는 넣지 않는다 — purge 는 주기 작업이 아니라 "주기 최솟값" 의미가 성립하지
-     * 않는다. 수동 [보관 기간 즉시 적용] 은 {@code cleanup()} 경유라 함께 찍히는데, 무해한 추가 데이터다.
+     * 않는다. 수동 [보관 기간 즉시 적용] 은 {@code cleanupManual()} 경유라 함께 찍히는데, 무해한 추가 데이터다.
+     *
+     * <p>[Phase R28] AC-28-05-1 — 읽은 세 값을 담아 <b>돌려준다</b>(관측 실패면 {@code null}). 밤 경로의 [최적화]
+     * 권고 판정이 이 값을 쓴다. 줄의 문면은 한 글자도 안 바뀌었다 — 세 값을 지역 변수로 먼저 읽을 뿐이고, 읽는
+     * 순서(빈 페이지 → 전체 페이지 → 페이지 크기)도 그대로다.
      */
-    private void logFreelistBeforeDelete() {
+    private FreelistSnapshot logFreelistBeforeDelete() {
         try {
             // [Phase R23] R23/AC-16-1/R23/AC-16-2 — 앞머리 `cleanup start: freelistPagesBeforeDelete=` 는
             //   **고정**이고 필드는 뒤에만 덧붙인다(회수 예산 판정이 이 앞머리로 이뤄진다).
@@ -1062,13 +1167,67 @@ public class RetentionCleanupService {
             //   것**이라 **직접 빼면 안 된다.** 그리고 이 줄은 수동 [보관 기간 즉시 적용] 경로에서도
             //   찍히므로(바로 위 주석), 시계열을 읽을 때는 스레드 이름 `[scheduling-1]` 로 걸러
             //   야간 실행분만 남긴다.
+            long freePages = readFreelistCount();
+            long pageCount = SqlitePragmas.pageCount(jdbc);
+            long pageSize = SqlitePragmas.pageSize(jdbc);
             log.info("cleanup start: freelistPagesBeforeDelete={} pageCount={} pageSize={}",
-                    readFreelistCount(), SqlitePragmas.pageCount(jdbc), SqlitePragmas.pageSize(jdbc));
+                    freePages, pageCount, pageSize);
+            return new FreelistSnapshot(freePages, pageCount, pageSize);
         } catch (Exception e) {
             // [Phase R23] R23/AC-16-5 — 값이 셋으로 늘어도 이 자체 try-catch 가 그대로 남는다:
             //   관측 실패가 그날 정리를 막지 않는다.
             log.warn("freelist observation before delete failed — cleanup continues", e);
+            return null;
         }
+    }
+
+    /**
+     * [Phase R28] AC-28-05-1 — 삭제 <b>전</b> 관측 세 값(단위: 빈 페이지 · 전체 페이지 = <b>개수</b> · 페이지 크기 =
+     * <b>바이트/페이지</b> — 곱해야 바이트). 밤 실행 한 번 안에서 나고 죽는다.
+     */
+    record FreelistSnapshot(long freePages, long pageCount, long pageSize) {
+    }
+
+    /**
+     * [Phase R28] AC-28-05-1/AC-28-05-2/AC-28-05-5 — [최적화] 권고 판정. 사용자 명시 결정(UD-3). <b>밤 경로에서만</b>
+     * 부른다(위 {@code cleanup(long)} 한 곳 — 시험은 같은 패키지에서 직접 부른다). SQL 0 · 트랜잭션 밖 · 자체
+     * try-catch — 판정이 무엇을 하든 그날 정리를 막지 않는다.
+     *
+     * <p>관측 실패({@code null})면 <b>상태를 그대로 두고</b> skipped 줄만 남긴다 — 근거 없이 바꾸지 않는다(DD-28-21).
+     * 판정 줄은 권고가 뜨는 밤에도 <b>INFO</b> 다(운영 「WARN 0」 판정을 깨지 않는다) · 매 밤 한 줄.
+     */
+    void judgeOptimizeAdvice(FreelistSnapshot before) {
+        try {
+            if (before == null) {
+                log.info("optimize advice: skipped (observation failed) advised={}", optimizeAdvised.get());
+                return;
+            }
+            long freeBytes = before.freePages() * before.pageSize();      // SQLite 페이지 수 ≤ 2^32 — long 곱셈 넘침 없음
+            boolean advised = before.freePages() * 100L >= before.pageCount() * OPTIMIZE_ADVICE_MIN_FREE_PERCENT
+                    && freeBytes >= OPTIMIZE_ADVICE_MIN_FREE_BYTES;
+            optimizeAdvised.set(advised);
+            // [Phase R28] NFR-28-15 — `optimize advice:` 줄의 단위 · 비교 경계(설계서 · 이 주석 · 백로그 부기 세 자리에 같은
+            //   문장): 「freelistPagesBeforeDelete · pageCount = 페이지 **개수**(cleanup start: 줄의 같은 이름과 같은 읽기 값) ·
+            //   freeBytesBeforeDelete · minFreeBytes = **바이트** · minFreePercent = 정수 백분율. 판정 =
+            //   freelistPagesBeforeDelete × 100 ≥ pageCount × minFreePercent **그리고** freeBytesBeforeDelete ≥ minFreeBytes
+            //   (둘 다 이상(≥) · 경계값은 권고 쪽). 비교 경계: 값은 **밤 정리**([scheduling-1])가 삭제 **전**에 읽은 것이고
+            //   수동 [보관 기간 즉시 적용]은 이 줄을 찍지 않는다 · 삭제 **후** 빈 공간(reclaim start: freelistPages=)과
+            //   견주지 않는다.」
+            log.info("optimize advice: advised={} freelistPagesBeforeDelete={} pageCount={} freeBytesBeforeDelete={}"
+                            + " minFreePercent={} minFreeBytes={}",
+                    advised, before.freePages(), before.pageCount(), freeBytes,
+                    OPTIMIZE_ADVICE_MIN_FREE_PERCENT, OPTIMIZE_ADVICE_MIN_FREE_BYTES);
+        } catch (Exception e) {
+            log.warn("optimize advice judgement failed — state kept, cleanup continues", e);
+        }
+    }
+
+    /**
+     * [Phase R28] AC-28-05-4 — 상태 응답이 읽는 값(메모리 읽기라 실패 없음). 재기동 뒤 첫 밤 정리 전까지
+     * {@code false} 가 정상이다.
+     */
+    public boolean isOptimizeAdvised() {
+        return optimizeAdvised.get();
     }
 
     /**

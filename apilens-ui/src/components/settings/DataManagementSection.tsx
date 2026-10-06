@@ -36,6 +36,7 @@ export function DataManagementSection(): ReactNode {
   // [R21/AC-03-1] + 적재 상태 카운터 2종 (MaintenanceStatusView 확장 경유 — BL-07 뷰 병목 해소).
   // [Phase T / R23] AC-06-2/AC-07-1 — 요약 저장 실패 흐름 수 + DB 크기 · 회수 가능한 빈 공간 3종 추가.
   //   ⚠️ 새 세 값은 어떤 disabled 식에도 들어가지 않는다 — 읽기 전용 표시 전용이다(설계 §8.2 비협상).
+  // [R28/AC-28-05-10] + [최적화] 권고(밤 정리의 메모리 판정). 이 값도 어떤 disabled 식에도 넣지 않는다 — 막지 않는 안내다(C-09).
   const {
     paused,
     sqliteBusyEncountered,
@@ -43,6 +44,7 @@ export function DataManagementSection(): ReactNode {
     traceSummaryDeferred,
     dbSizeBytes,
     freePageBytes,
+    optimizeAdvised,
   } = useMaintenanceStatus();
 
   // ① cleanup 인라인 확인 단계 노출 여부 (가벼운 확인 — 같은 자리에서 [확인]/[취소]).
@@ -56,10 +58,15 @@ export function DataManagementSection(): ReactNode {
 
   // 성공 후 무효화: ['settings'] (마지막 cleanup 시각/보관 설정), ['traces'] (목록), ['services']
   // (24시간 trace 수/health). prefix 매칭이라 ['traces', {...}] / ['services', 'detailed'] 모두 포함.
+  // [R28/AC-28-02-8 · DD-28-12] 대시보드의 두 조회 키 ['traces','points',…] · ['traces','list',…] 도 위 접두 아래라 함께 무효다.
+  //   무효화는 캐시를 지우지 않는다 — [전체 삭제] 직후 대시보드로 돌아오면 다시 받기 전까지 지운 점이 잠깐 보인다(DD-28-37 · 받아들임).
+  // [R28/UXD-28 · AC-28-05-3] ['maintenance','status'] 도 무효화 — [최적화] 성공 뒤 상태를 곧바로 다시 받아 그 응답에서
+  //   권고가 사라진다(서버가 성공 갈래에서 거둔 값 · 화면이 먼저 숨기지 않는다). busy · 실패는 서버가 유지한 값을 그대로 읽는다.
   const invalidateAfterMaintenance = (): void => {
     void queryClient.invalidateQueries({ queryKey: ['settings'] });
     void queryClient.invalidateQueries({ queryKey: ['traces'] });
     void queryClient.invalidateQueries({ queryKey: ['services'] });
+    void queryClient.invalidateQueries({ queryKey: ['maintenance', 'status'] });
   };
 
   const cleanup = useMutation({
@@ -388,6 +395,19 @@ export function DataManagementSection(): ReactNode {
               </button>
             )}
           </div>
+          {/* [R28/UXD-27 · AC-28-05-10] [최적화] 권고 — 머리 줄 바로 뒤 형제 · 블록 전체 폭 · 두 문장(UC-R28-12 · 13 ⓐ).
+              자기 문장을 가진 요소다(「디스크 사용량」 도움말과 다른 요소) · 권고가 없으면 상자도 「권고 아님」 글자도 없다(C-11).
+              둘째 문장 = 기억 자리 메모리 · 한 밤 판정(설계 UQ-R28-08)에 맞는 ⓐ 갈래. 새 색 0(stone). */}
+          {optimizeAdvised && (
+            <div role="status" data-testid="optimize-advice" className="rounded-md bg-stone-100 px-3 py-2">
+              <p className="text-xs text-stone-900">
+                밤 정리 때 빈 공간이 많이 쌓여 있었어요. 저사용 시간대에 최적화를 실행해 주세요.
+              </p>
+              <p className="mt-1 text-xs text-stone-600">
+                서버를 다시 시작하면 다음 밤 정리 전까지는 이 안내가 나오지 않아요.
+              </p>
+            </div>
+          )}
           {confirmingOptimize && (
             // T-C05 — optimize 인라인 확인 안내
             <p className="text-xs text-stone-500">

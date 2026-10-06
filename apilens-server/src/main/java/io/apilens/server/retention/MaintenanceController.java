@@ -36,7 +36,7 @@ import java.util.Map;
  *
  * <ul>
  *   <li>{@code POST /v1/maintenance/cleanup} — apply retention window immediately
- *       (보관기간 즉시 적용): {@link RetentionCleanupService#cleanup()}.</li>
+ *       (보관기간 즉시 적용): {@link RetentionCleanupService#cleanupManual}.</li>
  *   <li>{@code POST /v1/maintenance/purge} — delete everything (전체 비우기):
  *       {@link RetentionCleanupService#purgeAll()}.</li>
  *   <li>{@code POST /v1/maintenance/optimize} — online full VACUUM (디스크 조각 정리, 삭제 없음):
@@ -76,7 +76,10 @@ public class MaintenanceController {
 
     /**
      * Apply the retention window now (manual "apply retention immediately" button).
-     * Wraps {@link RetentionCleanupService#cleanup()} with before/after page measurement.
+     * Wraps {@link RetentionCleanupService#cleanupManual} with before/after page measurement.
+     *
+     * <p>// [Phase R28] AC-28-05-1 — 수동 경로 전용 메서드를 부른다. [최적화] 권고 판정은 밤 경로에만 있어 이
+     * // 단추를 눌러도 권고는 바뀌지 않는다(판정 코드가 경로째 없다 · DD-28-19). 사용자 명시 결정(UD-3).
      */
     // [Phase R17] FR-05 (M-1) — maintenance @Operation 6종 신설(GT-12: @Operation 전무 → 부여).
     @Operation(summary = "보관 기간 즉시 적용 (행 DELETE) — 파일 삭제 0, freedBytes 는 삭제량보다 작을 수 있음(정상)")
@@ -86,7 +89,7 @@ public class MaintenanceController {
         long pageSize = readPageSize();
         long beforePages = readPageCount();
 
-        RetentionCleanupService.CleanupResult result = cleanupService.cleanup();
+        RetentionCleanupService.CleanupResult result = cleanupService.cleanupManual();
 
         return measure(result.deletedTraces(), beforePages, pageSize, false);
     }
@@ -139,7 +142,8 @@ public class MaintenanceController {
     // [Phase R17] FR-05 (M-4) — maintenance @Operation 신설.
     // [Phase R20] R20/AC-10-1 — SQLITE_BUSY 카운터 2필드 additive 확장(기존 두 필드 불변).
     // [Phase R23] R23/AC-06-1/R23/AC-07-1 — 3필드 additive 확장(4 → 7, 기존 4필드 불변).
-    @Operation(summary = "유지보수 상태 조회 — paused 여부·pausedAt echo (cap 경과 시 자가 재개 반영) + SQLITE_BUSY 카운터·요약 실패 카운터(인메모리 — 재시작 시 0 복귀 정상) + DB 크기·회수 가능 빈 공간(바이트, 관측 실패 시 0)")
+    // [Phase R28] AC-28-05-4 — 1필드 additive 확장(7 → 8 · 맨 뒤 optimizeAdvised · 기존 7필드 불변) · 요약 글 끝에 더함.
+    @Operation(summary = "유지보수 상태 조회 — paused 여부·pausedAt echo (cap 경과 시 자가 재개 반영) + SQLITE_BUSY 카운터·요약 실패 카운터(인메모리 — 재시작 시 0 복귀 정상) + DB 크기·회수 가능 빈 공간(바이트, 관측 실패 시 0) + [최적화] 권고 여부(인메모리 — 재시작 뒤 첫 밤 정리 전까지 false 정상)")
     @GetMapping("/v1/maintenance/status")
     public MaintenanceStatusResponse status() {
         return statusSnapshot();
@@ -199,10 +203,13 @@ public class MaintenanceController {
             freePageBytes = 0L;
             log.warn("maintenance status size observation failed — reporting 0 bytes; pause/resume itself is unaffected", e);
         }
+        // [Phase R28] AC-28-05-4 — 맨 뒤 [최적화] 권고. 메모리 읽기라 실패가 없어 위 관측 try 밖에 둔다.
+        //   이 한 곳에서 조립하므로 상태 · 일시정지 · 재개 세 응답에 함께 실린다.
         return new MaintenanceStatusResponse(pauseState.isPaused(), pauseState.pausedAt(),
                 ingestService.sqliteBusyEncounteredCount(), ingestService.sqliteBusyDroppedCount(),
                 ingestService.traceSummaryDeferredCount(),
-                dbSizeBytes, freePageBytes);
+                dbSizeBytes, freePageBytes,
+                cleanupService.isOptimizeAdvised());
     }
 
     /**

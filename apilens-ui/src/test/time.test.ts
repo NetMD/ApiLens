@@ -21,6 +21,9 @@ import {
   computeWindow,
   isClockRange,
   scrollStepMs,
+  LONG_RANGE_POINTS_POLL_MS,
+  POINTS_BUSY_RETRY_MS,
+  pointsPollMs,
 } from '../lib/time';
 import type { RangePreset } from '../lib/time';
 
@@ -192,6 +195,25 @@ describe('computeScrollWindow — 두 부등식과 멈추지 않는 창', () => 
       expect(t).toBeGreaterThanOrEqual(since + 1);
       expect(t).toBeLessThanOrEqual(until - 1);
     }
+  });
+});
+
+// [R28/S04 · B-14 · UQ-R28-07] 대표 점 폴링 주기 — 긴 창(24시간·7일)은 30초 · 그 밖은 Live 폴링 주기 그대로.
+//   목록 조회는 범위와 무관하게 Live 폴링 주기(이 함수를 안 쓴다) · 바쁨 다시 부름은 새 숫자 0(Live 폴링 주기).
+describe('pointsPollMs — 대표 점 폴링 주기', () => {
+  it.each([
+    ['1m', 5_000],
+    ['5m', 5_000],
+    ['10m', 5_000],
+    ['1h', 5_000],
+    ['24h', 30_000],
+    ['7d', 30_000],
+  ] as const)('pollsLongRangesEveryThirtySeconds — %s → %i ms', (range: RangePreset, expected) => {
+    // 전제: 두 상수가 기대한 값(같은 숫자 두 벌이면 판이 갈리지 않는다 — 빈 통과 0).
+    expect(LIVE_POLL_MS).toBe(5_000);
+    expect(LONG_RANGE_POINTS_POLL_MS).toBe(30_000);
+    expect(POINTS_BUSY_RETRY_MS).toBe(LIVE_POLL_MS);
+    expect(pointsPollMs(range)).toBe(expected);
   });
 });
 

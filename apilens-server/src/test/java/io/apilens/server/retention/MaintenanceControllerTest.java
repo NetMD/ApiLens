@@ -40,9 +40,12 @@ import org.sqlite.SQLiteDataSource;
 import javax.sql.DataSource;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -66,6 +69,8 @@ class MaintenanceControllerTest {
     private Path dbFile;
     private JdbcTemplate jdbc;
     private MockMvc mockMvc;
+    /** [Phase R28] 권고 판정을 시험에서 직접 세우려고 컨트롤러가 쓰는 같은 인스턴스를 쥔다. */
+    private RetentionCleanupService cleanupService;
 
     @BeforeEach
     void setup() throws Exception {
@@ -88,6 +93,7 @@ class MaintenanceControllerTest {
                 new RetentionProperties(30, "0 0 4 * * *"));
         RetentionCleanupService cleanupService =
                 new RetentionCleanupService(jdbc, txManager, settingsService);
+        this.cleanupService = cleanupService;
 
         // [Phase R15] IngestPauseState 추가 주입. 기본 시간 소스(System) 인스턴스.
         // [Phase R20] R20/AC-10-1 — 4-인자(IngestService 추가 — SQLITE_BUSY 카운터 노출).
@@ -508,6 +514,69 @@ class MaintenanceControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.paused").value(false))
                 .andExpect(jsonPath("$.pausedAt").doesNotExist());
+    }
+
+    // ─── [Phase R28] [최적화] 권고 — 수동 경로 · 세 응답 · 성공 거둠 (AC-28-05-1/03/04) ─────────────
+
+    /**
+     * M03 — 수동 [보관 기간 즉시 적용]은 권고를 바꾸지 않는다. 전제: 판정 함수로 권고를 참으로 세우고, 이 DB 는
+     * 임계 아래다 — 수동 경로가 판정을 탔다면 거짓이 됐을 것이다(판정 코드가 경로째 없다 · DD-28-19).
+     */
+    @Test
+    void manualCleanupLeavesTheOptimizeAdviceUnchanged() throws Exception {
+        cleanupService.judgeOptimizeAdvice(new RetentionCleanupService.FreelistSnapshot(30_000L, 100_000L, 4_096L));
+        assertTrue(cleanupService.isOptimizeAdvised(), "전제: 권고를 참으로 세웠다");
+        long free = jdbc.queryForObject("PRAGMA freelist_count", Long.class);
+        long pageCount = jdbc.queryForObject("PRAGMA page_count", Long.class);
+        long pageSize = jdbc.queryForObject("PRAGMA page_size", Long.class);
+        assertFalse(free * 100L >= pageCount * RetentionCleanupService.OPTIMIZE_ADVICE_MIN_FREE_PERCENT
+                        && free * pageSize >= RetentionCleanupService.OPTIMIZE_ADVICE_MIN_FREE_BYTES,
+                "전제: 이 DB 는 임계 아래다(판정 경로였다면 거짓이 됐다)");
+
+        mockMvc.perform(post("/v1/maintenance/cleanup")).andExpect(status().isOk());
+
+        assertTrue(cleanupService.isOptimizeAdvised(), "수동 정리 뒤에도 권고 그대로");
+        mockMvc.perform(get("/v1/maintenance/status"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.optimizeAdvised").value(true));
+    }
+
+    /** M04 — 상태 · 일시정지 · 재개 세 응답 모두 맨 뒤 필드가 optimizeAdvised 이고 값이 같다. */
+    @Test
+    void exposesOptimizeAdvisedOnStatusPauseAndResume() throws Exception {
+        cleanupService.judgeOptimizeAdvice(new RetentionCleanupService.FreelistSnapshot(30_000L, 100_000L, 4_096L));
+        assertTrue(cleanupService.isOptimizeAdvised(), "전제: 권고 참 — 기본값 거짓과 갈리는 값으로 잰다");
+        ObjectMapper om = new ObjectMapper();
+        List<String> surfaces = List.of("GET /v1/maintenance/status", "POST /v1/maintenance/pause", "POST /v1/maintenance/resume");
+
+        for (String surface : surfaces) {
+            String url = surface.substring(surface.indexOf(' ') + 1);
+            String body = (surface.startsWith("GET") ? mockMvc.perform(get(url)) : mockMvc.perform(post(url)))
+                    .andExpect(status().isOk())
+                    .andReturn().getResponse().getContentAsString();
+            com.fasterxml.jackson.databind.JsonNode node = om.readTree(body);
+            List<String> names = new ArrayList<>();
+            node.fieldNames().forEachRemaining(names::add);
+            assertEquals(List.of("paused", "pausedAt", "sqliteBusyEncountered", "sqliteBusyDropped",
+                            "traceSummaryDeferred", "dbSizeBytes", "freePageBytes", "optimizeAdvised"), names,
+                    surface + " — 기존 7필드 그대로 + 맨 뒤 한 필드");
+            assertTrue(node.path("optimizeAdvised").asBoolean(), surface + " — 같은 값");
+        }
+    }
+
+    /** M05 — 권고가 켜진 채 [최적화]가 성공하면 상태가 곧바로 거짓이다(서버가 응답 전에 거둔다). */
+    @Test
+    void clearsTheAdviceWhenOptimizeSucceeds() throws Exception {
+        cleanupService.judgeOptimizeAdvice(new RetentionCleanupService.FreelistSnapshot(30_000L, 100_000L, 4_096L));
+        mockMvc.perform(get("/v1/maintenance/status")).andExpect(jsonPath("$.optimizeAdvised").value(true));
+
+        mockMvc.perform(post("/v1/maintenance/optimize"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.busy").value(false));
+
+        mockMvc.perform(get("/v1/maintenance/status"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.optimizeAdvised").value(false));
     }
 
     private RetentionCleanupService newCleanupService() {
