@@ -16,6 +16,7 @@
   --color-status-ok: #888780;
   --color-status-slow: #BA7517;
   --color-status-error: #E24B4A;
+  --color-status-error-strong: #C53030; /* [R29/AC-R29-21 · UXD-R29-04 · 15] trace 상태 색 아님 · 흰 글자 바탕 겸 흰 바탕 오류 글자 · STATUS_HEX 미러 없음(R29) */
   /* [Phase H] SH-01 — healthStatus 'never' (대기) 전용 idle 토큰. status-* 3종과 의도 분리. */
   --color-status-idle: #A8A29E;
 

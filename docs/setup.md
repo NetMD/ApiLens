@@ -1,7 +1,7 @@
 ---
 title: ApiLens Setup 가이드
 owner: maintainer
-last-reviewed: 2026-07-10
+last-reviewed: 2026-10-20
 ---
 
 # ApiLens Setup 가이드
@@ -58,7 +58,8 @@ Wizard 가 자동으로 안 열리면 헤더 우측 `[+]` 버튼이나 `/service
 
 각 토큰 의미:
 
-- `-javaagent:/path/to/apilens-agent.jar` — agent jar 경로. server jar 가 첫 실행 시 `~/.apilens/apilens-agent.jar` 에 풀어둬요.
+- `-javaagent:/path/to/apilens-agent.jar` — agent jar 경로. server jar 가 실행할 때마다 `~/.apilens/apilens-agent.jar` 에 풀어둬요.
+  - 같은 기계에서 서버를 하나 더 띄울 때(개발용 실행 등)는 실행 인자 `--apilens.agent.jar.target-dir=<다른 폴더>` 로(`./gradlew bootRun` 이면 `--args='…'` 안에) 대상 폴더를 바꿔 주세요 — 안 바꾸면 그 서버가 같은 자리의 jar 를 덮어써요.
 - `-Dapilens.service.name=` — 사용자 앱 식별 이름 (영문/숫자/하이픈/언더스코어).
 - `-Dapilens.server=` — ApiLens server 의 접근 가능 URL.
 - `-Dapilens.jdbc.capture-params=` — JDBC PreparedStatement 파라미터 캡처 여부 (`true` / `false`).

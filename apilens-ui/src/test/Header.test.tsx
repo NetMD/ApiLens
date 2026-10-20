@@ -11,6 +11,7 @@
 //   ③ showsAddServiceEntryPoint — W-02 [+] 진입점 (aria-label="Add service" + /setup 링크) 회귀 가드
 //   ④ preservesSearchParamsAcrossNavLinks — Link search 보존 (searchAcrossRoutes 경유 — ?service= 유지)
 //   ⑤ showsAppVersionLabelFromSingleConstant — APP_VERSION 표면 (v0.x 리터럴 금지 — 상수 import 대조)
+//   ⑥ [R29] keepsTheFoldingClassesOnTheHeaderRows — 좁은 창 접힘 장치 클래스(AC-R29-38 · R28 QA R-9)
 //
 // 회귀 가드 (반대 방향 lock-in 차단): dropsSearchParams / removesAddServiceButton 같은 반대 방향 동사 0건
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -90,5 +91,18 @@ describe('Header — FT-12 (R12 AC-B4-4)', () => {
     renderHeader('/');
     // v0.x 리터럴을 본 테스트에 직접 쓰지 않는다 — D3 grep (apilens-ui *.tsx v0.x 0 hit) 대상 정합.
     expect(screen.getByText(APP_VERSION)).toBeInTheDocument();
+  });
+
+  // [R29] TA-R29-25 · AC-R29-38 · R28 QA R-9 — 좁은 창에서 머리 줄이 두 줄로 접히는 장치(클래스)가 그대로다.
+  //   happy-dom 은 레이아웃을 못 잰다 — 자동 시험은 클래스까지 · 실제 접힘(1,440 · 1,024)은 QA 실브라우저 몫이다.
+  it('keepsTheFoldingClassesOnTheHeaderRows', () => {
+    renderHeader('/');
+    const header = screen.getByRole('banner');
+    expect(header.tagName).toBe('HEADER'); // 전제: 머리 줄 요소
+    expect(header).toHaveClass('flex-wrap');
+    const rightGroup = screen.getByRole('link', { name: 'Add service' }).parentElement;
+    expect(rightGroup).not.toBeNull(); // 전제: 오른쪽 묶음(「Add service」 링크의 부모)
+    expect(rightGroup!.parentElement).toBe(header);
+    expect(rightGroup).toHaveClass('ml-auto', 'flex-wrap', 'justify-end');
   });
 });

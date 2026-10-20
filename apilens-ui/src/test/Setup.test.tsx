@@ -257,6 +257,33 @@ describe('Setup wizard — [R10] 회수 검증', () => {
     expect(screen.getByRole('button', { name: '다음' })).toBeDisabled();
   });
 
+  // TA-R29-30 · AC-R29-21 · UXD-R29-15 — 칸 오류 글자(Server URL · Service Name 두 칸)는 진한 짝 토큰으로 칠한다
+  //   (흰 바탕 5.47:1). 칸 오류 글자 클래스를 단언하는 시험이 없던 자리를 메운다(PU-R29-01-3).
+  it('paintsTheFieldErrorWithTheStrongErrorToken', async () => {
+    mockFetchOk();
+    const { Wrapper } = makeWrapper();
+    render(<Wrapper />);
+
+    const urlInput = screen.getByLabelText('Server URL');
+    fireEvent.change(urlInput, { target: { value: 'http://' } });
+    fireEvent.blur(urlInput);
+    const urlError = screen.getByRole('alert');
+    expect(urlError).toHaveTextContent('URL 호스트 없음'); // 전제: 칸 오류가 떴다
+    expect(urlError).toHaveClass('text-[var(--color-status-error-strong)]');
+    expect(urlError).not.toHaveClass('text-[var(--color-status-error)]');
+
+    fireEvent.change(urlInput, { target: { value: 'http://your-host:8765' } });
+    fireEvent.blur(urlInput);
+    fireEvent.click(screen.getByRole('button', { name: '다음' }));
+    const nameInput = await screen.findByLabelText('Service Name');
+    fireEvent.change(nameInput, { target: { value: 'my api' } });
+    fireEvent.blur(nameInput);
+    const nameError = screen.getByRole('alert');
+    expect(nameError).toHaveTextContent('이름 형식 오류'); // 전제: 칸 오류가 떴다
+    expect(nameError).toHaveClass('text-[var(--color-status-error-strong)]');
+    expect(nameError).not.toHaveClass('text-[var(--color-status-error)]');
+  });
+
   it('rejectsServerUrlWithUnderscoreHost — 브라우저는 받아도 서버(Java URI)가 거부하는 밑줄 호스트도 화면에서 막음', () => {
     mockFetchOk();
     const { Wrapper } = makeWrapper();
@@ -310,8 +337,9 @@ describe('Setup wizard — [R10] 회수 검증', () => {
 //   rejectsAPortAboveTheServerMaximum(포트 상한 = 정방향 동작이 「막는다」)
 //
 // UC-08 문면 원문: `서버가 거절한 이유: {사유}` · UC-02: `Setup 완료 실패 — 입력값을 확인해 주세요`.
+// [R29/AC-R29-17 · 19 · UXD-R29-16] 사유 = 서버 고정 문장 UT-R29-05 글자 그대로(명사형 · 예시 호스트 한 벌) — 화면은 받은 문장을 그대로 보인다.
 
-const REASON = 'serverUrl must include a host (예: http://192.168.0.10:8765)';
+const REASON = 'Server URL 호스트 없음 (예: http://your-apilens-host:8765)';
 
 type CompleteReply = () => Promise<Response>;
 
@@ -413,6 +441,23 @@ describe('Setup wizard — [R27] 설치 400 사유 · 포트 상한', () => {
     const svcInput = await screen.findByLabelText('Service Name');
     fireEvent.change(svcInput, { target: { value: 'my-api-2' } });
     expect(screen.queryByText(/서버가 거절한 이유/)).not.toBeInTheDocument();
+  });
+
+  // TA-R29-29 · AC-R29-21 · UXD-R29-04 — 오류 알림 바탕은 진한 짝 토큰(흰 글자 5.47:1) · 전 바탕 클래스 0.
+  it('paintsTheErrorToastWithTheStrongErrorToken', async () => {
+    mockFetchComplete([reply400(JSON.stringify({ error: REASON }))]);
+    const { Wrapper } = makeWrapper();
+    render(<Wrapper />);
+    await goToStep4();
+
+    fireEvent.click(screen.getByRole('button', { name: '완료' }));
+
+    const text = await screen.findByText('Setup 완료 실패 — 입력값을 확인해 주세요');
+    const toastBox = text.closest('[role="alert"]');
+    expect(toastBox).not.toBeNull(); // 전제: 오류 종류 알림(role=alert)이다
+    expect(toastBox).toHaveClass('bg-[var(--color-status-error-strong)]');
+    expect(toastBox).toHaveClass('text-white');
+    expect(toastBox!.className).not.toMatch(/bg-\[#/);
   });
 
   // TZ-33 — [완료] 500 은 지금 문구 그대로 · 사유 줄 0. 전제: 알림은 보인다.

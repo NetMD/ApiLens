@@ -29,6 +29,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -39,6 +40,8 @@ import java.util.Map;
  * <p>Error handling:
  * <ul>
  *   <li>{@link IllegalArgumentException} (incl. {@link CursorCodec.InvalidCursorException}) → 400</li>
+ *   <li>{@link MethodArgumentTypeMismatchException} (a request parameter that cannot be converted) → 400 with the fixed
+ *       sentence {@code invalid parameter value}</li>
  *   <li>{@link TraceNotFoundException}, {@link SpanNotFoundException} → 404 with stable body shape</li>
  *   <li>{@link TraceQueryService.PointsBusyException} → 503 (representative-point permit not obtained)</li>
  * </ul>
@@ -119,6 +122,23 @@ public class TraceQueryController {
     @ResponseStatus(HttpStatus.BAD_REQUEST)
     public Map<String, String> handleBadRequest(IllegalArgumentException e) {
         return Map.of("error", e.getMessage());
+    }
+
+    /**
+     * [Phase R29] R29/AC-R29-33 — SEC-R28-01: 요청 인자의 형 변환 실패(숫자 아닌 {@code since} · 모르는 {@code status} ·
+     * 숫자 아닌 {@code limit} 등) → <b>400</b> {@code {"error": "invalid parameter value"}}(영어 고정 문장 · 입력값 ·
+     * 패키지 이름 0 — 에러 문장에 요청 값을 싣지 않는 고정 문장 규칙). 잠정 채택 PA-R29-3 · 설계 결정 DD-R29-15(컨트롤러
+     * 로컬 · 전역 처리기 아님).
+     *
+     * <p>처리기 고르기는 던진 예외 타입이 먼저라 이 처리기가 원인 사슬({@code NumberFormatException} ·
+     * {@code IllegalArgumentException})을 따라 {@link #handleBadRequest} 로 내려가기 전에 받는다. 서비스 검증 문장은
+     * 그대로 {@link #handleBadRequest} 로 간다. ★한계: 이 컨트롤러 밖의 경로는 형 변환 실패에 아직 서버의 값 변환 문장을
+     * 돌려줄 수 있다(같은 꼴 처리기 7곳 · 백로그).
+     */
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    public Map<String, String> handleTypeMismatch(MethodArgumentTypeMismatchException e) {
+        return Map.of("error", "invalid parameter value");
     }
 
     /**

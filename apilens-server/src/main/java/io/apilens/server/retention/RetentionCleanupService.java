@@ -86,9 +86,11 @@ public class RetentionCleanupService {
      * // 근거로 <b>실측 행</b>을 지목한다 (계산으로 채운 행이 아니다)". 사용자 명시 결정(OQ-1).
      * // CLAUDE.md '절대 변경하지 말아야 할 결정 사항 §2' (SQLite + Flyway) 인용 — 스키마 변경 0.
      *
-     * <p>★★ <b>이 값은 "자동커밋" 과 한 쌍이다. 따로 고를 수 없다.</b> ★★
-     * 회수 루프는 회수 PRAGMA 를 {@code TransactionTemplate} 으로 <b>묶지 않고</b>
-     * 문장마다 자동커밋으로 돈다. 근거는 아래 <b>실측 2행</b>(운영 DB 사본 직접 측정 — 계산 값 아님):
+     * <p>★★ <b>이 값은 회수 방식과 한 쌍이다. 따로 고를 수 없다.</b> ★★
+     * // [Phase R29] R29/AC-R29-09 — 이 문단과 아래 실측 2행은 <b>이력</b>이다. R22~R28 에는 회수 루프가 회수 PRAGMA 를
+     * // {@code TransactionTemplate} 으로 묶지 않고 자동커밋 1문장씩 돌렸다. <b>R29 부터 이 값은 회수 묶음
+     * // ({@link #RECLAIM_BATCH_PAGES})과 한 쌍</b>이다 — 지금 근거는 아래 R29 문단.
+     * R22 당시 근거는 아래 <b>실측 2행</b>(운영 DB 사본 직접 측정 — 계산 값 아님):
      * <pre>
      *   예산 5,000 · 자동커밋 (채택)  → 회수 19.6 MB · WAL +56.1 MB · 루프 268 ms · 뒤이은 체크포인트 130 ms
      *   예산 5,000 · 트랜잭션 1개 묶음 → 회수 19.6 MB · WAL +22.3 MB · 루프 192 ms · 뒤이은 체크포인트 132 ms
@@ -97,12 +99,18 @@ public class RetentionCleanupService {
      * 묶음은 192 ms 동안 쓰기 잠금을 통째로 잡고, 자동커밋은 5,000번 잡았다 놓는다. 이 서비스는
      * {@link #BATCH_YIELD_MS} 로 "배치 사이에 다른 writer 가 끼어들 짬을 보장" 하는 쪽을 이미 골랐고,
      * <b>잠금 보유 시간을 WAL 용량보다 우선</b>해 왔다. 같은 방향이다.
+     * // [Phase R29] 자동커밋 WAL 이 큰 까닭은 <b>경로에 딸린 성질</b>이다: 자동커밋 {@code execute} 한 걸음 경로에서는
+     * // 문장이 끝까지 안 돌아 루프 중 자동 체크포인트가 안 불린다(프로브 C-1 = C-15 바이트 일치). 묶음 꼴은 커밋
+     * // 문장이 끝까지 돌아 서버 설정(체크포인트 기본 1,000 페이지)에서 체크포인트 문턱(≈ 39.3 MiB)에서 멈춘다
+     * // (프로브 C-5~C-12).
      *
      * <p>★ <b>예산 ≤ 5,000 에서만 자동커밋이 정당하다.</b> 실측상 자동커밋의 페이지당 WAL 은 예산과 함께
      * 커진다 (9.29 → 10.96 → 16.70 → 19.57 KB/page). <b>10,000 이상으로 올리려면 트랜잭션 묶음으로 함께
      * 바꿔야 한다</b> — 예산만 올리고 방식을 그대로 두면 WAL 이 초선형으로 뛴다(171 MB → 400.9 MB).
      * 20,000 이상으로 올리려면 (1) 트랜잭션 묶음으로 바꾸고 (2) {@link #RECLAIM_WAL_BYTES_PER_PAGE} 를
      * 다시 재야 한다 — 그 지점에서 이 상수의 마진이 0.97배로 사라진다.
+     * // [Phase R29] 방식이 회수 묶음으로 바뀌어 이 문장의 전제(자동커밋)는 더는 지금 동작이 아니다 — 지금 근거는
+     * // 아래 R29 문단. (위 두 조건 (1)(2)를 R29 가 함께 채웠다.)
      *
      * <p><b>이 예산이 못 하는 것</b> (막았다고 쓰지 않는다):
      * <ol>
@@ -129,32 +137,76 @@ public class RetentionCleanupService {
      *       // 빈 페이지가 늘 ≈0 이라 세지 않는다). 권고대로 [최적화]를 눌렀는데도 다시 쌓인다는 뜻이다 — 그때는
      *       // 트랜잭션 묶음 전환과 WAL 재측정을 함께 본다(위 ★ 문단).</li>
      * </ol>
+     *
+     * <p>// [Phase R29] R29/AC-R29-07/R29/AC-R29-09 — ★다시 판정했다: <b>5,000 → 20,000</b>. 사용자 명시 결정
+     * // (UD-R29-2 「값은 사본 실측으로 정한다」). 위 R28 문단의 조건이 10-09~10-19 <b>11밤 연속</b> 성립했다
+     * // (삭제 전 빈 페이지 최소 10,320 · 최대 80,587). 방식과 값 넷을 한 번에 바꿨다 — 예산 20,000 ·
+     * // 회수 묶음 250 페이지({@link #RECLAIM_BATCH_PAGES}) · 묶음 사이 양보 {@link #BATCH_YIELD_MS}(50 ms 재사용 ·
+     * // 마지막 묶음 뒤 0) · 가드 상수 10 KiB/page({@link #RECLAIM_WAL_BYTES_PER_PAGE}). 근거 행(JVM 경로 ·
+     * // sqlite-jdbc 3.47.1.0 · 계산 값 아님): 프로브 C-6(서버 설정 · WAL +39.33 MiB · 2.01 KiB/page · 루프 6.3~6.6 s ·
+     * // 묶음 잠금 최대 150.3 ms) · 프로브 C-18(체크포인트 없음 = 최악 · WAL +45.02 MiB · 2.31 KiB/page · 묶음당
+     * // 해제 250.00) · 프로브 D-3 · D-7(수신 흉내와 겹침 · 수신 최대 47.2~92.7 ms · BUSY 0) · 프로브 E-5(python 운영
+     * // 사본 최악 4.36 KiB/page · 가드 근거).
+     * // 다시 볼 조건 셋(이 문단의 조건이 위 R28 문단의 조건을 <b>대신한다</b>):
+     * //  · <b>올림</b> — [최적화] 성공({@code optimize succeeded:}) 뒤 둘째 밤부터 {@code cleanup start:}({@code [scheduling-1]})의
+     * //    {@code freelistPagesBeforeDelete} 가 <b>20,000 페이지 이상</b>인 밤이 <b>3밤 연속</b>(단위 = 페이지 개수 · 밤 = 04:00
+     * //    실행 1회 · 비교 = 이상(≥)).
+     * //  · <b>내림</b> — {@code reclaim start:}({@code [scheduling-1]})의 {@code freelistPages} 가 <b>20,000 미만</b>(= 회수할
+     * //    빈 페이지가 예산보다 적었던 밤)인 밤이 연속 14밤 중 7밤 이상(단위 = 페이지 개수 · 밤 = 04:00 실행 1회 · 비교 =
+     * //    미만({@code <}) · 이 줄은 첫 빈 페이지 읽기가 예외인 갈래 밖 모든 갈래에서 찍힘) → 예산을 내려 가드 요구 여유
+     * //    (195.31 MiB)를 줄일지 본다.
+     * //  · <b>가드</b> — {@code free page reclaim skipped — insufficient disk} 가 <b>한 밤이라도</b> 찍히면 가드 상수와 예산을
+     * //    다시 본다(틀리는 방향이 「회수가 조용히 0」 쪽).
+     * // 적용 범위 한계: 04:00 실물의 잠금 경합은 프로브(수신 흉내 1행 자동커밋 · 200 ms 마다 짧은 읽기)로만 쟀다 —
+     * // 오래 열린 읽기가 겹치는 밤 · 30일 보관처럼 큰 설치가 수신 피크와 겹치는 밤은 미측정이고, 틀리면 WAL 이 커지는
+     * // 쪽이다(가드가 그 몫을 덮는 자리).
      */
-    static final int RETENTION_VACUUM_BUDGET_PAGES = 5_000;
+    static final int RETENTION_VACUUM_BUDGET_PAGES = 20_000;
 
     /**
-     * ① 디스크 가드가 쓰는 페이지당 WAL 증가분 상계 — 20 KiB/page.
+     * ① 회수 묶음 하나가 부탁하는 페이지 수 — <b>페이지 개수</b> 단위. 묶음 하나 = 같은 연결의 트랜잭션 하나.
+     *
+     * <p>// [Phase R29] R29/AC-R29-01/R29/AC-R29-02/R29/AC-R29-07 — 사용자 명시 결정(UD-R29-2). CLAUDE.md
+     * // '절대 변경하지 말아야 할 결정 사항 §2' (SQLite + Flyway) 인용 — 스키마 변경 0.
+     * // 근거 행(JVM 경로): 250 은 묶음 잠금 평균 19~25 ms(양보 50 ms) · 체크포인트 없는 최악에서 2.31 KiB/page ·
+     * // 겹친 수신 평균 9.0~12.7 ms(프로브 C-5~C-8 · C-17~C-20 · D-3 · D-7). 1,000 은 루프가 3배 짧지만 잠금 평균이
+     * // 약 2배(36~51 ms) · 3.37 KiB/page · 겹친 수신 평균 19.6~30.0 ms(프로브 D-4 · D-8)라 안 고른다 —
+     * // 「잠금 보유 시간을 WAL 용량보다 우선」(위 예산 javadoc)과 같은 방향. 페이지당 WAL 의 두 도구 비교는
+     * // 프로브 E-1 ↔ E-3.
+     * // ★호출 꼴: 묶음 한 번이 실제로 이만큼 푸는 것은 {@code JdbcTemplate.update}(= {@code executeUpdate}) 일 때다.
+     * // 같은 문장을 {@code execute(String)} 로 보내면 인자와 무관하게 1 페이지만 푼다(프로브 C-13 · C-25) — 그 회귀는
+     * // 시험 {@code reclaimsExactlyTheBudgetInCeilingBudgetOverBatchCommits}(묶음당 N)가 막는다.
+     */
+    static final int RECLAIM_BATCH_PAGES = 250;
+
+    /**
+     * ① 디스크 가드가 쓰는 페이지당 WAL 증가분 상계 — 10 KiB/page.
      *
      * <p>// [Phase R22] R22/AC-01-5 verbatim: "새 가드의 크기 계산식은 <b>선형식이 아니다</b>.
      * // 페이지당 WAL 이 예산과 함께 커지는 것이 실측됐으므로, 선형식으로 세우면 가드가 뚫린다."
      * // 사용자 명시 결정(A-2). CLAUDE.md '데이터 모델 (8개 테이블, 변경 신중히)' 인용.
      *
-     * <p>★ <b>이 값은 "한 점을 재고 곱한" 값이 아니다.</b> 3,000페이지에서 잰 9.30 KB/page 를 예산에
-     * 곱하면 20,000페이지 예측이 182 MB 인데 실측은 400.9 MB 였다 (<b>2.2배 과소</b> — 가드가 뚫린다).
-     * 대신 <b>실측 곡선의 최댓값 19.57 KB/page 를 20 으로 올린 상계</b>를 쓴다:
+     * <p>★ <b>이 값은 "한 점을 재고 곱한" 값이 아니다.</b> (R22 이력) 3,000 페이지에서 잰 9,300 B/page 를 예산에
+     * 곱하면 9,300 B/page × 20,000 = 186,000,000 B 인데, R22 자동커밋 경로의 20,000 페이지 실측은 400.9 MB 였다
+     * (<b>2.2배 과소</b> — 가드가 뚫린다). 그래서 R22~R28 은 실측 곡선 최댓값(19.57 KB/page)을 올린 20 KiB/page 를 썼다.
+     *
+     * <p>// [Phase R29] R29/AC-R29-07/R29/AC-R29-08 — 20 KiB → <b>10 KiB/page</b>. 사용자 명시 결정(UD-R29-2).
+     * // 회수 방식이 회수 묶음으로 바뀌어 페이지당 WAL 이 내려갔다(같은 최악 조건 · 예산 20,000: 옛 자동커밋 15.91 KiB/page
+     * // 프로브 C-16 → 묶음 250 2.31 KiB/page 프로브 C-18). 새 근거 표(예산 20,000 · 회수 묶음
+     * // 실측 · 단위 = 바이트 · 가드 요구 = 20,000 × 10,240 = 204,800,000 B):
      * <pre>
-     *   예산 2,000  → 실측 WAL 19.0 MB  · 가드 요구 39.1 MB  (2.06배 여유)
-     *   예산 5,000  → 실측 WAL 56.1 MB  · 가드 요구 97.7 MB  (1.74배 여유)  ← 채택 예산
-     *   예산 10,000 → 실측 WAL 171.0 MB · 가드 요구 195.3 MB (1.14배 여유)
-     *   예산 20,000 → 실측 WAL 400.9 MB · 가드 요구 390.6 MB (0.97배 — ★여기서 마진이 사라진다)
+     *   프로브 E-1 2,360.6 B/page × 20,000 =  47,212,000 B  ↔ 요구 204,800,000 B (4.34배 여유)
+     *   프로브 E-3 3,449.1 B/page × 20,000 =  68,982,000 B  ↔ 요구 204,800,000 B (2.97배 여유)
+     *   프로브 E-5 ≈ 4,465 B/page × 20,000 ≈  89,300,000 B  ↔ 요구 204,800,000 B (2.29배 여유 · 두 도구 중 최악)
      * </pre>
      *
-     * <p>⚠️ <b>한계</b>: 이 상수는 실측 범위(≤20,000페이지)에서만 검증됐고, 20,000 에서는 이미 부족하다.
-     * 또 이 실측은 <b>동시 적재·동시 조회가 없는 상태</b>다 — 04:00 창에는 ingest writer 가 살아 있어
-     * WAL 은 더 커지는 방향이다. 채택 예산 5,000 의 1.74배 여유가 그 몫을 흡수하는 자리다.
-     * <b>틀리는 방향</b>: 상수가 실제보다 크면 가드가 과하게 막는 쪽(회수를 건너뛰고 로그만) — 안전하다.
+     * <p>⚠️ <b>한계</b>: 이 상수는 <b>회수 묶음(N ≤ 1,000) 실측에서만</b> 검증됐다. <b>묶음이 1 페이지짜리로 되돌아가는
+     * 회귀(13.48 KiB/page · 프로브 C-25)와 옛 자동커밋 경로(15.91 KiB/page · 프로브 C-16)는 못 덮는다</b> — 그때
+     * 틀리는 방향 = 가드가 <b>덜 막는</b> 쪽(위험). 그 회귀는 시험 {@code reclaimsExactlyTheBudgetInCeilingBudgetOverBatchCommits}
+     * (묶음당 N)가 막는다. 또 04:00 창에는 ingest writer 가 살아 있어 WAL 은 더 커지는 방향이다 — 위 2.29배 여유가 그
+     * 몫을 흡수하는 자리다. <b>틀리는 방향</b>: 상수가 실제보다 크면 가드가 과하게 막는 쪽(회수를 건너뛰고 로그만) — 안전하다.
      */
-    static final long RECLAIM_WAL_BYTES_PER_PAGE = 20L * 1024L;
+    static final long RECLAIM_WAL_BYTES_PER_PAGE = 10L * 1024L;
 
     /**
      * ③ 스윕 1회에 후보로 삼는 고아 span 개수 상한.
@@ -1091,15 +1143,18 @@ public class RetentionCleanupService {
     //  신규 패턴 #3 "예산 제한 PRAGMA 루프". 이 패턴이 처음이라 되풀이 차단을 위해 아래 3가지를
     //  코드 옆에 남긴다. 다음 조사자가 여기부터 읽는다.
     //
-    //   (ㄱ) **예산 차감이 호출 횟수가 아니라 freelist_count 차이다.** 지금 드라이버는 1호출 = 1페이지지만,
-    //        그 1:1 은 드라이버 버전에 딸린 성질이라 다음 갱신에서 조용히 깨질 수 있다. 차이로 세면
-    //        1호출 = N페이지가 되어도 예산이 지켜진다 (R22/AC-01-2).
+    //   (ㄱ) **예산 차감이 호출 횟수가 아니라 freelist_count 차이다.** [Phase R29] 묶음 한 번이 푸는 페이지 수는
+    //        드라이버 호출 꼴에 딸린 성질이다(sqlite-jdbc 3.47.1.0: execute(String) 는 인자와 무관하게 1 ·
+    //        executeUpdate 는 N — R29 프로브). 차이로 세면 어느 꼴이든 예산이 지켜진다 (R22/AC-01-2).
     //   (ㄴ) **after >= free 즉시 종료가 무한 루프를 막는다.** auto_vacuum 이 INCREMENTAL 이 아니면
     //        incremental_vacuum 은 no-op 이라 freelist_count 가 안 줄어든다. 이 가드가 없으면 그 환경에서
     //        루프가 예산만큼 헛돈다. ★단위 테스트 DB 가 정확히 그 상태다(Flyway 만 돌아 auto_vacuum=NONE).
     //   (ㄷ) **회수 루프는 페이지 도메인만 다룬다.** 바이트 변환은 디스크 가드 한 곳에서만 일어난다.
+    //   (ㄹ) [Phase R29] R29/AC-R29-04 — **묶음 수 상한 = 올림(예산 ÷ 묶음) + 1.** 수동 정리 · 전체 삭제가 겹쳐
+    //        빈 페이지를 다시 채우면 (ㄱ) 의 차이가 덜 세어 예산을 넘겨 돌 수 있다 — 이 상한이 막는다.
+    //        채움이 묶음보다 크면 (ㄴ) 로 일찍 끝난다(안전). 수신이 빈 페이지를 쓰면 회수가 덜 하는 쪽(안전).
     //
-    //  ★회수 PRAGMA 를 부르는 곳은 이 메서드 한 곳뿐이다 (단일 위임 진입점 — G-05 로 검증).
+    //  ★회수 PRAGMA 를 부르는 곳은 이 클래스의 시험 틈 메서드 한 곳뿐 · 운영은 reclaimFreePages 가 상수로 부른다(G-05).
 
     /**
      * ① 예산 제한 free page 회수. <b>예외는 이 메서드 밖으로 나가지 않는다.</b>
@@ -1111,33 +1166,79 @@ public class RetentionCleanupService {
      *
      * <p>잡은 뒤 그냥 돌아오므로 {@link #checkpointWal()}·{@code ANALYZE} 는 그대로 진행된다.
      * 수동 경로({@code MaintenanceController}, try-catch 없음)에도 500 이 나가지 않는다.
+     *
+     * <p>// [Phase R29] R29/AC-R29-01/R29/AC-R29-06 — 회수 묶음({@link #RECLAIM_BATCH_PAGES}) · 묶음 사이 양보 창
+     * // ({@link #BATCH_YIELD_MS}) · 밤 정리 · 수동 정리 · 전체 삭제가 모두 이 같은 루프를 탄다(입구 셋 ·
+     * // {@code finalizeMaintenance} 한 곳). 운영은 상수로 아래 시험 틈을 부른다 — 생성자 무변(시험 7파일 무접촉).
      */
     private void reclaimFreePages() {
+        reclaimFreePagesWithin(RETENTION_VACUUM_BUDGET_PAGES, RECLAIM_BATCH_PAGES);
+    }
+
+    /**
+     * Test seam — the same reclaim loop with a smaller budget/batch (constructor unchanged). Never throws.
+     *
+     * <p>[Phase R29] R29/AC-R29-01/R29/AC-R29-02/R29/AC-R29-03/R29/AC-R29-11 — 한 회전 = 회수 묶음 하나 = 같은 연결의
+     * 트랜잭션 하나이고, 그 <b>첫 문장이 회수 PRAGMA(쓰기)</b>다. 빈 페이지 읽기는 커밋 <b>뒤 · 트랜잭션 밖</b>에서만 한다.
+     * 순서가 뒤집히면(읽기를 묶음 안 앞으로) 04:00 수신과 겹친 묶음이 잠금 올리기에서 {@code busy_timeout} 없이 바로
+     * BUSY 가 되어 회수가 warn 한 줄로 멈춘다(09-06 첫 밤 회귀와 같은 꼴). 사용자 명시 결정(UD-R29-2).
+     *
+     * <p>금지 셋: ① 회수 PRAGMA 의 {@code (N)} 꼴을 {@code jdbc.execute(String)} 로 보내기(1 페이지만 푼다 · 프로브
+     * C-13 · C-25) ② 쓰기 잠금을 미리 잡는 트랜잭션 시작 문장을 따로 보내기(풀의 다른 연결로 갈 수 있다 · 회귀 가드
+     * GR-R29-21 축) ③ 묶음 안에서 빈 페이지를
+     * 먼저 읽기. {@code n} 은 서버가 계산한 정수라 PRAGMA 문자열에 요청 값이 닿지 않는다(입력 표면 0).
+     *
+     * @param budgetPages 이번 회수의 예산(페이지 수) — 운영 = {@link #RETENTION_VACUUM_BUDGET_PAGES}
+     * @param batchPages  묶음 하나에 부탁하는 페이지 수 — 운영 = {@link #RECLAIM_BATCH_PAGES}
+     */
+    void reclaimFreePagesWithin(long budgetPages, int batchPages) {
         try {
             long free = readFreelistCount();
             // R22/AC-01-6 관측 로그 ②/3 — 삭제 **후** freelist_count + 예산. 이번 밤에 회수 가능했던 양.
-            log.info("reclaim start: freelistPages={} budgetPages={}", free, RETENTION_VACUUM_BUDGET_PAGES);
+            log.info("reclaim start: freelistPages={} budgetPages={}", free, budgetPages);
             if (free <= 0) {
                 return;                                  // 회수할 것이 없음 — 정상 종료.
             }
-            if (!hasEnoughDiskForReclaimResolved()) {
+            if (!hasEnoughDiskForReclaimResolved(budgetPages)) {
                 return;                                  // 가드 거부 (자체 warn 로그). 정리 자체는 성공으로 끝난다.
             }
 
-            long budget = Math.min(free, RETENTION_VACUUM_BUDGET_PAGES);
+            long budget = Math.min(free, budgetPages);
+            // (ㄹ) 묶음 수 상한 — 겹친 삭제가 빈 페이지를 다시 채워 (ㄱ) 이 덜 셀 때 예산을 넘겨 돌지 않게.
+            long maxBatches = (budget + batchPages - 1) / batchPages + 1;
             long reclaimed = 0;
-            while (reclaimed < budget) {
-                // 자동커밋 1문장 — TransactionTemplate 으로 묶지 않는다 (예산 상수 javadoc 의 "한 쌍" 근거).
-                jdbc.execute("PRAGMA incremental_vacuum");
-                long after = readFreelistCount();
+            int batches = 0;
+            long maxBatchMs = 0;
+            while (reclaimed < budget && batches < maxBatches) {
+                int n = (int) Math.min(batchPages, budget - reclaimed);
+                long started = System.nanoTime();
+                // 회수 묶음 = 같은 연결의 트랜잭션 하나 · 첫 문장 = 이 쓰기(그래야 busy_timeout 안에서 잠금을 기다린다).
+                tx.executeWithoutResult(s -> jdbc.update("PRAGMA incremental_vacuum(" + n + ")"));
+                maxBatchMs = Math.max(maxBatchMs, (System.nanoTime() - started) / 1_000_000L);
+                batches++;
+                long after = readFreelistCount();        // ★커밋 뒤 · 트랜잭션 밖.
                 if (after >= free) {
                     break;                               // ★종료 조건 = freelist 재확인. 진행이 없으면 즉시 종료.
                 }
                 reclaimed += (free - after);             // ★예산은 "실제 줄어든 페이지" 로만 차감한다.
                 free = after;
+                if (reclaimed < budget && batches < maxBatches) {
+                    sleepQuietly(BATCH_YIELD_MS);        // 묶음 사이 양보 창 — 마지막 묶음 뒤에는 0.
+                }
             }
             // R22/AC-01-6 관측 로그 ③/3 — 종료 후 freelist_count + 이번에 회수한 페이지 수(실제 회수량).
             log.info("reclaim done: reclaimedPages={} freelistPages={}", reclaimed, free);
+            // [Phase R29] R29/AC-R29-11 — 새 줄 ①(`reclaim done:` 바로 다음 · 묶음을 1개 이상 돈 정리에서만).
+            //   단위 · 비교 경계(설계서 · 이 주석 · 백로그 세 곳에 같은 문장): 「batches = 그 정리에서 커밋한 회수 묶음 수
+            //   (개수) · batchPages = 묶음 하나에 부탁하는 페이지 수(설정값 · 마지막 묶음은 남은 예산만큼 작을 수 있음) ·
+            //   maxBatchMs = 묶음 하나의 벽시계 밀리초(트랜잭션 시작 ~ 커밋 끝 · 연결 얻기 · 쓰기 잠금 기다림 · 커밋 안
+            //   자동 체크포인트 포함 · 정수 내림)의 최댓값 · 묶음 사이 양보 창은 안 든다. 비교 경계: 같은 정리의
+            //   `reclaim done: reclaimedPages=`(빈 페이지 감소 합)와 견준다 — 동시 쓰기가 없으면 batches = 올림
+            //   (reclaimedPages ÷ batchPages)(진행 없음 갈래는 batches = 1 · reclaimedPages = 0), 수신이 빈 페이지를 함께
+            //   쓰면 batches ≤ 올림(…), 다른 정리가 겹쳐 빈 페이지를 채우면 batches 가 상한(올림(min(빈 페이지,
+            //   budgetPages) ÷ batchPages) + 1)까지. 밤 판정은 `[scheduling-1]` 줄만 · 수동 정리 · 전체 삭제도 같은 줄을
+            //   찍는다.」
+            log.info("reclaim batches: batches={} batchPages={} maxBatchMs={}", batches, batchPages, maxBatchMs);
         } catch (Exception e) {
             // 회수는 실패했지만 **정리 자체는 성공**했음이 드러나게 적는다 (시각은 이미 기록됐다).
             log.warn("free page reclaim failed — cleanup itself succeeded (timestamp already stamped)", e);
@@ -1252,19 +1353,24 @@ public class RetentionCleanupService {
      *
      * <p>{@code resolveDbFile()} 이 null 이면(in-memory 등) {@link #hasEnoughDiskForVacuum()} 과 같은
      * 관례로 <b>통과</b>시킨다 — 새 관례를 만들지 않는다.
+     *
+     * <p>// [Phase R29] R29/AC-R29-08 — 예산을 인자로 받는다(시험 틈이 작은 예산으로 같은 가드를 지나게). warn 문면 ·
+     * // 가드 방향(가용 ≥ 예산 × 상수 → 허용) 그대로. 운영 인자 = {@link #RETENTION_VACUUM_BUDGET_PAGES}.
+     *
+     * @param budgetPages 이번 회수의 예산(페이지 수)
      */
-    private boolean hasEnoughDiskForReclaimResolved() {
+    private boolean hasEnoughDiskForReclaimResolved(long budgetPages) {
         File dbFile = resolveDbFile();
         if (dbFile == null) {
             log.warn("reclaim disk-guard skipped — DB file path unresolved (in-memory or driver limitation)");
             return true;
         }
         long usable = dbFile.getUsableSpace();
-        if (!hasEnoughDiskForReclaim(usable, RETENTION_VACUUM_BUDGET_PAGES)) {
+        if (!hasEnoughDiskForReclaim(usable, budgetPages)) {
             // 필요했던 여유 · 실제 여유를 함께 남긴다 (가드가 왜 거부했는지 로그만 보고 알 수 있게).
             log.warn("free page reclaim skipped — insufficient disk. needBytes={} usableBytes={} budgetPages={}",
-                    RETENTION_VACUUM_BUDGET_PAGES * RECLAIM_WAL_BYTES_PER_PAGE, usable,
-                    RETENTION_VACUUM_BUDGET_PAGES);
+                    budgetPages * RECLAIM_WAL_BYTES_PER_PAGE, usable,
+                    budgetPages);
             return false;
         }
         return true;
@@ -1293,15 +1399,34 @@ public class RetentionCleanupService {
      * <p>// PRAGMA wal_checkpoint(TRUNCATE) 는 단일 row 3컬럼 (busy, log, checkpointed) 을 반환한다.
      * // busy=1 이면 reader 경합으로 부분 실패 — 다음 cleanup 에서 자연 재시도되므로 로깅만 한다.
      * // queryForMap 매핑이 드라이버 사정으로 불가하면 execute fallback (busy 관측 생략, 가용성 우선).
+     *
+     * <p>// [Phase R29] R29/AC-R29-13/R29/AC-R29-14 — 결과를 읽은 갈래에서만 새 INFO 줄 ② 를 찍는다(입구 넷 = 밤 · 수동 ·
+     * // 전체 삭제 · [최적화] — 이 공유 메서드 한 곳). 기존 busy 줄이 찍히는 갈래에서는 그 다음 줄이다. 결과를 못 읽은
+     * // 갈래(아래 {@code execute} 대체)는 이 줄이 없다 — 세 값을 0 으로 꾸미지 않는다. 결과 맵에 열이 없으면
+     * // {@code null} 이 그대로 찍힌다(드라이버는 늘 세 열 — 시험 모의만 해당).
+     * // 단위 · 비교 경계(설계서 · 이 주석 · 백로그 세 곳에 같은 문장): 「elapsedMs = {@code PRAGMA wal_checkpoint(TRUNCATE)}
+     * // 한 번(결과 읽기 포함)의 벽시계 밀리초(정수 내림) · busy = 0/1(1 = 읽는 이 때문에 끝까지 못 옮김) · walFrames ·
+     * // checkpointedFrames = WAL 프레임 수(프레임 = 페이지 사본 하나 + 머리 24 B — 빈 페이지 · 예산 같은 「페이지 개수」
+     * // 필드와 단위가 다름) · WAL 연결에서 TRUNCATE 가 성공하면 두 프레임 값은 늘 0 이 정상(WAL 아닌 연결이면 -1).
+     * // 비교 경계: 정리 한 번(밤 · 수동 · 전체 삭제)과 [최적화] 한 번마다 한 줄 · 밤 판정은 {@code [scheduling-1]} 줄만 ·
+     * // 결과를 못 읽은 갈래(대체 execute)는 이 줄이 없다(0 으로 꾸미지 않는다) · 기존 busy 줄과 함께 찍힐 수 있다
+     * // (busy ≠ 0 이면 두 줄).」
+     * // 다시 볼 조건: 이 줄({@code [scheduling-1]})의 elapsedMs 가 <b>1,000 이상</b>인 밤이 <b>3밤 연속</b>이면 정리 중 대표 점
+     * // 허가 보류 · 전용 인덱스(MR-R28-04 근본 후보)를 다시 본다(단위 = 밀리초 · 비교 = 이상(≥) · 이 줄 없는 밤은 셈에서
+     * // 건너뜀 — 연속을 끊지도 잇지도 않음). busy 줄 0 을 「쓰기 막힘 0」으로 읽지 않는다.
      */
     private void checkpointWal() {
         try {
+            long started = System.nanoTime();
             java.util.Map<String, Object> ck = jdbc.queryForMap("PRAGMA wal_checkpoint(TRUNCATE)");
+            long elapsedMs = (System.nanoTime() - started) / 1_000_000L;
             Object busy = ck.get("busy"); // SQLite: 첫 컬럼명 "busy"
             if (busy instanceof Number n && n.intValue() != 0) {
                 log.info("wal_checkpoint(TRUNCATE) busy — reader 경합, 부분 회수 (다음 cleanup 에서 재시도). result={}",
                         ck);
             }
+            log.info("wal checkpoint: elapsedMs={} busy={} walFrames={} checkpointedFrames={}",
+                    elapsedMs, busy, ck.get("log"), ck.get("checkpointed"));
         } catch (Exception e) {
             // queryForMap 매핑 실패(드라이버 차이) 또는 checkpoint 자체 실패 — execute fallback.
             // 디스크 회수 한계를 가용성보다 우선하지 않는다 (cleanup 종료를 막지 않음).

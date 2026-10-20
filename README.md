@@ -117,7 +117,7 @@ java -javaagent:/path/to/apilens-agent.jar \
 
 첫 trace는 보통 **1~2초 안에** 대시보드에 나타납니다. 30초가 지나도 보이지 않으면
 Setup wizard의 마지막 단계 안내(옵션 키 오타·네트워크 도달 가능성)를 다시 확인하세요.
-agent jar는 server 첫 실행 시 `~/.apilens/` 에 자동으로 풀리며, Setup wizard가 절대경로 또는
+agent jar는 server 를 실행할 때마다 `~/.apilens/` 에 자동으로 풀리며, Setup wizard가 절대경로 또는
 다운로드 링크를 안내합니다.
 
 > **server ≠ app 인 경우** (NAS·별도 박스에 ApiLens를 띄우는 일반적인 운영 구성):

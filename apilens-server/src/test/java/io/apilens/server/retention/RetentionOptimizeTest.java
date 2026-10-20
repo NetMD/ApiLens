@@ -133,13 +133,16 @@ class RetentionOptimizeTest {
     }
 
     /**
-     * ★ 이 가드가 <b>선형 외삽이 아님</b>을 값으로 못박는다 (R22/AC-01-5). 한 점(3,000페이지의
-     * 9.30 KB/page)을 곱한 값이면 20,000페이지에서 182 MB 를 요구해 실측 400.9 MB 를 2.2배 과소평가한다.
-     * 실측 곡선 최댓값 상계(20 KB/page)를 쓰므로 20,000페이지에서 390.6 MB 를 요구한다.
+     * ★ 이 가드가 <b>선형 외삽이 아님</b>을 값으로 못박는다 (R22/AC-01-5).
+     *
+     * <p>// [Phase R29] R29/AC-R29-08 — 단위를 바이트로 다시 썼다(DD-R29-25): 9,300 B/page(R22 · 3,000 페이지 한 점) ×
+     * // 20,000 = <b>186,000,000 B</b> — 지금 상수(10,240 B/page)의 요구 204,800,000 B 보다 작아 여전히 거부된다. 지금
+     * // 최악 실측(프로브 E-5 ≈ 4,465 B/page)보다 커서 이 리터럴이 더 센 단언이다. 남기는 이유 = 상수 하한 고정(R22 이력)
+     * // — 상수를 9,300 B 이하로 내리면 이 시험이 빨갛다. 이름 · 방향 · 리터럴은 그대로다.
      */
     @Test
     void requiresTheUpperBoundHeadroomInsteadOfASinglePointExtrapolation() {
-        long linearFromOnePoint = 20_000L * 9_300L;   // 한 점 곱셈 = 186 MB (금지된 계산)
+        long linearFromOnePoint = 20_000L * 9_300L;   // 한 점 곱셈 = 186,000,000 B (금지된 계산)
         assertFalse(RetentionCleanupService.hasEnoughDiskForReclaim(linearFromOnePoint, 20_000L),
                 "한 점 곱셈으로 나온 여유는 이 가드를 통과하지 못한다 (곡선 상계가 더 크다)");
         assertTrue(RetentionCleanupService.hasEnoughDiskForReclaim(requiredHeadroom(20_000L), 20_000L));
@@ -276,7 +279,9 @@ class RetentionOptimizeTest {
 
         assertTrue(info.contains("cleanup start: freelistPagesBeforeDelete=1000 pageCount=100000 pageSize=4096"),
                 "전제: 삭제 전 값 = 1,000 — " + info);
-        assertTrue(info.contains("reclaim start: freelistPages=30000 budgetPages=5000"),
+        // [Phase R29] R29/AC-R29-08 — 예산 리터럴은 예산 상수를 따라간다(이 시험이 재는 축 = 문면은 그대로).
+        assertTrue(info.contains("reclaim start: freelistPages=30000 budgetPages="
+                        + RetentionCleanupService.RETENTION_VACUUM_BUDGET_PAGES),
                 "전제: 삭제 후 값 = 30,000(이 값으로 판정했다면 참이었다) — " + info);
         assertFalse(service.isOptimizeAdvised(), "삭제 전 값으로 판정 → 거짓");
     }

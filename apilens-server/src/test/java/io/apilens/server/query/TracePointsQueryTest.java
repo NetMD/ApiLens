@@ -60,6 +60,7 @@ import java.util.Random;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -705,28 +706,33 @@ class TracePointsQueryTest {
 
     // ─── C · 동시 실행 상한 (AC-28-01-8 · 01-9 · RC-4) ────────────────────────────
 
-    /** C01 — 서버 전체에서 대표 점 질의는 동시에 하나만 돈다. 전제 = 도는 수 1 그리고 기다리는 수 2. */
+    /**
+     * C01 — 서버 전체에서 대표 점 질의는 동시에 하나만 돈다. 전제 = 도는 수 1 그리고 기다리는 수 1.
+     *
+     * <p>// [Phase R29] R29/AC-R29-31 — 기다리는 호출을 둘 → 하나로 줄였다(설계 결정 DD-R29-14). 「기다리는 둘이 다 돈다」는
+     * // R29 계약 변경(기다리는 요청 중 가장 새것만)으로 사라졌고 그 축은 {@code supersedesAnOlderWaitingPointsRequestWithTheNewestOne}
+     * // 이 잰다. 이 시험은 「동시 최대 1 · 둘 다 돎」만 잰다.
+     */
     @Test
     void neverRunsMoreThanOnePointsQueryAtOnce() throws Exception {
         BlockingRepository blocking = new BlockingRepository(jdbc, mapper);
         TraceQueryService svc = new TraceQueryService(blocking);
-        ExecutorService pool = Executors.newFixedThreadPool(3);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
         try {
             List<Future<TracePointsResponse>> calls = new ArrayList<>();
             calls.add(pool.submit(() -> svc.listTracePoints(SVC, T0, T0 + ONE_MINUTE, null, null, 30_000L, System::nanoTime)));
             await().atMost(Duration.ofSeconds(10)).until(() -> blocking.running.get() == 1);
             calls.add(pool.submit(() -> svc.listTracePoints(SVC, T0, T0 + ONE_HOUR, null, null, 30_000L, System::nanoTime)));
-            calls.add(pool.submit(() -> svc.listTracePoints(SVC, T0 + 5, T0 + 600_000L, null, null, 30_000L, System::nanoTime)));
-            await().atMost(Duration.ofSeconds(10)).until(() -> svc.pointsQueriesWaiting() == 2);
+            await().atMost(Duration.ofSeconds(10)).until(() -> svc.pointsQueriesWaiting() == 1);
             assertEquals(1, blocking.running.get(), "전제: 도는 수 = 1");
-            assertEquals(2, svc.pointsQueriesWaiting(), "전제: 기다리는 수 = 2");
+            assertEquals(1, svc.pointsQueriesWaiting(), "전제: 기다리는 수 = 1");
             assertEquals(1, svc.pointsQueriesInFlight(), "전제: 허가를 쥔 질의 1");
 
             blocking.open();
             for (Future<TracePointsResponse> f : calls) {
                 f.get(10, TimeUnit.SECONDS);
             }
-            assertEquals(3, blocking.calls.get(), "세 호출이 다 돌았다");
+            assertEquals(2, blocking.calls.get(), "두 호출이 다 돌았다");
             assertEquals(1, blocking.maxRunning.get(), "동시 최대 1");
         } finally {
             blocking.open();
@@ -915,7 +921,85 @@ class TracePointsQueryTest {
         }
     }
 
+    /**
+     * [Phase R29] R29/AC-R29-31 verbatim: "범위를 연달아 바꿨을 때 마지막 요청이 앞 대기 때문에 503 을 받지 않는다".
+     * 설계 결정 DD-R29-11 · DD-R29-12(기다리는 요청 중 가장 새것만 · 앞 대기는 503 · 저장소에 안 감).
+     *
+     * <p>순서 고정: A 쥠 → B 제출 → 기다리는 수 1 → C 제출 → 기다리는 수 2 → 연다. 걸쇠 · 폴링만(실시간 잠자기 0).
+     * 끝에 허가 수 0 을 재 이중 반납 · 누수를 함께 본다. 기다림 0 호출은 섞지 않는다(차례표 미세 창 · 설계 한계 ⓓ).
+     */
+    @Test
+    void supersedesAnOlderWaitingPointsRequestWithTheNewestOne() throws Exception {
+        BlockingRepository blocking = new BlockingRepository(jdbc, mapper);
+        TraceQueryService svc = new TraceQueryService(blocking);
+        ExecutorService pool = Executors.newFixedThreadPool(3);
+        try {
+            Future<TracePointsResponse> a =
+                    pool.submit(() -> svc.listTracePoints(SVC, T0, T0 + ONE_MINUTE, null, null, 30_000L, System::nanoTime));
+            await().atMost(Duration.ofSeconds(10)).until(() -> blocking.running.get() == 1);
+            Future<TracePointsResponse> b =
+                    pool.submit(() -> svc.listTracePoints(SVC, T0, T0 + ONE_HOUR, null, null, 30_000L, System::nanoTime));
+            await().atMost(Duration.ofSeconds(10)).until(() -> svc.pointsQueriesWaiting() == 1);
+            assertEquals(1, svc.pointsQueriesWaiting(), "전제: B(1시간 창)가 허가 앞에서 기다린다");
+            Future<TracePointsResponse> c =
+                    pool.submit(() -> svc.listTracePoints(SVC, T0 + 5, T0 + 600_000L, null, null, 30_000L, System::nanoTime));
+            await().atMost(Duration.ofSeconds(10)).until(() -> svc.pointsQueriesWaiting() == 2);
+            assertEquals(2, svc.pointsQueriesWaiting(), "전제: B · C(10분 창) 둘이 기다린다");
+
+            List<ILoggingEvent> events = captureServiceLog(() -> {
+                blocking.open();
+                try {
+                    a.get(10, TimeUnit.SECONDS);
+                    ExecutionException bOutcome = assertThrows(ExecutionException.class, () -> b.get(10, TimeUnit.SECONDS));
+                    assertTrue(bOutcome.getCause() instanceof TraceQueryService.PointsBusyException,
+                            "앞선 대기 B 는 바쁨(503) — 실제: " + bOutcome.getCause());
+                    TracePointsResponse cr = c.get(10, TimeUnit.SECONDS);
+                    assertEquals(1_000L, cr.bucketMs(), "가장 새 요청 C 가 자기 창(10분 · 칸 1초)으로 돌았다");
+                } catch (Exception e) {
+                    throw new AssertionError(e);
+                }
+            });
+
+            assertEquals(2, blocking.calls.get(), "저장소 호출 = A · C 둘(대체된 B 는 저장소에 안 간다)");
+            assertEquals(1, blocking.maxRunning.get(), "동시 최대 1");
+            List<String> info = lines(events, Level.INFO);
+            assertEquals(1, info.stream().filter(l -> l.equals("trace points superseded: newer request waiting")).count(),
+                    "대체 줄 한 줄 — 실제: " + info);
+            assertEquals(0, info.stream().filter(l -> l.startsWith("trace points busy:")).count(),
+                    "대체는 바쁨 줄을 안 찍는다 — 실제: " + info);
+            assertEquals(0, svc.pointsQueriesInFlight(), "허가 수 원래대로(이중 반납 0 · 누수 0)");
+        } finally {
+            blocking.open();
+            shutdown(pool);
+        }
+    }
+
     // ─── H · HTTP 계약 (AC-28-01-5 · 01-8 · §2.1) ────────────────────────────────
+
+    /**
+     * [Phase R29] R29/AC-R29-33 verbatim: "형 변환 실패가 고정 영어 문장 400 {@code {error}} 다. 입력값({@code abc} ·
+     * {@code FOO})과 패키지 이름({@code io.apilens})이 안 실린다". 대표 점 2 + 목록 3 = 실행 5. SEC-R28-01.
+     */
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "/v1/trace-points?service=svc-a&since=abc&until=1000",
+            "/v1/trace-points?service=svc-a&since=0&until=1000&status=FOO",
+            "/v1/traces?since=abc",
+            "/v1/traces?status=FOO",
+            "/v1/traces?limit=abc"})
+    void returnsAFixedSentenceForUnconvertibleParameters(String url) throws Exception {
+        MockMvc mvc = MockMvcBuilders.standaloneSetup(new TraceQueryController(service)).build();
+
+        MvcResult res = mvc.perform(getRaw(url)).andExpect(status().isBadRequest()).andReturn();
+
+        String raw = res.getResponse().getContentAsString();
+        JsonNode body = mapper.readTree(raw);
+        assertEquals(1, body.size(), "본문은 error 한 키 — " + raw);
+        assertEquals("invalid parameter value", body.path("error").asText(), "고정 문장 — " + raw);
+        assertFalse(raw.contains("abc"), "입력값이 안 실린다 — " + raw);
+        assertFalse(raw.contains("FOO"), "입력값이 안 실린다 — " + raw);
+        assertFalse(raw.contains("io.apilens"), "패키지 이름이 안 실린다 — " + raw);
+    }
 
     /** H01 — 거절 입력 아홉 → 각 400 · 본문 {@code {"error": 영어 고정 문장 넷 중 하나}} · 요청 값이 문장에 없다. */
     @ParameterizedTest

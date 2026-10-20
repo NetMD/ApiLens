@@ -65,11 +65,12 @@ function ToastViewport({
 
 function Toast({ item, onClose }: { item: ToastItem; onClose: () => void }): ReactNode {
   const { kind, message } = item;
-  // success / error 색 분리. error 는 status-error hex 사용.
+  // success / error 색 분리. error 는 오류 색의 진한 짝 토큰(--color-status-error-strong) 바탕
+  //   [R29/AC-R29-21 · UXD-R29-04] — 흰 글자 5.47:1(전 바탕은 3.93:1 로 글자 기준 4.5:1 미달).
   const className =
     kind === 'success'
       ? 'pointer-events-auto rounded-md bg-stone-900 px-4 py-2 text-sm text-white shadow-lg'
-      : 'pointer-events-auto rounded-md bg-[#E24B4A] px-4 py-2 text-sm text-white shadow-lg';
+      : 'pointer-events-auto rounded-md bg-[var(--color-status-error-strong)] px-4 py-2 text-sm text-white shadow-lg';
   return (
     <div
       role={kind === 'error' ? 'alert' : 'status'}

@@ -17,6 +17,7 @@ package io.apilens.server.openapi;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.apilens.server.setup.AgentJarExtractor;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -32,6 +33,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -89,6 +92,9 @@ class OpenApiDocsIntegrationTest {
     @Autowired
     private TestRestTemplate rest;
 
+    @Autowired
+    private AgentJarExtractor agentJarExtractor;
+
     /**
      * T-INT-1 — 면제 + 스펙 자동생성 + 컨텍스트 로드 + build-info 배선(info.version 은 Gradle version 을 따른다).
      */
@@ -115,8 +121,26 @@ class OpenApiDocsIntegrationTest {
         //   함께 올렸다(build.gradle.kts 의 version 줄에도 그 사실을 적어 두었다).
         // [Phase R27] R27/AC-27-05-1 — bump(0.7.1 → 0.8.0) 동반 정정. 이번에도 빨개지기 전에 같은 접촉에서 올렸다.
         // [Phase R28] AC-28-06-1 — bump(0.8.0 → 0.9.0) 동반 정정. 이번에도 빨개지기 전에 같은 접촉에서 올렸다.
-        assertEquals("0.9.0", info.get("version").asText(), "info.version must track the Gradle build version");
+        // [Phase R29] R29/AC-R29-40 — bump(0.9.0 → 0.9.1) 동반 정정. 이번에도 빨개지기 전에 같은 접촉에서 올렸다.
+        assertEquals("0.9.1", info.get("version").asText(), "info.version must track the Gradle build version");
         assertEquals("ApiLens API", info.get("title").asText());
+    }
+
+    /**
+     * [Phase R29] R29/AC-R29-36 verbatim: "서버 시험이 agent jar 대상 폴더로 임시 폴더를 쓴다. 그 속성은 그 값을 읽는 첫
+     * 소비자({@code AgentJarExtractor} 생성)보다 먼저 설정된다". MR-R28-02 — 시험 자원 {@code application.properties} 의
+     * 대상 폴더 속성이 이 컨텍스트의 추출기에 실제로 닿았는지 본다(시험이 47 B 시험용 jar 로 사용자 홈의 jar 를 덮지 않게).
+     */
+    @Test
+    void extractsTheAgentJarOutsideTheUserHomeInTests() {
+        String extracted = agentJarExtractor.getExtractedPath();
+        assertNotNull(extracted, "전제: 시험 컨텍스트에서도 추출이 실제로 일어났다(시험 자원에 jar 가 있다)");
+
+        String userHome = System.getProperty("user.home");
+        assertFalse(extracted.startsWith(userHome),
+                "시험이 푼 agent jar 는 사용자 홈 밖이다 — 실제: " + extracted);
+        assertNotEquals(Path.of(userHome, ".apilens", "apilens-agent.jar").toAbsolutePath().toString(), extracted,
+                "운영 자리(~/.apilens/apilens-agent.jar)를 덮지 않는다");
     }
 
     /**

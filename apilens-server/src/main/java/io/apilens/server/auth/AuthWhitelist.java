@@ -70,6 +70,15 @@ final class AuthWhitelist {
         if (path.indexOf('%') >= 0) {
             return false;
         }
+        // [Phase R29] R29/AC-R29-55 — 행렬 파라미터(;)가 든 경로는 면제하지 않는다. 사용자 명시 결정 (가) 2026-10-20(SEC-R29-01).
+        //   면제 판정은 원문 경로를 보고 Spring MVC 라우팅은 ; 뒤를 떼고 보므로, 둘이 갈려 /v1;/… 가 면제로 빠진 채 토큰 없이
+        //   보호 처리기에 닿았다 — 그 갈림을 끊는다. 인코딩 꼴(%3B)은 바로 위 percent 가드가 이미 막는다. 좁히는 방향만이다 —
+        //   수신(R14-D04) · 평문 setup · 정적 자산 면제는 그대로(CLAUDE.md '절대 변경하지 말아야 할 결정 사항').
+        //   ★한계 그 자리에: 정적 자산 · 화면 딥링크 이름에 ; 가 있으면 면제 밖으로 나가 화면이 깨진다 — 틀리는 방향이 위험한
+        //     쪽이다. 지금 0 이다(빌드 산출물 이름 · 화면 경로 실측). 이 서버는 세션을 안 써 경로에 세션 식별자도 안 붙는다.
+        if (path.indexOf(';') >= 0) {
+            return false;
+        }
         // 1. setup 묶음 — /v1/setup/** 전체 면제 (정확 4 endpoint, prefix 로 일괄).
         if (path.startsWith(SETUP_PREFIX)) {
             return true;

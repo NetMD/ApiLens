@@ -63,7 +63,11 @@ allprojects {
     //   되돌리는 길은 이전 jar 로 바꾸는 것뿐이다. 새로 빌드한 agent jar 는 제품 버전(0.9.0)을 보고하고, 다시
     //   배포하지 않은 agent 는 계속 0.8.0 으로 보인다 — 둘 다 정상이다).
     //   ★OpenApiDocsIntegrationTest 의 info.version 단언도 이번 접촉에서 함께 올렸다.
-    version = "0.9.0"
+    // [Phase R29] R29/AC-R29-40 — 0.9.0 → 0.9.1 (patch: 정비 라운드 — 밤 회수 묶음 · 화면 정비 · 사용자 명시 결정
+    //   UD-R29-1). **스키마 변경 0 · agent 소스 변경 0** — 되돌리는 길은 이전 jar 로 바꾸는 것뿐이다. 새로 빌드한
+    //   agent jar 는 제품 버전(0.9.1)을 보고하고, 다시 배포하지 않은 agent 는 이전 라벨 그대로 보인다 — 둘 다 정상이다.
+    //   ★OpenApiDocsIntegrationTest 의 info.version 단언도 이번 접촉에서 함께 올렸다.
+    version = "0.9.1"
 }
 
 subprojects {

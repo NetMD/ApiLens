@@ -510,8 +510,9 @@ function Step1({ value, onChange, onBlur, error, onEnter }: Step1Props): ReactNo
       <p className="text-xs text-stone-500">
         운영망에서는 사용자 앱이 접근 가능한 IP/hostname 을 입력해 주세요
       </p>
+      {/* [R29/AC-R29-21 · UXD-R29-15] 칸 오류 글자 = 진한 짝 토큰(흰 바탕 5.47:1) — 전 색은 3.93:1 로 글자 기준 미달. */}
       {error !== null && (
-        <p role="alert" className="text-xs text-[var(--color-status-error)]">
+        <p role="alert" className="text-xs text-[var(--color-status-error-strong)]">
           {error}
         </p>
       )}
@@ -564,8 +565,9 @@ function Step2({ value, onChange, onBlur, error, onEnter }: Step2Props): ReactNo
       <p className="text-xs text-stone-400">
         영문/숫자/하이픈/언더스코어. 예: my-api, order-service
       </p>
+      {/* [R29/AC-R29-21 · UXD-R29-15] 칸 오류 글자 = 진한 짝 토큰(흰 바탕 5.47:1). 위 안내 두 줄(D-H10-06 구역)은 그대로. */}
       {error !== null && (
-        <p role="alert" className="text-xs text-[var(--color-status-error)]">
+        <p role="alert" className="text-xs text-[var(--color-status-error-strong)]">
           {error}
         </p>
       )}

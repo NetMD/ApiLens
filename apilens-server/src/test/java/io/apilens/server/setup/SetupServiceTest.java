@@ -399,7 +399,8 @@ class SetupServiceTest {
 
     /**
      * 상한 바로 위({@code :65536})의 거부 문면에 <b>몇까지 되는지</b>(65535)가 들어 있고, 거부된 요청은 아무것도
-     * 저장하지 않는다. 문면은 영어 한 문장 · 내부 정보 0 이다(설치 400 은 인증 없이 보이는 응답이다).
+     * 저장하지 않는다. 문면은 고정 한국어 문장 하나 · 내부 정보 0 이다(설치 400 은 인증 없이 보이는 응답이다 ·
+     * [Phase R29] R29/AC-R29-17 에서 영어 → 고정 한국어 문장).
      */
     @Test
     void rejectsAPortAboveTheMaximumWithTheLimitInTheMessage() {
@@ -410,7 +411,7 @@ class SetupServiceTest {
 
         IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
                 () -> service.complete(new SetupCompleteRequest("http://apilens-host:65536", null)));
-        assertEquals("serverUrl port must be 65535 or less", e.getMessage(),
+        assertEquals("Server URL 포트 형식 오류 (65535 이하)", e.getMessage(),
                 "문면에 상한 숫자가 들어야 운영자가 무엇을 고칠지 안다");
         assertEquals("http://apilens-host:65535", service.getState().serverUrl(),
                 "거부된 요청은 아무것도 저장하지 않는다(검사가 저장보다 앞선다)");
@@ -423,15 +424,16 @@ class SetupServiceTest {
     //  지금 7종은 전부 고정 문면이지만, 나중에 문면에 요청 값이나 예외 원문을 이어 붙이면 그 값이 무인증 응답과
     //  화면에 실린다. 그것을 막는 자동 장치가 이 시험이다.
 
+    //  [Phase R29] R29/AC-R29-17 — 일곱 문장을 고정 한국어 문장으로 바꿨다(UXD-R29-16 글자 그대로 · 화면 문장과 같은 글자).
     /** validate 가 던지는 고정 문면 7종 — 새 거부 갈래를 더하면 이 목록도 함께 늘린다(안 늘리면 빨강). */
     private static final java.util.Set<String> FIXED_REJECT_SENTENCES = java.util.Set.of(
-            "request body is required",
-            "serverUrl must start with http:// or https://",
-            "serverUrl must include a host (예: http://192.168.0.10:8765)",
-            "serverUrl port must be 65535 or less",
-            "too many services — at most 50 are allowed",
-            "service name is required",
-            "service name format invalid");
+            "요청 본문(JSON) 필요",
+            "Server URL 형식 오류 (http:// 또는 https://)",
+            "Server URL 호스트 없음 (예: http://your-apilens-host:8765)",
+            "Server URL 포트 형식 오류 (65535 이하)",
+            "서비스 개수 초과 (최대 50개)",
+            "Service Name 입력 필요",
+            "Service Name 형식 오류 (영문/숫자/하이픈/언더스코어만)");
 
     /** 요청 값에 심는 표식 — 사유 문면에 이 조각이 하나라도 보이면 요청 값이 응답에 새어 나간 것이다. */
     private static final List<String> MARKERS = List.of("zz-marker-zz", "<script>", "/etc/passwd");
@@ -442,16 +444,16 @@ class SetupServiceTest {
                 .toList();
         return java.util.stream.Stream.of(
                 Arguments.of("접두 틀림", new SetupCompleteRequest("ftp://zz-marker-zz/etc/passwd<script>", null),
-                        "serverUrl must start with http:// or https://"),
+                        "Server URL 형식 오류 (http:// 또는 https://)"),
                 Arguments.of("호스트 없음", new SetupCompleteRequest("http:///zz-marker-zz/etc/passwd<script>", null),
-                        "serverUrl must include a host (예: http://192.168.0.10:8765)"),
+                        "Server URL 호스트 없음 (예: http://your-apilens-host:8765)"),
                 Arguments.of("포트 초과", new SetupCompleteRequest("http://zz-marker-zz:65536/etc/passwd", null),
-                        "serverUrl port must be 65535 or less"),
+                        "Server URL 포트 형식 오류 (65535 이하)"),
                 Arguments.of("서비스 51개", new SetupCompleteRequest("http://apilens-host:8765", fiftyOneMarked),
-                        "too many services — at most 50 are allowed"),
+                        "서비스 개수 초과 (최대 50개)"),
                 Arguments.of("이름 형식 틀림", new SetupCompleteRequest("http://apilens-host:8765",
                                 List.of(new ServiceRegistration("zz-marker-zz <script>/etc/passwd"))),
-                        "service name format invalid"));
+                        "Service Name 형식 오류 (영문/숫자/하이픈/언더스코어만)"));
     }
 
     /**
@@ -473,5 +475,27 @@ class SetupServiceTest {
             assertFalse(e.getMessage().contains(marker),
                     "사유에 요청 값 조각(" + marker + ")이 실리면 안 된다 — 실제: " + e.getMessage());
         }
+    }
+
+    static java.util.stream.Stream<Arguments> unmarkedRejectRequests() {
+        return java.util.stream.Stream.of(
+                Arguments.of("본문 없음", null, "요청 본문(JSON) 필요"),
+                Arguments.of("이름 빈칸", new SetupCompleteRequest("http://apilens-host:8765",
+                        List.of(new ServiceRegistration(""))), "Service Name 입력 필요"));
+    }
+
+    /**
+     * [Phase R29] R29/AC-R29-17 verbatim: "설치 400 고정 문장 7종이 고른 길대로 바뀐다(잠정 길 ⓐ = 서버 문장 한국어 ·
+     * 문면은 UX · UT-R29-03~09)". 표식을 실을 자리가 없는 두 갈래(본문 없음 · 이름 빈칸)의 문장을 글자 그대로 잰다 —
+     * 위 표식 다섯 갈래와 합쳐 일곱 갈래가 모두 기대 문장으로 닫힌다.
+     */
+    @ParameterizedTest(name = "[{index}] {0}")
+    @MethodSource("unmarkedRejectRequests")
+    void rejectsTheUnmarkedBranchesWithTheirFixedSentences(String branch, SetupCompleteRequest request, String expected) {
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> service.complete(request),
+                "전제: 이 갈래(" + branch + ")는 거부된다");
+        assertEquals(expected, e.getMessage(), "이 갈래(" + branch + ")의 고정 문장 글자 그대로");
+        assertTrue(FIXED_REJECT_SENTENCES.contains(e.getMessage()),
+                "고정 문면 7종 중 하나다 — 실제: " + e.getMessage());
     }
 }

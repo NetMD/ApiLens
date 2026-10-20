@@ -15,21 +15,31 @@
  */
 package io.apilens.server.setup;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.io.Resource;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
  * [Phase H 후속 R10] BE-2 단위 테스트 — SetupController.getAgentJarPath (2 케이스).
@@ -130,6 +140,34 @@ class SetupControllerTest {
         assertEquals(404, response.getStatusCode().value(),
                 "a genuinely missing download is a 404, unlike agent-jar-path's 200/null");
         assertNull(response.getBody());
+    }
+
+    /**
+     * Case 5: [Phase R29] R29/AC-R29-18 verbatim: "400 본문 모양: 상태 400 · JSON 키 {@code error} 하나 · 값이 고정 목록 안 ·
+     * 표식 없음". HTTP 단(MockMvc 단독)으로 보낸다 — 검사가 저장보다 먼저라 저장소 없이 400 갈래만 탄다.
+     *
+     * <p>한국어 응답 본문은 UTF-8 로 읽는다(MockMvc 기본 문자셋으로 읽으면 글자가 깨져 거짓 빨강).
+     */
+    @Test
+    void returns400WithASingleErrorKeyOverHttp() throws Exception {
+        MockMvc mvc = MockMvcBuilders.standaloneSetup(
+                new SetupController(new SetupService(null), new StubExtractor(null))).build();
+        String marked = "{\"serverUrl\":\"http:///zz-marker-zz/etc/passwd<script>\",\"services\":null}";
+
+        MvcResult res = mvc.perform(post("/v1/setup/complete")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(marked))
+                .andExpect(status().isBadRequest())
+                .andReturn();
+
+        String raw = res.getResponse().getContentAsString(StandardCharsets.UTF_8);
+        JsonNode body = new ObjectMapper().readTree(raw);
+        assertEquals(1, body.size(), "본문은 error 한 키 — " + raw);
+        assertEquals("Server URL 호스트 없음 (예: http://your-apilens-host:8765)", body.path("error").asText(),
+                "호스트 없음 갈래의 고정 문장 글자 그대로 — " + raw);
+        for (String marker : List.of("zz-marker-zz", "<script>", "/etc/passwd")) {
+            assertFalse(raw.contains(marker), "본문에 요청 값 조각(" + marker + ")이 없다 — " + raw);
+        }
     }
 
     /**

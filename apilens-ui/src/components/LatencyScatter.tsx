@@ -1,25 +1,27 @@
 // Latency 산점도 — Recharts ScatterChart + log scale Y.
 // 점 색상은 STATUS_HEX 미러를 통해 시맨틱 컬러와 단일 출처 유지.
 //
-// NOTE: NFR-06 — 시각화 컴포넌트는 unit test 작성 대상 아님 (사용자 시각 검증 영역).
+// NOTE: NFR-06 — 시각 판정(흐름 · 말풍선 모습)은 사용자 · 실브라우저 검증 영역이다. [R29] 렌더 시험
+//   (LatencyScatterChart.test.tsx)은 점 순서 · 축 글자색 · 가리킨 점 · 여백 전달처럼 DOM 으로 재는 것만 본다.
 //
 // F2 LOW-1 시맨틱 토큰 정책 적용:
 //   - 점 fill 색상은 이미 STATUS_HEX (status-ok / status-error / status-slow) 사용 중.
 //   - axis stroke '#888780'은 STATUS_HEX.ok와 우연 일치 — chart 축 색상은 시맨틱 의미 아님 (중성 톤).
-//   - grid stroke '#e7e5e4', tooltip cursor '#d6d3d1'은 Tailwind stone-200/stone-300 미러 — 시맨틱 의미 아님.
+//   - [R29/AC-R29-22 · UXD-R29-05] 축 눈금 글자 = stone-500 미러 · 의미색 아님(흰 바탕 4.80:1). 축 선 · 눈금 선은 위 회색 그대로.
+//   - grid stroke '#e7e5e4', 가로세로 안내선 '#d6d3d1'은 Tailwind stone-200/stone-300 미러 — 시맨틱 의미 아님.
 //   - 따라서 raw hex 직접 사용은 시맨틱 컬러 정책(NFR-05) 위반 아님.
 //   - 토큰 치환을 강제하지 않는 사유: 시맨틱 의미가 아닌 위치에 시맨틱 토큰을 넣으면 의미 혼선.
-import type { ReactNode } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router';
 import { searchAcrossRoutes } from '../lib/routeSearch';
 import {
   CartesianGrid,
   Cell,
+  ReferenceLine,
   ResponsiveContainer,
   Scatter,
   ScatterChart,
-  Tooltip,
   XAxis,
   YAxis,
 } from 'recharts';
@@ -42,6 +44,7 @@ import {
 import type { RangePreset } from '../lib/time';
 import { useScrollClock } from '../hooks/useScrollClock';
 import { useScatterHover } from '../hooks/useScatterHover';
+import type { PointedPoint } from '../hooks/useScatterHover';
 import { usePrefersReducedMotion } from '../hooks/usePrefersReducedMotion';
 
 /**
@@ -80,8 +83,15 @@ interface Props {
  * [R28/UXD-31 · AC-28-04-2ⓐ] 오른쪽 여백(px) — 16 → 28. 오른쪽 끝 눈금 글자(`HH:mm:ss` ≈42~46px · 11px 글꼴)의
  * 반쪽이 여백 밖으로 잘리지 않게 「가장 넓은 눈금 글자 폭의 절반 + 4px」 이상으로 둔다. 축 범위 · 눈금 배열은 그대로.
  * 값은 UX 권장 한 값 그대로다 — 실브라우저 실측(V-R28-11 · 1분 Live ON · 10분 Live OFF)은 이 단계가 못 했다.
+ * [R29/AC-R29-38 · R28 QA R-9] 렌더 시험이 그림 영역 오른쪽 끝(= 틀 폭 − 이 값)을 재도록 내보낸다(값 그대로).
  */
-const CHART_MARGIN_RIGHT_PX = 28;
+export const CHART_MARGIN_RIGHT_PX = 28;
+
+/**
+ * [R29/UXD-R29-07] 말풍선 상자를 포인터에서 띄우는 거리(px) — 사분면 쪽으로 이만큼 떨어져 포인터 · 점을 안 가린다.
+ * 상자 폭 상한 클래스(`max-w-[calc(50%_-_12px)]`)의 12px 와 같은 값이다 — 바꾸면 둘을 함께 바꾼다.
+ */
+const TOOLTIP_OFFSET_PX = 12;
 
 /** recharts CartesianGrid 가 세로 격자 생성기에 넘기는 인자 중 여기서 쓰는 것만. */
 interface GridGeneratorProps {
@@ -108,28 +118,26 @@ function clampForLog(ms: number): number {
   return ms <= 0 ? 1 : ms;
 }
 
-interface TooltipPayloadItem {
-  payload?: Point;
-}
-
+/**
+ * [R29/AC-R29-26 · CX-1(말풍선 머묾)] 말풍선 세 줄 — 1 · 2줄 = 훅 `pointed.traceId` → `shownPoints` 에서 같은 `traceId` 의 점 →
+ * `CustomTooltip` 의 `point.trace`(`rootOperation` · `startTime` · `durationMs` · `status`). recharts 의 기억값(`activePayload`)은 읽지 않는다.
+ * 3줄 = `Dashboard.tsx` `buildBucketCounts(그리는 응답)` → `<LatencyScatter bucketCounts>` → `CustomTooltip bucketCounts` →
+ * `lookupBucket(bucketCounts, point.trace.startTime)` — 칸 표에 없으면 줄 생략(0 으로 안 씀).
+ */
 function CustomTooltip({
-  active,
-  payload,
+  point,
   bucketCounts = null,
 }: {
-  active?: boolean | undefined;
-  payload?: ReadonlyArray<TooltipPayloadItem> | undefined;
+  point: Point;
   bucketCounts?: BucketCounts | null;
 }): ReactNode {
-  if (!active || !payload || payload.length === 0) return null;
-  const first = payload[0];
-  if (!first || !first.payload) return null;
-  const t = first.payload.trace;
+  const t = point.trace;
   // [R28/UXD-23 · UC-R28-14] 그 점이 대표하는 칸의 건수 — 칸 표에 없으면(가장자리 칸 · 넘김 중 옛 점) 줄을 생략한다(0 으로 안 씀).
   const bucket = lookupBucket(bucketCounts, t.startTime);
   return (
     <div className="rounded border border-stone-200 bg-white p-2 text-xs text-stone-900 shadow">
-      <div className="font-medium">{t.rootOperation}</div>
+      {/* [R29/AC-R29-56 · CX-1 ⓐ] 이름은 세 줄까지만 보임(CSS 줄 수 제한 · 높이를 재지 않음) — 전체 이름은 목록 줄 · 상세에 남는다. */}
+      <div className="font-medium line-clamp-3">{t.rootOperation}</div>
       <div className="text-stone-500">
         {formatHms(t.startTime)} · {t.durationMs}ms · {t.status}
       </div>
@@ -140,6 +148,18 @@ function CustomTooltip({
       )}
     </div>
   );
+}
+
+/**
+ * [R29/UXD-R29-07 · DD-R29-19] 말풍선 상자 자리 — 포인터가 틀의 어느 사분면에 있는지로 정한다. 왼쪽 절반이면 포인터 오른쪽,
+ * 오른쪽 절반이면 왼쪽 · 위 절반이면 아래, 아래 절반이면 위. 상자 크기를 재지 않아도 틀 안에 머문다(상자 폭 상한 = 틀의 절반 − 띄움).
+ */
+function tooltipBoxStyle(at: PointedPoint['at']): CSSProperties {
+  const horizontal =
+    at.x < at.width / 2 ? { left: at.x + TOOLTIP_OFFSET_PX } : { right: at.width - at.x + TOOLTIP_OFFSET_PX };
+  const vertical =
+    at.y < at.height / 2 ? { top: at.y + TOOLTIP_OFFSET_PX } : { bottom: at.height - at.y + TOOLTIP_OFFSET_PX };
+  return { ...horizontal, ...vertical };
 }
 
 export function LatencyScatter({ points: input, bucketCounts = null, window: w, yMax }: Props): ReactNode {
@@ -176,10 +196,6 @@ export function LatencyScatter({ points: input, bucketCounts = null, window: w, 
     hold,
     runUntil: slide?.endsAt ?? null,
   });
-  // [v0.8.0] 툴팁·안내선을 켜고 끄는 판정 — 흐르는 동안 점 요소가 매 프레임 새로 생겨 recharts 의
-  //   「나감」 신호가 사라지므로 직접 판정한다(자세한 이유는 훅 머리 주석).
-  const hover = useScatterHover(clock);
-
   // [R27/FR-27-04] 표시 창 — scroll 이면 같은 함수로(오른쪽 끝 = min(max(마지막 프레임, 도착 시각) − L, F)).
   //   시계가 안 도는 경우(1h 이상 · 움직임 줄이기 · 일시정지)도 같은 식이라 창 끝은 앞으로만 간다(UXD-05·06).
   let viewSince: number;
@@ -266,6 +282,14 @@ export function LatencyScatter({ points: input, bucketCounts = null, window: w, 
     return [...slide.prevPoints.filter((p) => !seen.has(p.trace.traceId)), ...points];
   }, [slide, points]);
 
+  // [v0.8.0 → R29/AC-R29-24 · 26] 말풍선 · 안내선을 켜고 끄는 판정과 「어느 점인가」 — 흐르는 동안 점 요소가 매 프레임 새로 생겨
+  //   recharts 의 「나감」 신호가 사라지고, recharts 가 기억하는 점은 점→점 순간 이동에서 앞 점에 머문다(R28 CX-1(말풍선 머묾)).
+  //   그래서 그리는 점 목록(그리는 순서 그대로)을 훅에 넘겨 직접 판정한다(자세한 이유는 훅 머리 주석).
+  //   말풍선 내용 · 가로세로 안내선 · 상자 자리가 모두 이 한 점에서 나온다.
+  const hover = useScatterHover(clock, shownPoints);
+  const pointedTraceId = hover.pointed?.traceId ?? null;
+  const pointedPoint = pointedTraceId === null ? null : (shownPoints.find((p) => p.trace.traceId === pointedTraceId) ?? null);
+
   const handleClick = (data: unknown): void => {
     // Recharts onClick은 이벤트 객체를 unknown으로 받아 안전하게 좁힘.
     if (
@@ -284,7 +308,7 @@ export function LatencyScatter({ points: input, bucketCounts = null, window: w, 
     <div
       role="img"
       aria-label="Latency scatter"
-      className="h-80 w-full rounded-lg border border-stone-200 bg-white p-3"
+      className="relative h-80 w-full rounded-lg border border-stone-200 bg-white p-3"
       onPointerDown={(e) => {
         if (e.button === 0) setHold(true);
       }}
@@ -321,6 +345,7 @@ export function LatencyScatter({ points: input, bucketCounts = null, window: w, 
             {...(clockTicks !== null ? { ticks: clockTicks, interval: 0 } : {})}
             tickFormatter={(v: number) => (w.kind === 'fixed' ? formatPageTick(v, w.range) : formatHms(v))}
             stroke="#888780"
+            tick={{ fill: '#78716C' }}
             fontSize={11}
           />
           <YAxis
@@ -333,16 +358,25 @@ export function LatencyScatter({ points: input, bucketCounts = null, window: w, 
             tickFormatter={(v: number) => `${v}ms`}
             allowDataOverflow
             stroke="#888780"
+            tick={{ fill: '#78716C' }}
             fontSize={11}
           />
-          {/* [R27/UXD-04] 툴팁 이동 · 점 등장 애니메이션 끔 — 5초마다 점이 반짝이는 「튐」 제거. */}
-          {/* [v0.8.0] 마우스가 점 위에 없으면 active=false 로 툴팁과 안내선을 함께 끈다(남는 선 방지). */}
-          <Tooltip
-            content={<CustomTooltip bucketCounts={bucketCounts} />}
-            cursor={{ stroke: '#d6d3d1' }}
-            isAnimationActive={false}
-            {...(hover.overPoint ? {} : { active: false })}
+          {/* [R29/AC-R29-26 · UXD-R29-07] 가로세로 안내선 = 가리킨 점 자리(교차점 = 그 점) — 가리킨 점이 없으면 둘 다 안 그린다.
+              recharts 말풍선 틀(Tooltip)은 걷어 냈다 — 그 틀의 상자 보임 · 자리는 들어감 때의 기억값이라 앞 점에 남았다.
+              포인터 판정을 가리지 않게 사건을 안 받는다. 가장자리 밖 점은 세로선이 안 그려진다(recharts 기본 ifOverflow).
+              ★선 두 요소는 늘 자리를 지키고 좌표만 붙였다 뗀다 — 켤 때만 끼워 넣으면 recharts 가 그 뒤 점 묶음(Scatter)을
+              순번으로 다시 맞춰 점 요소를 통째로 새로 만든다(렌더 시험 showsTheTooltipOfThePointUnderThePointerAfterAJump). */}
+          <ReferenceLine
+            {...(pointedPoint !== null ? { x: pointedPoint.x } : {})}
+            stroke="#d6d3d1"
+            className="pointer-events-none"
           />
+          <ReferenceLine
+            {...(pointedPoint !== null ? { y: pointedPoint.y } : {})}
+            stroke="#d6d3d1"
+            className="pointer-events-none"
+          />
+          {/* [R27/UXD-04] 점 등장 애니메이션 끔 — 5초마다 점이 반짝이는 「튐」 제거. */}
           {/* fillOpacity — 고밀도(초당 수십 trace)에서 점 겹침을 농담으로 드러냄. */}
           <Scatter data={shownPoints} onClick={handleClick} fillOpacity={0.7} isAnimationActive={false}>
             {shownPoints.map((p) => (
@@ -355,6 +389,17 @@ export function LatencyScatter({ points: input, bucketCounts = null, window: w, 
           </Scatter>
         </ScatterChart>
       </ResponsiveContainer>
+      {/* [R29/AC-R29-26 · UXD-R29-07] 말풍선 상자 — 가리킨 점 하나에서 내용 · 자리를 함께 정한다. 포인터 판정을 가리지 않게
+          사건을 안 받는다 · 띄어쓰기 없는 긴 이름도 틀 안에서 접힌다. 새 입력 자리 0(서버 응답 점의 글자 · 숫자만 그림). */}
+      {pointedPoint !== null && hover.pointed !== null && (
+        <div
+          data-testid="scatter-tooltip"
+          className="pointer-events-none absolute z-10 max-w-[calc(50%_-_12px)] break-all"
+          style={tooltipBoxStyle(hover.pointed.at)}
+        >
+          <CustomTooltip point={pointedPoint} bucketCounts={bucketCounts} />
+        </div>
+      )}
     </div>
   );
 }

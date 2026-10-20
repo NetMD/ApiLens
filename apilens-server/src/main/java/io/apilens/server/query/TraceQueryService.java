@@ -35,11 +35,14 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.LongSupplier;
 
 /**
- * Read-side service. Wraps {@link TraceQueryRepository} with pagination,
- * limit normalisation, and 404 propagation.
+ * Read-side service. Wraps {@link TraceQueryRepository} with pagination, limit normalisation and 404 propagation, and serves the
+ * dashboard's representative points ({@link #listTracePoints}). The points query runs under a server-wide permit (one at a time):
+ * a caller waits up to {@code POINTS_PERMIT_WAIT_MS}, gets 503 when the wait runs out, and an older waiting caller gives way (503)
+ * to a newer one. A client cancelling its request does not release the permit.
  */
 @Service
 public class TraceQueryService {
@@ -92,8 +95,16 @@ public class TraceQueryService {
      *       (계측 분석 게이트 javadoc 의 R19 실측). 아주 느린 7일 창 질의 하나가 허가를 오래 쥐면 다른 탭이
      *       503 을 받는다(틀리는 방향 = 「서버가 바빠」 · 수신 안전 쪽).</li>
      *   <li>화면 밖 호출자(키 미설정 설치)도 같은 허가를 쓴다.</li>
-     *   <li>화면이 옛 요청을 끊어도 서버 질의는 끝까지 돈다 — 검색어 끊어 치기 · 범위 연달아 바꾸기는 자기
-     *       요청끼리 허가를 다툰다(30일 규모 7일 창에서만 · 받아들임 DD-28-36).</li>
+     *   <li>[Phase R29] R29/AC-R29-31 — <b>클라이언트 취소는 서버 허가를 못 푼다</b>: ① 처리기는 동기다(값을 바로
+     *       돌려줌 · 비동기 반환 0) ② 허가는 저장소 질의가 끝난 뒤 {@code finally} 에서만 푼다 ③ 기다리는
+     *       {@code tryAcquire} 는 스레드 인터럽트로만 끊기고, 브라우저가 요청을 끊어도 서블릿 컨테이너는 그 스레드를
+     *       인터럽트하지 않는다. 그래서 R29 부터 <b>기다리는 요청 중 가장 새것만</b> 차례를 잇는다({@link #pointsWaitTicket}
+     *       · 앞선 대기는 503). 설계 결정 DD-R29-11(MR-R28-01 길 ⓑ'). 이 처방이 못 하는 것: ⓐ 여러 탭 · 여러 호출자가
+     *       동시에 기다리면 앞선 대기가 503 을 받는다(틀리는 방향 = 「서버가 바빠」 · 수신 안전 쪽) ⓑ 도는 질의는
+     *       여전히 끝까지 돈다(근본 = 전용 인덱스 · MR-R28-04) ⓒ 대체 대조를 지난 직후 더 새 요청이 오면 앞 요청이 돈다
+     *       (새 요청은 그 뒤에서 기다림 — 오늘과 같은 대기 한 번) ⓓ 기다리다 시간 초과 · 인터럽트로 바쁨이 된 요청도
+     *       올린 차례표를 남긴다 → 그 뒤 허가를 얻은 더 오래된 대기자가 대체(503) — 운영(대기 2,000 ms 고정)은 새
+     *       대기자 마감이 늘 늦어 스레드 일정 미세 창뿐 · 틀리는 방향 = 수신 안전 쪽 503.</li>
      *   <li><b>허가는 연결 수만 묶고 쓰기 잠금은 못 묶는다</b> — 도는 대표 점 질의를 체크포인트(TRUNCATE)가
      *       기다리는 동안 수신 쓰기가 막힌다(설계 R-11 · 배포 전 판정 GATE-Q1 ⓐ).</li>
      *   <li>연결 넷이 다 쓰이는 겹침(대표 점 1 + 뺏긴 분석 2 + 04:00 정리 또는 수동 정리 1)을 막지 못한다(R-14).</li>
@@ -101,6 +112,17 @@ public class TraceQueryService {
      * </ol>
      */
     private final Semaphore pointsPermits = new Semaphore(POINTS_MAX_CONCURRENT, true);
+
+    /**
+     * [Phase R29] R29/AC-R29-31 — 허가를 <b>바로 못 얻은</b> 요청만 하나씩 올리는 차례표(인라인 필드 · 생성자 무변).
+     * 허가를 얻은 직후 자기 차례표가 가장 새것이 아니면 허가를 그대로 넘기고 503 이 된다 — 앞 대기를 깨우지 않는다
+     * (쪽잠 0 · 인터럽트 0). 공정 세마포어라 넘긴 허가는 다음 대기자에게 간다. 바로 얻은 요청은 대체 대상이 아니다
+     * (동시 도착 두 탭이 서로 밀어내지 않는다).
+     */
+    private final AtomicLong pointsWaitTicket = new AtomicLong();
+
+    /** [Phase R29] 허가 얻기의 세 결과 — 얻음 · 바쁨(기다림 안에 못 얻음) · 대체됨(더 새 대기자에게 넘김). */
+    private enum PermitOutcome { GRANTED, BUSY, SUPERSEDED }
 
     public TraceQueryService(TraceQueryRepository repo) {
         this.repo = repo;
@@ -203,9 +225,18 @@ public class TraceQueryService {
         long bucketMs = validateAndPickBucket(service, since, until);
         List<TraceQueryRepository.PointRow> rows;                  // 선언은 획득 앞에 둔다(획득과 try 사이 문장 0)
         long elapsedMs;
-        if (!tryAcquire(permitWaitMs)) {
-            // 바쁨 줄의 값은 **설정 상한**이다(잰 시간이 아니다 — 인터럽트로 일찍 끝나도 같은 값).
-            log.info("trace points busy: waitLimitMs={}", permitWaitMs);
+        PermitOutcome outcome = acquirePointsPermit(permitWaitMs);
+        if (outcome != PermitOutcome.GRANTED) {
+            // 허가를 쥐지 않은 채 던진다(반납할 허가가 없으므로 finally 밖). 503 본문은 두 갈래가 같다.
+            if (outcome == PermitOutcome.SUPERSEDED) {
+                // [Phase R29] R29/AC-R29-31 — 대체된 요청 줄(설계서 · 이 주석 · 백로그 세 곳에 같은 문장): 「`trace points
+                //   superseded:` = 고정 문장 · 필드 0 · 대체된 요청 하나당 INFO 한 줄 · 대표 점 503 총수 = `trace points busy:`
+                //   줄 + 이 줄 · R28 QA R-8 · MR-R28-04 다시 볼 조건은 두 줄 합으로 읽는다」. 바쁨 줄은 안 찍는다(그 뜻을 지킨다).
+                log.info("trace points superseded: newer request waiting");
+            } else {
+                // 바쁨 줄의 값은 **설정 상한**이다(잰 시간이 아니다 — 인터럽트로 일찍 끝나도 같은 값).
+                log.info("trace points busy: waitLimitMs={}", permitWaitMs);
+            }
             throw new PointsBusyException();
         }
         try {
@@ -291,12 +322,28 @@ public class TraceQueryService {
                 List.copyOf(points), List.copyOf(buckets));
     }
 
-    private boolean tryAcquire(long waitMs) {
+    /**
+     * [Phase R29] R29/AC-R29-31/R29/AC-R29-32 — 허가 얻기 한 자리. ① 바로 얻으면 얻음(차례표 없음) ② 못 얻으면
+     * 차례표를 하나 올리고 기다린다 — 기다림 안에 못 얻으면 바쁨 ③ 얻은 직후 자기 차례표가 가장 새것이 아니면 허가를
+     * 그대로 넘기고 대체됨. 얻음이 아니면 허가를 쥐지 않은 채 돌아온다(허가 누수 0 · 이중 반납 0).
+     */
+    private PermitOutcome acquirePointsPermit(long waitMs) {
         try {
-            return pointsPermits.tryAcquire(waitMs, TimeUnit.MILLISECONDS);
+            if (pointsPermits.tryAcquire(0L, TimeUnit.MILLISECONDS)) {
+                return PermitOutcome.GRANTED;                       // 바로 얻음 = 차례표 없음
+            }
+            long ticket = pointsWaitTicket.incrementAndGet();
+            if (!pointsPermits.tryAcquire(waitMs, TimeUnit.MILLISECONDS)) {
+                return PermitOutcome.BUSY;
+            }
+            if (pointsWaitTicket.get() != ticket) {
+                pointsPermits.release();                            // 더 새 대기자에게 넘긴다(공정 세마포어)
+                return PermitOutcome.SUPERSEDED;
+            }
+            return PermitOutcome.GRANTED;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();   // 인터럽트 표시는 되살리고 바쁨으로 처리한다(허가 없음).
-            return false;
+            return PermitOutcome.BUSY;
         }
     }
 

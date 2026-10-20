@@ -355,10 +355,16 @@ describe('Dashboard — 흐르는 차트 배선', () => {
   // TZ-30 → [R28 고쳐 씀 · X-12] 목록 = 목록 응답 · 차트 = 대표 점 응답. yMax = yUpperBound(대표 점).
   //   더함(§2 TZ-30): 새 응답 없이 2초 밀어도 yMax 불변 · Dashboard 렌더 수 불변.
   //   더함(CR-28-44): 같은 2초 동안 차트가 받은 칸 표(bucketCounts)가 같은 객체 — 「응답 한 번에 계산 한 번」 축을 잇는다.
+  //   [R29/CXA-1 ① · AC-R29-28] 전제 단언을 좁힌다 — `undefined`(칸 표 전달이 빠짐)도 실패로 잡고, 칸 표가 비어
+  //     있지 않으며 칸 값이 응답 고정값에서 계산한 값과 같은지 본다. 시계를 SEC + 30초에 둬야 요청 창(1분 · 68초)이
+  //     점의 칸 [SEC, SEC + 1초] 를 안쪽 칸으로 품는다(가장자리 칸은 칸 표에서 빠짐 — `buildBucketCounts`).
+  //     시계를 안 두면 실제 오늘 시각 창이라 칸 표가 늘 비어 있었다(옛 `not.toBeNull()` 은 빈 표도 통과).
   it('givesTheListTheListResponseAndTheChartThePoints', async () => {
+    vi.setSystemTime(SEC + 30_000);
     let commits = 0;
+    const chartPoints = [pt('slow', SEC + 800, 340)];
     mockApi({
-      points: [pointsOk([pt('slow', SEC + 800, 340)], { totalCount: 2 })],
+      points: [pointsOk(chartPoints, { totalCount: 2 })],
       list: [listOk([trace('fast', SEC + 100, 30), trace('slow', SEC + 800, 340)])],
     });
     renderDashboard('service=svc&live=true&range=1m', {
@@ -375,7 +381,13 @@ describe('Dashboard — 흐르는 차트 배선', () => {
     const yMaxBefore = lastChart().yMax;
     const bucketsBefore = lastChart().bucketCounts;
     const commitsBefore = commits;
-    expect(bucketsBefore).not.toBeNull(); // 전제: 칸 표가 실제로 넘어왔다
+    // 전제: 칸 표가 실제로 넘어왔다 — 빠짐(undefined) · null · 빈 표 셋 다 실패.
+    expect(bucketsBefore).toBeDefined();
+    expect(bucketsBefore).not.toBeNull();
+    expect(bucketsBefore!.counts.size).toBeGreaterThanOrEqual(1);
+    for (const b of bucketsOf(chartPoints)) {
+      expect(bucketsBefore!.counts.get(b.start)).toEqual({ count: b.count, errorCount: b.errorCount });
+    }
     await act(async () => {
       await vi.advanceTimersByTimeAsync(2_000);
     });

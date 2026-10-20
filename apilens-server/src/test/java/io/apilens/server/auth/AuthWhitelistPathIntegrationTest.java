@@ -17,6 +17,8 @@ package io.apilens.server.auth;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.client.TestRestTemplate;
@@ -31,6 +33,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 
 /**
@@ -102,6 +105,69 @@ class AuthWhitelistPathIntegrationTest {
 
         assertEquals(HttpStatus.UNAUTHORIZED, res.getStatusCode(),
                 "이스케이프가 섞인 경로가 토큰 없이 열리면 안 된다 — 실제: " + res.getStatusCode());
+    }
+
+    /**
+     * [Phase R29] R29/AC-R29-35 verbatim: "{@code /v1/setup/../trace-points} 를 글자 그대로(토큰 없이) 보내면 처리기에
+     * 못 닿고 대표 점 본문이 안 나온다. {@code AuthWhitelist.java} diff 0". SEC-R28-02 방향 시험.
+     *
+     * <p>면제 접두({@code /v1/setup/})라 필터는 지나가지만 Spring 경로가 원문 {@code ..} 를 접지 않아 맞는 처리기가 없다 →
+     * <b>404</b>(R28 보안 실기동 SV-03 · SV-18 과 같은 값 · 이 파일 첫 실행값으로 확인). 본문 단언은 따옴표를 포함한 JSON 키
+     * {@code "points"} 0 이다 — 404 기본 본문의 {@code path} 값에 그 낱말이 글자로 실리기 때문이다.
+     * 단위 시험(요청 흉내 객체)은 컨테이너 정규화를 못 거쳐 이 방향을 못 본다(사각 명시).
+     */
+    @Test
+    void keepsTheDotDotSetupPathAwayFromThePointsHandler() {
+        ResponseEntity<String> res = rest.exchange(
+                URI.create(rest.getRootUri() + "/v1/setup/../trace-points?service=svc&since=0&until=1000"),
+                org.springframework.http.HttpMethod.GET, null, String.class);
+
+        assertEquals(HttpStatus.NOT_FOUND, res.getStatusCode(),
+                "`..` 를 접지 않은 경로는 대표 점 처리기에 닿지 않는다 — 실제: " + res.getStatusCode() + " " + res.getBody());
+        String body = res.getBody() == null ? "" : res.getBody();
+        assertFalse(body.contains("\"points\""), "대표 점 본문(JSON 키 points)이 안 나온다 — 실제: " + body);
+    }
+
+    /**
+     * [Phase R29] R29/AC-R29-55 verbatim: "API 키를 설정한 서버에서, 경로 첫 마디에 {@code ;} 가 붙은 조회 요청을 토큰 없이
+     * 보내면 {@code 401} 이고 본문에 데이터 키({@code traces} · {@code points} · {@code services} · payload 본문)가 없다.
+     * 작성 시점 실측 경로 = {@code /v1;/traces} · {@code /v1;a=b/trace-points} · {@code /v1;/services} ·
+     * {@code /v1;/traces/{t}/spans/{s}/payloads} · {@code /actuator;/info}(보안 SV-12~16 · §4b D). 인코딩 꼴
+     * {@code /v1%3B/traces} 도 {@code 401}". 출처 = SEC-R29-01 · 사용자 결정 (가) 2026-10-20.
+     *
+     * <p>왜 컨테이너를 거치는 통합 판인가: 면제 판정은 원문 경로를 보고 Spring MVC 라우팅은 행렬 파라미터({@code ;…})를 뗀 경로를
+     * 본다. 그 <b>둘이 갈리는 자리</b>가 결함이라 요청 흉내 객체(단위 시험)로는 라우팅 쪽이 안 보인다 — 실제로 보호 처리기에
+     * 닿는지는 진짜 서블릿 컨테이너와 디스패처를 거쳐야 보인다.
+     *
+     * <p>본문 단언은 따옴표를 포함한 JSON 키다 — {@code "body"} 는 payload 응답의 본문 키(보안 §4b D 실물)다. 401 본문은
+     * {@code {"error":"unauthorized"}} 라 네 키 어느 것도 안 실린다. payload 경로의 id({@code t1} · {@code s1})는 없는 값이어도
+     * 된다 — 면제 판정이 처리기보다 <b>먼저</b>라, 막혔으면 id 와 무관하게 401 이다.
+     *
+     * <p>마지막 값({@code %3B})은 대조다 — R26 의 percent 가드가 이미 막던 꼴이라 고치기 전에도 401 이다. 고치기 전 실행값은
+     * dev-backend 재작업 회차 1 결정 요약에 기록(같은 시험이 {@code ;} 갈래에서 401 이 아니었음).
+     */
+    @ParameterizedTest(name = "[{index}] {0}")
+    @ValueSource(strings = {
+            "/v1;/traces?service=svc",
+            "/v1;a=b/trace-points?service=svc&since=0&until=1000",
+            "/v1;/services",
+            "/v1;/traces/t1/spans/s1/payloads",
+            "/actuator;/info",
+            "/v1%3B/traces?service=svc"
+    })
+    void protectsMatrixParameterPathsWithoutAToken(String path) {
+        ResponseEntity<String> res = rest.exchange(
+                URI.create(rest.getRootUri() + path),
+                org.springframework.http.HttpMethod.GET, null, String.class);
+
+        String body = res.getBody() == null ? "" : res.getBody();
+        assertEquals(HttpStatus.UNAUTHORIZED, res.getStatusCode(),
+                "첫 마디에 행렬 파라미터가 붙은 경로가 토큰 없이 보호 처리기에 닿으면 안 된다 — 실제: "
+                        + res.getStatusCode() + " " + body);
+        assertFalse(body.contains("\"traces\""), "트레이스 목록 키가 안 나온다 — 실제: " + body);
+        assertFalse(body.contains("\"points\""), "대표 점 키가 안 나온다 — 실제: " + body);
+        assertFalse(body.contains("\"services\""), "서비스 목록 키가 안 나온다 — 실제: " + body);
+        assertFalse(body.contains("\"body\""), "payload 본문 키가 안 나온다 — 실제: " + body);
     }
 
     /** 회귀 — 평범한 setup 경로는 <b>여전히</b> 토큰 없이 열린다(면제 범위를 좁히기만 했음을 못 박는다). */

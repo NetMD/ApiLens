@@ -109,43 +109,48 @@ public class SetupService {
      *       안 적은 주소와 빈 포트({@code http://host:})는 통과)</li>
      *   <li>services 는 null/[]/omit 동등 (Q-01) — 정상 분기. 개수 상한({@value #SETUP_SERVICES_MAX}) · 각 name 정규식 검증</li>
      * </ul>
+     *
+     * <p>// [Phase R29] R29/AC-R29-17 — 거절 문장 7종을 <b>고정 한국어 문장</b>으로 바꿨다(길 ⓐ · 서버 문장 = 화면 문장 ·
+     * // 글자는 UX 결정 UXD-R29-16 그대로). 잠정 채택 PA-R29-2. 화면은 400 본문의 {@code error} 를 「서버가 거절한
+     * // 이유:」 줄에 그대로 보인다. 요청 값을 문장에 싣지 않는다(한도 숫자는 상수만 이어 붙인다) · 이 문장들은 서버
+     * // 로그에 찍히지 않는다(이 클래스 · 컨트롤러 로그 0 — 서버 로그는 영어 규약).
      */
     private static void validate(SetupCompleteRequest req) {
         if (req == null) {
-            throw new IllegalArgumentException("request body is required");
+            throw new IllegalArgumentException("요청 본문(JSON) 필요");
         }
         String url = req.serverUrl();
         // D-04: 빈 문자열 / null 은 skip 경로 — 형식 검증 우회
         if (url != null && !url.isBlank()
                 && !(url.startsWith("http://") || url.startsWith("https://"))) {
-            throw new IllegalArgumentException("serverUrl must start with http:// or https://");
+            throw new IllegalArgumentException("Server URL 형식 오류 (http:// 또는 https://)");
         }
         // [Phase R26] R26/AC-R26-29 — 서버 주소에 **호스트가 있어야** 한다. 접두만 보면 "http://" 하나가
         //   그대로 통과해 설정 화면에 못 쓰는 값이 저장된다. ★기존 통과 갈래는 안 좁힌다 —
         //   빈 값·null 은 위 skip 경로 그대로다. 주소 만들기가 실패하면 호스트 없음으로 본다.
         if (url != null && !url.isBlank() && hostOf(url) == null) {
-            throw new IllegalArgumentException("serverUrl must include a host (예: http://192.168.0.10:8765)");
+            throw new IllegalArgumentException("Server URL 호스트 없음 (예: http://your-apilens-host:8765)");
         }
         // [Phase R27] R27/AC-27-04-3 — 포트 상한(UA-R27-3 · 사용자 명시 결정). 호스트 검사 **뒤**라 여기 닿은 주소는
         //   이미 주소로 읽힌다. ★D-04(비협상): 빈 값·null 은 위 skip 경로 그대로 — 같은 앞머리
         //   (url != null && !url.isBlank())를 둬 이 검사가 그 갈래를 좁히지 않는다. CLAUDE.md '아키텍처 핵심 원칙' 인용.
         //   거부 방향만 넓힌다: 포트를 안 적은 주소는 getPort() = -1 이라 통과한다.
         if (url != null && !url.isBlank() && portOf(url) > SERVER_URL_PORT_MAX) {
-            throw new IllegalArgumentException("serverUrl port must be 65535 or less");
+            throw new IllegalArgumentException("Server URL 포트 형식 오류 (" + SERVER_URL_PORT_MAX + " 이하)");
         }
         // [Phase R26] R26/AC-R26-29 — 서비스 배열 상한(사용자 명시 결정 UA-11). 문면에 **몇 개까지 되는지**를
         //   적는다 — 숫자가 없으면 운영자가 몇 개를 줄여야 하는지 모른다. 거부 방향만 넓힌다.
         if (req.services() != null && req.services().size() > SETUP_SERVICES_MAX) {
             throw new IllegalArgumentException(
-                    "too many services — at most " + SETUP_SERVICES_MAX + " are allowed");
+                    "서비스 개수 초과 (최대 " + SETUP_SERVICES_MAX + "개)");
         }
         if (req.services() != null) {
             for (ServiceRegistration r : req.services()) {
                 if (r == null || r.name() == null || r.name().isBlank()) {
-                    throw new IllegalArgumentException("service name is required");
+                    throw new IllegalArgumentException("Service Name 입력 필요");
                 }
                 if (!SERVICE_NAME_PATTERN.matcher(r.name()).matches()) {
-                    throw new IllegalArgumentException("service name format invalid");
+                    throw new IllegalArgumentException("Service Name 형식 오류 (영문/숫자/하이픈/언더스코어만)");
                 }
             }
         }
