@@ -246,6 +246,31 @@ class ResponseSnapshotIntegrationTest {
         assertThrows(AssertionError.class, () -> requireUsable(emptyTargets));
     }
 
+    /**
+     * [Phase R30] R30/AC-R30-15 — 회귀 시험(외부 검토 CXA-1 재작업). 실패 입력 두 대상에 기준판과 같은 202 가 돌아오면
+     * 비교가 <b>차이를 낸다</b>(4xx 단언이 상태 차이와 무관하게 돈다). 4xx(400)면 차이 0 · 5xx 면 차이를 낸다.
+     * 허용이 꺼진 판(DD-R30-07 처리 발동)에서는 이 시험의 전제가 사라지므로 상수를 보고 건너뛰지 않고 먼저 단언한다.
+     */
+    @Test
+    void reportsAStatusDifferenceWhenAMalformedIngestBodyIsAccepted() {
+        assertTrue(INGEST_FAILURE_MODE_CHANGE_ALLOWED, "전제: 실패 모드 변경 허용이 켜져 있어야 이 회귀 시험이 뜻을 가진다");
+        for (String sn : List.of("SN-R30-17", "SN-R30-18")) {
+            ObjectNode recorded = JSON.createObjectNode();
+            recorded.put("status", 202);
+            recorded.putObject("body").put("accepted", 1).put("traces", 1);
+            assertTrue(!compare(sn, recorded, recorded.deepCopy(), Set.of()).isEmpty(),
+                    "기준판과 같은 202 가 와도 차이로 잡혀야 한다 — " + sn);
+            ObjectNode serverError = JSON.createObjectNode();
+            serverError.put("status", 500);
+            serverError.putObject("body").put("error", "x");
+            assertTrue(!compare(sn, recorded, serverError, Set.of()).isEmpty(), "5xx 는 차이 — " + sn);
+            ObjectNode rejected = JSON.createObjectNode();
+            rejected.put("status", 400);
+            rejected.putObject("body").put("status", 400).put("error", "Bad Request");
+            assertTrue(compare(sn, recorded, rejected, Set.of()).isEmpty(), "4xx 는 허용 차이 안 — " + sn);
+        }
+    }
+
     /** 기록 모드면 한 번 쓴다(정정 DV-X-R30-02 — {@code @AfterAll} 기록 1회). 임시 DB 는 늘 지운다. */
     @AfterAll
     void writeRecordingOnceAndDeleteTempDb() throws IOException {
@@ -303,11 +328,17 @@ class ResponseSnapshotIntegrationTest {
         int expStatus = expected.get("status").asInt();
         int actStatus = actual.get("status").asInt();
         boolean ingestFailureTarget = "SN-R30-17".equals(sn) || "SN-R30-18".equals(sn);
-        if (expStatus != actStatus && !volatilePointers.contains(sn + ":#status")) {
-            if (ingestFailureTarget && INGEST_FAILURE_MODE_CHANGE_ALLOWED
-                    && actStatus >= 400 && actStatus < 500) {
-                return diffs; // AL-R30-2 · 3 — 실패 모드 변경(4xx) 허용 · 본문은 Boot 오류 본문이라 맞추지 않는다
+        // [Phase R30] R30/AC-R30-15 — 실패 입력 두 대상은 허용이 켜져 있으면 **기준판 상태와 무관하게** 실제 상태가 4xx 인지 먼저
+        //   본다(외부 검토 CXA-1 재작업). 기준판(3.4.1)이 202 라서, 이 단언이 상태가 다를 때만 돌면 4.1 이 202 로 되돌아가도
+        //   「차이 0」으로 지나갔다. AC-R30-15(보충) 원문: "4.1 응답 = 4xx(5xx 0)". 허용을 끄면(DD-R30-07 처리 발동) 아래
+        //   일반 비교로 3.4.1 기록값과 같아야 한다.
+        if (ingestFailureTarget && INGEST_FAILURE_MODE_CHANGE_ALLOWED) {
+            if (actStatus < 400 || actStatus >= 500) {
+                diffs.add(sn + ":#status 실패 모드 기대 4xx → " + actStatus + "(기준판 " + expStatus + ")");
             }
+            return diffs; // AL-R30-2 · 3 — 4xx 면 허용 · 본문은 Boot 오류 본문이라 맞추지 않는다
+        }
+        if (expStatus != actStatus && !volatilePointers.contains(sn + ":#status")) {
             diffs.add(sn + ":#status " + expStatus + " → " + actStatus);
             return diffs;
         }
