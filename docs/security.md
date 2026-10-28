@@ -40,7 +40,7 @@ ApiLens v0.10.0 ships with. Advisories that could not be confirmed on an officia
 | CVE-2026-91777 | high | databind 2.5.0–2.18.10 → 2.18.11 · 2.19.0–2.21.6 → 2.21.7 · 3.0.0–3.1.6 → 3.1.7 | 같음 | 객체 ID 앞쪽 참조 완성이 제곱으로 느려짐 | 객체 ID(`@JsonIdentityInfo`) 사용 0 | 고침(agent 는 2.18.12 로 올림) | 객체 ID 를 쓸 때 | https://github.com/advisories/GHSA-cxp5-3px4-pw24 |
 | CVE-2026-91776 | high | databind 2.0.0–2.18.10 → 2.18.11 · 2.19.0–2.21.6 → 2.21.7 · 3.0.0–3.1.6 → 3.1.7 | 같음 | 모르는 타입 ID 를 계속 붙잡음(다형 타입) | 다형 타입 설정 0 | 고침(같음) | 다형 타입을 켤 때 | https://github.com/advisories/GHSA-wv8q-qhhj-9h54 |
 | CVE-2026-89425 | high | core 2.8.0–2.18.10 → 2.18.11 · 2.19.0–2.21.6 → 2.21.7 · 3.0.0–3.1.6 → 3.1.7 | 같음 | `DataInput` 기반 파서의 오류 토큰 길이 제한 없음 | `DataInput` 파싱 0 | 고침(같음) | — | https://github.com/advisories/GHSA-7hhh-6rmp-j9qf |
-| CVE-2026-89407 | high | core 2.17.0–2.18.10 → 2.18.11 · 2.19.0–2.21.6 → 2.21.7 · 3.0.0–3.1.6 → 3.1.7 | 같음 | 숫자 꼴 판별 정규식 ReDoS(믿을 수 없는 글자를 숫자로 볼 때) | agent 가 읽는 JSON 은 수집기 응답뿐 · 서버는 고침판 | 고침(같음) | agent 가 다른 출처 JSON 을 읽을 때 | https://github.com/advisories/GHSA-p6pp-m3f8-5c89 |
+| CVE-2026-89407 | high | core 2.17.0–2.18.10 → 2.18.11 · 2.19.0–2.21.6 → 2.21.7 · 3.0.0–3.1.6 → 3.1.7 | 같음 | 숫자 꼴 판별 정규식 ReDoS(믿을 수 없는 글자를 숫자로 볼 때) | agent 는 대상 앱 · 수집기의 JSON 을 트리로만 읽음(문자열→숫자 변환 0) · 서버는 고침판 | 고침(같음) | agent 가 JSON 을 객체로 바꿔 읽을 때 | https://github.com/advisories/GHSA-p6pp-m3f8-5c89 |
 
 ## 저장소 — SQLite 3.53.4 (sqlite-jdbc 3.53.4.0)
 
@@ -57,7 +57,9 @@ ApiLens v0.10.0 ships with. Advisories that could not be confirmed on an officia
 | CVE-2026-55685 | high | react-router 7.0.0 – < 7.18.0 → 7.18.0 | 7.18.3 | — | 고침판 위 | 해당 없음 | — | https://github.com/advisories/GHSA-chx6-hx7r-mcp5 |
 | CVE-2026-53669 | medium | react-router 6.0.0 – < 7.18.0 → 7.18.0 | 7.18.3 | — | 고침판 위 | 해당 없음 | — | https://github.com/advisories/GHSA-wrjc-x8rr-h8h6 |
 | CVE-2026-53667 | medium | react-router 7.11.0 – < 7.18.0 → 7.18.0 | 7.18.3 | — | 고침판 위 | 해당 없음 | — | https://github.com/advisories/GHSA-h8fp-f39c-q6mh |
-| CVE-2026-53571 | medium | vite ≤ 6.4.2 → 6.4.3 (7 · 8 계열은 각자) | 6.4.2(개발 도구) | Windows 에서 vite 개발 서버의 `server.fs.deny` 우회 | 배포물은 빌드된 정적 파일이라 vite 개발 서버가 안 들어감 · 개발 서버는 127.0.0.1 에만 뜸 | 해당 없음(배포물 밖) | Windows 에서 개발 서버를 네트워크에 열 때 | https://github.com/advisories/GHSA-fx2h-pf6j-xcff |
+| CVE-2026-53571 | medium | vite ≤ 6.4.2 → 6.4.3 (7 · 8 계열은 각자) | 6.4.2(개발 도구) | Windows 에서 vite 개발 서버의 `server.fs.deny` 우회 | 배포물은 빌드된 정적 파일이라 vite 개발 서버가 안 들어감 · 개발 서버는 127.0.0.1 에만 뜸 | 해당 없음(배포물 밖) | Windows 에서 개발할 때 · 개발 서버를 네트워크에 열 때(`--host`) · vite 가 배포물에 들어올 때 | https://github.com/advisories/GHSA-fx2h-pf6j-xcff |
+
+- vite 6.4.2 에는 위 공지를 포함해 공지 **7건**이 걸려 있습니다(npm 공지 조회 · 2026-10-28 23:10). 그중 5건은 6.4.3 까지 걸려 있어, 위 행의 고침판 6.4.3 으로 올려도 다 닫히지 않습니다. 7건 모두 vite 개발 서버와 그 편집기 열기 기능 쪽 공지라 배포물 밖입니다. 그래서 판을 올리지 않고 받아들였고, 위 「다시 볼 조건」이 되면 다시 봅니다.
 
 ## 이 대조표가 못 보는 것 | Known limits
 

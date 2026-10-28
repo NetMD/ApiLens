@@ -301,6 +301,7 @@ curl -H "Authorization: Bearer $APILENS_TOKEN" http://localhost:8765/v1/traces
 - **메서드 파라미터 이름이 `arg0`·`arg1`…** — 모든 인자를 캡처하지만, **여러분의 앱이 `-parameters` 컴파일 옵션 없이 빌드되면** 파라미터 이름 대신 인덱스로 표시됩니다. 이 옵션으로 다시 빌드하면 실제 이름이 나타납니다 — agent 가 대신 알아낼 수 있는 정보가 아니라 **앱 빌드 설정 사항**입니다
 - **JDBC 파라미터 키 이름 마스킹 한계** — 위 [PII 마스킹](#pii-마스킹--pii-masking) 경고 참조
 - **인증은 선택적, TLS 미내장** — API Key 인증을 켤 수 있습니다 (위 [인증](#인증--authentication-v03) 섹션). 다만 토큰은 평문(HTTP)으로 전송되고 agent 적재 경로(`/v1/spans`)는 무인증 면제이므로 **여전히 신뢰 네트워크 전제**입니다. 공용망 직접 노출 금지 — TLS 가 필요하면 리버스 프록시로 종단하세요. API 문서(`/swagger-ui`·`/v3/api-docs`)도 토큰 없이 열립니다
+- **적재 경로 `/v1/spans` 는 YAML 본문도 받고, 이 입구는 JSON 보다 느슨하게 검사합니다** — agent 는 JSON 만 보냅니다. JSON 본문은 숫자 칸의 `null` 이나 본문 뒤에 더 붙은 글자를 `400` 으로 거절하지만, `Content-Type: application/yaml` 본문은 같은 경우를 그대로 `202` 로 받습니다
 - **weaving 계측 제외로 뺄 수 없는 계층이 있습니다** — MyBatis mapper 는 화면에 보이는 이름과 계측이 걸리는 이름이 달라, 화면 이름을 계측 제외 JVM 옵션에 적어도 제외되지 않습니다(경고도 뜨지 않습니다). 대신 **원격 계측 설정으로는 화면 이름 그대로 개별 제외할 수 있습니다(재시작 불요)** — 자세한 내용과 두 방식의 차이는 [Agent 옵션](./docs/agent-options.md) 참조
 - **원격 계측 설정은 줄이는 방향만, 영구 아님** — 원격 지시는 JVM 시작 옵션 값을 기준으로 줄이는 쪽(및 시작값 복귀)만 적용되고, 원격 값은 메모리에만 있어 재시작하면 시작 옵션 값으로 돌아갑니다. 특히 **개별 제외 목록을 원격으로 전부 비우는 지시는 전달되지 않습니다** — 빈 목록 저장은 "지시 없음"이 되어(철회와 같음) agent 에 이미 적용된 제외 목록은 그대로 남습니다. 걸린 제외를 풀려면 남길 항목만으로 저장하거나 JVM 을 재시작하세요(화면에도 같은 안내가 항상 표시됩니다)
 - **흐름의 위쪽을 빼면 아래가 조각납니다** — 계측 제외는 "그 클래스의 기록을 만들지 않는다"는 뜻이지 "그 아래 호출을 따라가지 않는다"는 뜻이 아닙니다. 조상을 빼면 그 아래 호출들이 각자 독립된 시작점이 되어 조각난 흐름이 쏟아질 수 있습니다. "진입점 없는 흐름 만들지 않기" 옵션(기본 꺼짐)으로 **완화**할 수 있지만 소멸은 아닙니다 — 옵션을 켜지 않으면 그대로이고, 켜면 **진입점 밖에서 시작되는 흐름이 통째로 안 남는** 대가가 있습니다(배치 워커가 대표적인 예이고, 메시지 소비자·기동 작업·요청에서 갈라진 별도 스레드도 포함됩니다). **빼기 전에 [계측 분석](#주요-기능--features) 화면에서 예상 결과를 먼저 확인하세요**
@@ -333,6 +334,7 @@ curl -H "Authorization: Bearer $APILENS_TOKEN" http://localhost:8765/v1/traces
 - **[Agent 옵션](./docs/agent-options.md)** — agent 부착 시 JVM 시스템 프로퍼티 명세. | Agent JVM system properties.
 - **[설치·설정 가이드](./docs/setup.md)** — 설치 마법사·서비스 등록·인증·헬스 체크. | Setup guide.
 - **[Span attribute 키](./docs/otel-attributes.md)** — OpenTelemetry semantic conventions 기반 span 속성 키. | Span attribute keys.
+- **[보안 공지 대조표](./docs/security.md)** — 이 버전이 쓰는 부품의 공지된 취약점 · 고침판 · 이 제품에서의 성립 여부. | Security advisories check.
 - **[변경 이력](./CHANGELOG.md)** — 버전별 변경 사항. | Changelog.
 
 > 필드 단위 API 계약은 server 를 띄운 뒤 `/swagger-ui` (자동 생성 스펙)가 단일 진실 출처입니다. | The generated OpenAPI spec at `/swagger-ui` is the source of truth for the API contract.
