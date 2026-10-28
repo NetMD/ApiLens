@@ -38,7 +38,7 @@ _이 release 에는 하위호환을 깨는 변경이 없습니다._ API 경로 �
 - **서버 지원 라인 전환** — Spring Boot 3.4.1 → 4.1.2 (Spring Framework 7.0 · Tomcat 11.0 · Hibernate 7.4 · Flyway 12.4 · SQLite 드라이버 3.53.4.0 · springdoc 3.2). 서버 JSON 처리는 Jackson 3 가 맡고, 마스킹 엔진만 agent 와 같은 Jackson 2 를 씁니다(서버 안에서 두 판이 함께 있습니다).
 - **실패 모드 변경** — `POST /v1/spans` 본문이 숫자 칸에 `null` 을 넣었거나 올바른 JSON 뒤에 글자가 더 붙어 있으면, 전에는 그 값을 0 으로 읽거나 뒤 글자를 무시하고 `202` 로 받았지만 이제 `400` 으로 거절합니다. agent 는 이런 본문을 만들지 않습니다.
 - **실행 JDK** — 컴파일은 Java 21 그대로이고, 수집기를 Java 21 ~ 27 에서 띄울 수 있습니다.
-- **agent 안의 Jackson** 을 2.18.10 으로 올렸습니다(relocate 된 채 jar 안에 들어 있어 대상 앱의 Jackson 과 부딪히지 않습니다).
+- **agent 안의 Jackson** 을 2.18.12 로 올렸습니다(relocate 된 채 jar 안에 들어 있어 대상 앱의 Jackson 과 부딪히지 않습니다).
 - **빌드 도구** — Gradle wrapper 8.11.1 → 8.14.6. Gradle 9 는 agent jar 안 구성이 달라지는 문제가 있어 이번에는 올리지 않았습니다.
 - **버전 0.9.1 → 0.10.0** (collector jar · agent jar · 화면 라벨 `v0.10`).
 - 문서: 공식 페이지에서 확인한 보안 공지 대조표 `docs/security.md` 를 더했습니다.

@@ -9,10 +9,11 @@ byteBuddy = "1.17.8"
 #   BOM 밖 agent · common 시험이 서버와 같은 판을 쓰게). 서버는 이 키를 쓰지 않는다 — 서버 별칭은 판이 없어 BOM 이 판을 준다.
 flyway = "12.4.0"
 sqliteJdbc = "3.53.4.0"
-# [Phase R30] R30/AC-R30-23 — agent · common 의 Jackson 2 라인 2.18.2 → 2.18.10(사용자 명시 비협상 결정 UD-R30-4 · 다형 타입 ·
-#   InetSocketAddress · 대소문자 무시 계열 고침판). 서버 실행판은 이 키가 아니라 Boot BOM(jackson-2-bom 2.21.7)이 정한다.
+# [Phase R30] R30/AC-R30-23 — agent · common 의 Jackson 2 라인 2.18.2 → 2.18.12(사용자 명시 비협상 결정 UD-R30-4 · 다형 타입 ·
+#   InetSocketAddress · 대소문자 무시 계열 고침판 + 재작업 회차 1 사용자 결정 「(나) 2.18.12 로 올림」 — 2.18.11 고침 공지 4건).
+#   서버 실행판은 이 키가 아니라 Boot BOM(jackson-2-bom 2.21.7)이 정한다.
 #   agent jar 안에서는 relocate 된다 — CLAUDE.md 'Build 설정 lessons §1'(shadow jar relocate 함정) 인용.
-jackson = "2.18.10"
+jackson = "2.18.12"
 jupiter = "6.0.3"
 mockito = "5.23.0"
 # [Phase R16] FR-01/게이트 B — springdoc-openapi 버전 SSOT (카탈로그가 유일 출처, 인라인 magic version 금지).
