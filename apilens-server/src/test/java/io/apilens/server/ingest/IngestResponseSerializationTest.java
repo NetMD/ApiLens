@@ -15,9 +15,10 @@
  */
 package io.apilens.server.ingest;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import io.apilens.server.instrument.config.InstrumentConfigPayload;
+import io.apilens.server.support.TestMappers;
 import org.junit.jupiter.api.Test;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.util.List;
 
@@ -34,7 +35,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class IngestResponseSerializationTest {
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    // [Phase R30] R30/AC-R30-16 — HTTP 가 실제로 쓰는 Jackson 3 쪽으로 잰다(설계 DT-R30-05 · 응답 본문은 Boot 4.1 의
+    //   Jackson 3 변환기가 쓴다). 응답 record 의 @JsonInclude 는 Jackson 3 도 같은 주석 패키지라 그대로 듣는다.
+    private static final JsonMapper MAPPER = TestMappers.forServices();
 
     /** 2-인자 생성(IngestService 기존 경로) — instrumentConfig 키 부재(@JsonInclude NON_NULL). */
     @Test

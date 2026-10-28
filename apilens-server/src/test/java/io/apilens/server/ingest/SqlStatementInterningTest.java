@@ -19,6 +19,8 @@ import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.apilens.server.support.TestMappers;
+import tools.jackson.databind.json.JsonMapper;
 import io.apilens.common.IngestRequest;
 import io.apilens.common.Span;
 import io.apilens.common.SpanKind;
@@ -74,7 +76,9 @@ class SqlStatementInterningTest {
 
     private static final String SQL = "SELECT * FROM orders WHERE id = ?";
 
-    private final ObjectMapper mapper = new ObjectMapper();
+    private final ObjectMapper mapper = TestMappers.forMasking();
+
+    private final JsonMapper jsonMapper = TestMappers.forServices();
     @TempDir
     Path tempDir;
     private Path dbFile;
@@ -96,8 +100,8 @@ class SqlStatementInterningTest {
         this.jdbc = new JdbcTemplate(dataSource);
         MaskingEngineHolder holder = new MaskingEngineHolder(new MaskingRuleRepository(jdbc), mapper);
         holder.reload();
-        this.service = new IngestService(jdbc, holder, mapper, new IngestProperties(1_048_576L));
-        this.repository = new TraceQueryRepository(jdbc, mapper);
+        this.service = new IngestService(jdbc, holder, jsonMapper, new IngestProperties(1_048_576L));
+        this.repository = new TraceQueryRepository(jdbc, jsonMapper);
     }
 
     @AfterEach
@@ -679,8 +683,10 @@ class SqlStatementInterningTest {
             }
         }
 
+        // [Phase R30] R30/AC-R30-21 — Spring Framework 7 의 JdbcTemplate 이 인자 타입을 List<? extends Object[]> 로 넓혔다.
+        //   재정의 서명만 맞춘다 — 기록 · 단언 무변경(밤 회수 시험 재실행 묶음 · 설계 §6.2).
         @Override
-        public int[] batchUpdate(String sql, List<Object[]> batchArgs) {
+        public int[] batchUpdate(String sql, List<? extends Object[]> batchArgs) {
             note(sql);
             return super.batchUpdate(sql, batchArgs);
         }

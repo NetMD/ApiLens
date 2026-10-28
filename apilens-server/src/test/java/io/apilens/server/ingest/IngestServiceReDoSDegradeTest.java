@@ -16,6 +16,8 @@
 package io.apilens.server.ingest;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.apilens.server.support.TestMappers;
+import tools.jackson.databind.json.JsonMapper;
 import io.apilens.common.IngestRequest;
 import io.apilens.common.MaskingEngine;
 import io.apilens.common.Payload;
@@ -55,7 +57,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  */
 class IngestServiceReDoSDegradeTest {
 
-    private final ObjectMapper mapper = new ObjectMapper();
+    private final ObjectMapper mapper = TestMappers.forMasking();
+
+    private final JsonMapper jsonMapper = TestMappers.forServices();
     @TempDir
     Path tempDir;
     private Path dbFile;
@@ -81,7 +85,7 @@ class IngestServiceReDoSDegradeTest {
         MaskingEngineHolder throwingHolder =
                 new ThrowingMaskingHolder(new MaskingRuleRepository(jdbc), mapper, throwingEngine);
 
-        this.service = new IngestService(jdbc, throwingHolder, mapper, new IngestProperties(1_048_576L));
+        this.service = new IngestService(jdbc, throwingHolder, jsonMapper, new IngestProperties(1_048_576L));
     }
 
     @AfterEach

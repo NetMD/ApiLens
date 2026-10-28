@@ -16,6 +16,8 @@
 package io.apilens.server.query;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.apilens.server.support.TestMappers;
+import tools.jackson.databind.json.JsonMapper;
 import io.apilens.common.IngestRequest;
 import io.apilens.common.Span;
 import io.apilens.common.SpanKind;
@@ -70,11 +72,13 @@ class TraceQueryRepositoryTest {
         Flyway.configure().dataSource(ds).locations("classpath:db/migration").load().migrate();
         JdbcTemplate jdbc = new JdbcTemplate(ds);
 
-        ObjectMapper mapper = new ObjectMapper();
+        ObjectMapper mapper = TestMappers.forMasking();
+
+        JsonMapper jsonMapper = TestMappers.forServices();
         MaskingEngineHolder holder = new MaskingEngineHolder(new MaskingRuleRepository(jdbc), mapper);
         holder.reload();
-        this.ingestService = new IngestService(jdbc, holder, mapper, new IngestProperties(1_048_576L));
-        this.repository = new TraceQueryRepository(jdbc, mapper);
+        this.ingestService = new IngestService(jdbc, holder, jsonMapper, new IngestProperties(1_048_576L));
+        this.repository = new TraceQueryRepository(jdbc, jsonMapper);
     }
 
     // ─── AC-A3-1: 24h 윈도우 경계 (now−24h−1 / now−24h / now) ──────────────

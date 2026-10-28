@@ -20,6 +20,8 @@ import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.apilens.server.support.TestMappers;
+import tools.jackson.databind.json.JsonMapper;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import io.apilens.common.SpanStatus;
@@ -105,6 +107,8 @@ class TracePointsQueryTest {
 
     private final ObjectMapper mapper = new ObjectMapper();
 
+    private final JsonMapper jsonMapper = TestMappers.forServices();
+
     @TempDir
     Path tempDir;
     private Path dbFile;
@@ -121,7 +125,7 @@ class TracePointsQueryTest {
         dataSource.setUrl("jdbc:sqlite:" + dbFile.toAbsolutePath());
         Flyway.configure().dataSource(dataSource).locations("classpath:db/migration").load().migrate();
         jdbc = new JdbcTemplate(dataSource);
-        repo = new TraceQueryRepository(jdbc, mapper);
+        repo = new TraceQueryRepository(jdbc, jsonMapper);
         service = new TraceQueryService(repo);
     }
 
@@ -686,7 +690,7 @@ class TracePointsQueryTest {
     /** V08 — 검증은 허가 <b>전</b>. 허가를 쥔 상태에서 since 없는 호출 → 곧바로 400 갈래(바쁨이 아님). */
     @Test
     void validatesBeforeTakingThePermit() throws Exception {
-        BlockingRepository blocking = new BlockingRepository(jdbc, mapper);
+        BlockingRepository blocking = new BlockingRepository(jdbc, jsonMapper);
         TraceQueryService svc = new TraceQueryService(blocking);
         ExecutorService pool = Executors.newFixedThreadPool(1);
         try {
@@ -715,7 +719,7 @@ class TracePointsQueryTest {
      */
     @Test
     void neverRunsMoreThanOnePointsQueryAtOnce() throws Exception {
-        BlockingRepository blocking = new BlockingRepository(jdbc, mapper);
+        BlockingRepository blocking = new BlockingRepository(jdbc, jsonMapper);
         TraceQueryService svc = new TraceQueryService(blocking);
         ExecutorService pool = Executors.newFixedThreadPool(2);
         try {
@@ -743,7 +747,7 @@ class TracePointsQueryTest {
     /** C02 — 허가를 쥔 채 기다림 0 호출 → 바쁨 + INFO 한 줄(값 = 설정 상한). */
     @Test
     void returnsBusyWhenThePermitIsHeldPastTheWait() throws Exception {
-        BlockingRepository blocking = new BlockingRepository(jdbc, mapper);
+        BlockingRepository blocking = new BlockingRepository(jdbc, jsonMapper);
         TraceQueryService svc = new TraceQueryService(blocking);
         ExecutorService pool = Executors.newFixedThreadPool(1);
         try {
@@ -765,7 +769,7 @@ class TracePointsQueryTest {
     @Test
     void givesThePermitBackAfterRepositoryExceptions() {
         AtomicInteger failuresLeft = new AtomicInteger(2);
-        TraceQueryRepository failing = new TraceQueryRepository(jdbc, mapper) {
+        TraceQueryRepository failing = new TraceQueryRepository(jdbc, jsonMapper) {
             @Override
             public List<PointRow> findTracePoints(String s, long since, long until, SpanStatus status, String q,
                                                   long bucketMs, int errorsMax) {
@@ -789,7 +793,7 @@ class TracePointsQueryTest {
     /** C04 — 기다림 안에 풀리면 허가를 얻는다(실시간 대기 0 · 걸쇠만). 전제 = 기다리는 수 1. */
     @Test
     void acquiresThePermitWhenItIsReleasedWithinTheWait() throws Exception {
-        BlockingRepository blocking = new BlockingRepository(jdbc, mapper);
+        BlockingRepository blocking = new BlockingRepository(jdbc, jsonMapper);
         TraceQueryService svc = new TraceQueryService(blocking);
         ExecutorService pool = Executors.newFixedThreadPool(2);
         try {
@@ -888,7 +892,7 @@ class TracePointsQueryTest {
     /** C07 — 바쁨으로 떠난 호출은 허가를 반납하지 않는다(누수 0 · 같은 서비스에서 상한 1 유지). */
     @Test
     void neverLeaksAPermitOnBusyRejections() throws Exception {
-        BlockingRepository blocking = new BlockingRepository(jdbc, mapper);
+        BlockingRepository blocking = new BlockingRepository(jdbc, jsonMapper);
         TraceQueryService svc = new TraceQueryService(blocking);
         ExecutorService pool = Executors.newFixedThreadPool(1);
         try {
@@ -930,7 +934,7 @@ class TracePointsQueryTest {
      */
     @Test
     void supersedesAnOlderWaitingPointsRequestWithTheNewestOne() throws Exception {
-        BlockingRepository blocking = new BlockingRepository(jdbc, mapper);
+        BlockingRepository blocking = new BlockingRepository(jdbc, jsonMapper);
         TraceQueryService svc = new TraceQueryService(blocking);
         ExecutorService pool = Executors.newFixedThreadPool(3);
         try {
@@ -1029,7 +1033,7 @@ class TracePointsQueryTest {
     /** H02 — 바쁨 → 503 · 본문 {@code {"error": …}}. 시험에서는 기다림 0 갈래를 거쳐 실시간 대기 없이 잰다. */
     @Test
     void returns503WithAnErrorBodyWhenBusy() throws Exception {
-        BlockingRepository blocking = new BlockingRepository(jdbc, mapper);
+        BlockingRepository blocking = new BlockingRepository(jdbc, jsonMapper);
         TraceQueryService busyAfterNoWait = new TraceQueryService(blocking) {
             @Override
             public TracePointsResponse listTracePoints(String s, Long since, Long until, SpanStatus st, String q) {
@@ -1245,7 +1249,7 @@ class TracePointsQueryTest {
         private final AtomicInteger maxRunning = new AtomicInteger();
         private final AtomicInteger calls = new AtomicInteger();
 
-        BlockingRepository(JdbcTemplate jdbc, ObjectMapper mapper) {
+        BlockingRepository(JdbcTemplate jdbc, JsonMapper mapper) {
             super(jdbc, mapper);
         }
 

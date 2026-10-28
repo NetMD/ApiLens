@@ -15,8 +15,6 @@
  */
 package io.apilens.server.ingest;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import io.apilens.common.IngestRequest;
 import io.apilens.common.Payload;
 import io.apilens.common.RegexTimeoutException;
@@ -30,6 +28,8 @@ import org.springframework.jdbc.core.RowCallbackHandler;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -76,7 +76,8 @@ public class IngestService {
     // [Phase R12] AC-B2-3 — MaskingEngine 직접 주입 → MaskingEngineHolder 전환 (핫 리로드).
     // 매 mask 호출 시점에 current() 로 최신 엔진을 읽는다 — 룰 변경은 이후 ingest 분부터 반영 (BL-06).
     private final MaskingEngineHolder maskingHolder;
-    private final ObjectMapper mapper;
+    // [Phase R30] R30/AC-R30-12 — span 속성 JSON 쓰기는 Jackson 3 자동 구성 JsonMapper(설계 DD-R30-06).
+    private final JsonMapper mapper;
     // [Phase R13] AC-A2-1 — payload 저장 직전 크기 가드 한도(개별 payload body byte).
     // @ConfigurationPropertiesScan(ApiLensApplication.java:27)으로 bean 자동 등록 → 생성자 주입.
     private final IngestProperties ingestProperties;
@@ -165,7 +166,9 @@ public class IngestService {
     //   협력자(트랜잭션 관리자·카운터)는 생성자 인자가 아니라 내부 필드/본문으로 얻는다.
     //   R13 287a7e7 회귀 진원지(생성자 변경이 agent 통합테스트 컴파일 파손) 재발 차단.
     //   CLAUDE.md 'Build 설정 lessons §1'(shadow jar relocate 함정) 인용.
-    public IngestService(JdbcTemplate jdbc, MaskingEngineHolder maskingHolder, ObjectMapper mapper,
+    // [Phase R30] R30/AC-R30-12 — 인자 4 그대로 · 셋째 인자 타입만 Jackson 3 JsonMapper(설계 DD-R30-26 · EXT-004 한계 조항 —
+    //   진입점 타입 변경이 라운드 목표). agent 통합 시험(AgentToServerIntegrationTest)을 같은 덩이에서 함께 고쳤다.
+    public IngestService(JdbcTemplate jdbc, MaskingEngineHolder maskingHolder, JsonMapper mapper,
                          IngestProperties ingestProperties) {
         this.jdbc = jdbc;
         this.maskingHolder = maskingHolder;
@@ -982,7 +985,9 @@ public class IngestService {
         }
         try {
             return mapper.writeValueAsString(toStore);
-        } catch (JsonProcessingException e) {
+        } catch (JacksonException e) {
+            // [Phase R30] R30/AC-R30-12 — Jackson 3 예외는 unchecked 라 컴파일러가 catch 를 요구하지 않지만 남긴다(설계 DD-R30-06):
+            //   지우면 실패가 IllegalStateException 이 아닌 다른 타입으로 새어 나가 호출자의 처리 갈래가 바뀐다.
             throw new IllegalStateException("failed to serialize span attributes", e);
         }
     }

@@ -24,6 +24,7 @@ import io.apilens.common.RegexTimeoutException;
 import io.apilens.server.masking.dto.MaskingRuleDto;
 import io.apilens.server.masking.dto.PreviewRequest;
 import io.apilens.server.masking.dto.PreviewResponse;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
 import java.nio.charset.StandardCharsets;
@@ -63,7 +64,9 @@ public class MaskingPreviewService {
     private final MaskingRuleRepository repository;
     private final ObjectMapper mapper;
 
-    public MaskingPreviewService(MaskingRuleRepository repository, ObjectMapper mapper) {
+    // [Phase R30] R30/AC-R30-10 — 공유 마스킹 엔진은 Jackson 2 를 받는다 → 마스킹 전용 이름 빈을 고른다(설계 DD-R30-05).
+    public MaskingPreviewService(MaskingRuleRepository repository,
+                                 @Qualifier(MaskingConfig.MASKING_OBJECT_MAPPER) ObjectMapper mapper) {
         this.repository = repository;
         this.mapper = mapper;
     }

@@ -10,7 +10,11 @@ plugins {
 dependencies {
     implementation(project(":apilens-common"))
 
-    implementation(libs.spring.boot.starter.web)
+    // [Phase R30] R30/AC-R30-10/R30/AC-R30-19/R30/AC-R30-20 — Boot 4.1 스타터 이름(web → webmvc · Flyway 스타터 ·
+    //   시험 스타터 webmvc-test + restclient). JSON 은 Jackson 3 자동 구성(JsonMapper)이 맡는다 — Jackson 2 자동 구성 모듈은
+    //   선언하지 않는다(길 ⓒ 기각 · 사용자 명시 비협상 결정 「길 ⓐ 전면 이행」). data-jpa 선언은 그대로(OQ-R30-9 · 이번 밖).
+    //   CLAUDE.md '절대 변경하지 말아야 할 결정 사항' 1번(Boot 판 — 사용자가 이번 라운드에 바꾸기로 함) 인용.
+    implementation(libs.spring.boot.starter.webmvc)
     implementation(libs.spring.boot.starter.data.jpa)
     implementation(libs.spring.boot.starter.validation)
     implementation(libs.spring.boot.starter.actuator)
@@ -19,11 +23,15 @@ dependencies {
     //   relocate 충돌 표면 0. springdoc 는 server classpath 에만 얹혀 agent shadowJar 로 유입되지 않는다.
     implementation(libs.springdoc.openapi.starter.webmvc.ui)
 
-    implementation(libs.flyway.core)
+    implementation(libs.spring.boot.starter.flyway)
     runtimeOnly(libs.sqlite.jdbc)
     runtimeOnly(libs.hibernate.community.dialects)
+    // [Phase R30] R30/AC-R30-11 — 마스킹 전용 Jackson 2 mapper 의 java.time 모듈을 직접 선언(설계 DD-R30-05).
+    implementation(libs.jackson.jsr310.server)
 
-    testImplementation(libs.spring.boot.starter.test)
+    // [Phase R30] R30/AC-R30-20 — 시험 스타터가 spring-boot-starter-test 를 전이로 준다(따로 선언하지 않는다).
+    testImplementation(libs.spring.boot.starter.webmvc.test)
+    testImplementation(libs.spring.boot.restclient)
     testImplementation(libs.sqlite.jdbc)
     // NOTE: project(":apilens-agent")를 testImplementation으로 절대 추가하지 말 것.
     // agent는 shadow jar로 빌드되며 그 과정에서 의존 클래스(common 포함)를 흡수 +

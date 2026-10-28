@@ -16,6 +16,8 @@
 package io.apilens.server.ingest;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.apilens.server.support.TestMappers;
+import tools.jackson.databind.json.JsonMapper;
 import io.apilens.common.IngestRequest;
 import io.apilens.common.Span;
 import io.apilens.common.SpanKind;
@@ -57,7 +59,9 @@ import static org.junit.jupiter.api.Assertions.assertNull;
  */
 class IngestServiceServiceRegistrationTest {
 
-    private final ObjectMapper mapper = new ObjectMapper();
+    private final ObjectMapper mapper = TestMappers.forMasking();
+
+    private final JsonMapper jsonMapper = TestMappers.forServices();
     @TempDir
     Path tempDir;
     private Path dbFile;
@@ -83,7 +87,7 @@ class IngestServiceServiceRegistrationTest {
         MaskingEngineHolder maskingHolder = new MaskingEngineHolder(new MaskingRuleRepository(jdbc), mapper);
         maskingHolder.reload(); // V1 시드 룰 로드 — v0.1 buildEngineFromSeededRules 와 동등 (R12 holder 전환)
         // [Phase R13] IngestService 생성자에 IngestProperties 추가 — 기본 1MB 한도 (A 가드 idle).
-        this.service = new IngestService(jdbc, maskingHolder, mapper, new IngestProperties(1_048_576L));
+        this.service = new IngestService(jdbc, maskingHolder, jsonMapper, new IngestProperties(1_048_576L));
     }
 
     @AfterEach

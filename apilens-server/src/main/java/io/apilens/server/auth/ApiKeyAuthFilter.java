@@ -15,7 +15,6 @@
  */
 package io.apilens.server.auth;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -26,9 +25,11 @@ import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
-import org.springframework.lang.NonNull;
+// [Phase R30] R30/AC-R30-04 — Spring Framework 7 이 org.springframework.lang 의 널 표기를 폐기 예고 → JSpecify 표기로(동작 변경 0).
+import org.jspecify.annotations.NonNull;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -55,9 +56,11 @@ public class ApiKeyAuthFilter extends OncePerRequestFilter {
     private static final String BEARER_PREFIX = "Bearer ";
 
     private final AuthProperties props;
-    private final ObjectMapper mapper;
+    // [Phase R30] R30/AC-R30-12 — 401 본문 직렬화는 Jackson 3 자동 구성 JsonMapper 를 받는다(설계 DD-R30-06 · 사용자 명시
+    //   비협상 결정 「길 ⓐ 전면 이행」). 본문은 키 하나({"error":"unauthorized"})라 정렬 기본값 변화가 글자에 안 닿는다.
+    private final JsonMapper mapper;
 
-    public ApiKeyAuthFilter(AuthProperties props, ObjectMapper mapper) {
+    public ApiKeyAuthFilter(AuthProperties props, JsonMapper mapper) {
         this.props = props;
         this.mapper = mapper;
     }

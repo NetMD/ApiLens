@@ -22,7 +22,8 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.web.client.TestRestTemplate;
+import org.springframework.boot.resttestclient.TestRestTemplate;
+import org.springframework.boot.resttestclient.autoconfigure.AutoConfigureTestRestTemplate;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -57,6 +58,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties = {"apilens.auth.api-key=test-swagger-key"}
 )
+// [Phase R30] R30/AC-R30-20 — Boot 4 의 @SpringBootTest 는 TestRestTemplate 빈을 더는 주지 않는다 → 명시로 켠다.
+@AutoConfigureTestRestTemplate
 class OpenApiDocsIntegrationTest {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();

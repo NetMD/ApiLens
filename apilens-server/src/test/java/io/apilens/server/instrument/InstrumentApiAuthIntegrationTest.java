@@ -19,7 +19,8 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.web.client.TestRestTemplate;
+import org.springframework.boot.resttestclient.TestRestTemplate;
+import org.springframework.boot.resttestclient.autoconfigure.AutoConfigureTestRestTemplate;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
@@ -57,6 +58,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties = {"apilens.auth.api-key=test-instrument-key"}
 )
+// [Phase R30] R30/AC-R30-20 — Boot 4 의 @SpringBootTest 는 TestRestTemplate 빈을 더는 주지 않는다 → 명시로 켠다.
+@AutoConfigureTestRestTemplate
 class InstrumentApiAuthIntegrationTest {
 
     private static final String ANALYSIS_PATH = "/v1/instrument/analysis";

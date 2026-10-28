@@ -16,6 +16,8 @@
 package io.apilens.server.retention;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.apilens.server.support.TestMappers;
+import tools.jackson.databind.json.JsonMapper;
 import io.apilens.server.ingest.IngestPauseState;
 import io.apilens.server.ingest.IngestProperties;
 import io.apilens.server.ingest.IngestService;
@@ -289,9 +291,10 @@ class PayloadBodyGcTest {
     // ─── 픽스처 ──────────────────────────────────────────────────────────
 
     private IngestService newIngestService() {
-        ObjectMapper mapper = new ObjectMapper();
+        ObjectMapper mapper = TestMappers.forMasking();
+        JsonMapper jsonMapper = TestMappers.forServices();
         MaskingEngineHolder maskingHolder = new MaskingEngineHolder(new MaskingRuleRepository(jdbc), mapper);
-        return new IngestService(jdbc, maskingHolder, mapper, new IngestProperties(1_048_576L));
+        return new IngestService(jdbc, maskingHolder, jsonMapper, new IngestProperties(1_048_576L));
     }
 
     /** trace 하나 + span 하나 + 새 형태 payload 하나(본문 표 1행 + 지문 참조). 지문을 돌려준다. */

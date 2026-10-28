@@ -16,6 +16,8 @@
 package io.apilens.server.query;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.apilens.server.support.TestMappers;
+import tools.jackson.databind.json.JsonMapper;
 import io.apilens.common.IngestRequest;
 import io.apilens.common.Span;
 import io.apilens.common.SpanKind;
@@ -50,7 +52,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class TraceQueryServiceRootSpanTest {
 
-    private final ObjectMapper mapper = new ObjectMapper();
+    private final ObjectMapper mapper = TestMappers.forMasking();
+
+    private final JsonMapper jsonMapper = TestMappers.forServices();
 
     @TempDir
     Path tempDir;
@@ -76,8 +80,8 @@ class TraceQueryServiceRootSpanTest {
         JdbcTemplate jdbc = new JdbcTemplate(dataSource);
         MaskingEngineHolder maskingHolder = new MaskingEngineHolder(new MaskingRuleRepository(jdbc), mapper);
         maskingHolder.reload(); // V1 시드 룰 로드 — v0.1 buildEngineFromSeededRules 와 동등 (R12 holder 전환)
-        this.ingestService = new IngestService(jdbc, maskingHolder, mapper, new IngestProperties(1_048_576L));
-        this.queryService = new TraceQueryService(new TraceQueryRepository(jdbc, mapper));
+        this.ingestService = new IngestService(jdbc, maskingHolder, jsonMapper, new IngestProperties(1_048_576L));
+        this.queryService = new TraceQueryService(new TraceQueryRepository(jdbc, jsonMapper));
     }
 
     @AfterEach

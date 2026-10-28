@@ -16,6 +16,8 @@
 package io.apilens.server.query;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.apilens.server.support.TestMappers;
+import tools.jackson.databind.json.JsonMapper;
 import io.apilens.common.IngestRequest;
 import io.apilens.common.Payload;
 import io.apilens.common.PayloadDirection;
@@ -69,7 +71,9 @@ class LegacyRowFallbackTest {
     private static final String OLD_BODY = "{\"legacy\":\"row stored before v0.7.0\"}";
     private static final String SERVICE = "svc-legacy";
 
-    private final ObjectMapper mapper = new ObjectMapper();
+    private final ObjectMapper mapper = TestMappers.forMasking();
+
+    private final JsonMapper jsonMapper = TestMappers.forServices();
     @TempDir
     Path tempDir;
     private Path dbFile;
@@ -92,8 +96,8 @@ class LegacyRowFallbackTest {
         this.jdbc = new JdbcTemplate(dataSource);
         MaskingEngineHolder maskingHolder = new MaskingEngineHolder(new MaskingRuleRepository(jdbc), mapper);
         maskingHolder.reload();
-        this.ingestService = new IngestService(jdbc, maskingHolder, mapper, new IngestProperties(1_048_576L));
-        this.queryRepository = new TraceQueryRepository(jdbc, mapper);
+        this.ingestService = new IngestService(jdbc, maskingHolder, jsonMapper, new IngestProperties(1_048_576L));
+        this.queryRepository = new TraceQueryRepository(jdbc, jsonMapper);
         this.analysisRepository = new InstrumentAnalysisRepository(jdbc);
     }
 

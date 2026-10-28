@@ -21,7 +21,8 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.web.client.TestRestTemplate;
+import org.springframework.boot.resttestclient.TestRestTemplate;
+import org.springframework.boot.resttestclient.autoconfigure.AutoConfigureTestRestTemplate;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -54,6 +55,8 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties = {"apilens.auth.api-key=test-whitelist-key"}
 )
+// [Phase R30] R30/AC-R30-20 — Boot 4 의 @SpringBootTest 는 TestRestTemplate 빈을 더는 주지 않는다 → 명시로 켠다.
+@AutoConfigureTestRestTemplate
 class AuthWhitelistPathIntegrationTest {
 
     // application.yml 의 상대경로 jdbc:sqlite:apilens.db 가 작업 디렉토리를 오염시키므로 temp 파일로 갈음한다.

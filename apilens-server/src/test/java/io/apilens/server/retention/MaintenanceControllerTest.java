@@ -16,6 +16,8 @@
 package io.apilens.server.retention;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.apilens.server.support.TestMappers;
+import tools.jackson.databind.json.JsonMapper;
 import io.apilens.server.ingest.IngestPauseState;
 import io.apilens.server.ingest.IngestPauseStateTestFactory;
 import io.apilens.server.ingest.IngestProperties;
@@ -104,9 +106,10 @@ class MaintenanceControllerTest {
 
     /** [Phase R20] R20/AC-10-1 — 카운터 원천 실 IngestService (IngestServiceChunkCommitTest 구성 동형). */
     private IngestService newIngestService() {
-        ObjectMapper mapper = new ObjectMapper();
+        ObjectMapper mapper = TestMappers.forMasking();
+        JsonMapper jsonMapper = TestMappers.forServices();
         MaskingEngineHolder maskingHolder = new MaskingEngineHolder(new MaskingRuleRepository(jdbc), mapper);
-        return new IngestService(jdbc, maskingHolder, mapper, new IngestProperties(1_048_576L));
+        return new IngestService(jdbc, maskingHolder, jsonMapper, new IngestProperties(1_048_576L));
     }
 
     @AfterEach

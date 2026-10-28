@@ -16,6 +16,8 @@
 package io.apilens.server.ingest;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.apilens.server.support.TestMappers;
+import tools.jackson.databind.json.JsonMapper;
 import io.apilens.common.IngestRequest;
 import io.apilens.common.Span;
 import io.apilens.common.SpanKind;
@@ -64,7 +66,9 @@ class IngestServiceAgentVersionTest {
     /** 그 span 이 버전을 싣는 attribute 키 (원본: AgentMain.java:147). */
     private static final String VERSION_KEY = "apilens.agent.version";
 
-    private final ObjectMapper mapper = new ObjectMapper();
+    private final ObjectMapper mapper = TestMappers.forMasking();
+
+    private final JsonMapper jsonMapper = TestMappers.forServices();
 
     @TempDir
     Path tempDir;
@@ -90,7 +94,7 @@ class IngestServiceAgentVersionTest {
         this.jdbc = new JdbcTemplate(dataSource);
         MaskingEngineHolder maskingHolder = new MaskingEngineHolder(new MaskingRuleRepository(jdbc), mapper);
         maskingHolder.reload();
-        this.service = new IngestService(jdbc, maskingHolder, mapper, new IngestProperties(1_048_576L));
+        this.service = new IngestService(jdbc, maskingHolder, jsonMapper, new IngestProperties(1_048_576L));
     }
 
     @AfterEach

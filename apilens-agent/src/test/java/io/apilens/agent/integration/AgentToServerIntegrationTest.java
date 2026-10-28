@@ -39,6 +39,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.sqlite.SQLiteDataSource;
+import tools.jackson.databind.json.JsonMapper;
 
 import javax.sql.DataSource;
 import java.io.InputStream;
@@ -78,6 +79,11 @@ class AgentToServerIntegrationTest {
     private Thread senderThread;
     private SpanQueue queue;
     private final ObjectMapper mapper = new ObjectMapper();
+    // [Phase R30] R30/AC-R30-24 — 서버 협력자(적재 · 조회)와 HTTP 다리 역직렬화는 Jackson 3 JsonMapper(설계 DD-R30-26 ·
+    //   CXP-1). 다리가 서버가 할 일(요청 본문 읽기)을 대신하므로 Jackson 3 여야 「옛 agent → 새 서버」 수신을 흉내 낸다.
+    //   마스킹 holder 는 공유 엔진이 Jackson 2 라 위 mapper 그대로. 서버 helper(TestMappers)는 다른 모듈이라 못 쓴다.
+    //   CLAUDE.md 'Build 설정 lessons §1'(통합 시험 거주지 = agent 모듈) 인용.
+    private final JsonMapper jsonMapper = JsonMapper.builder().build();
     private final AgentLogger logger = new AgentLogger(false);
     private TraceQueryService queryService;
 
@@ -102,16 +108,16 @@ class AgentToServerIntegrationTest {
         maskingHolder.reload();
         // [Phase R13 hotfix] IngestService 생성자에 IngestProperties 추가(AC-A2-1) — server 클래스를
         // 직접 생성하는 본 통합 테스트 fixture 도 4-인자로 갱신. 기본 1MB 한도(IngestProperties @DefaultValue 동일값).
-        IngestService ingestService = new IngestService(jdbc, maskingHolder, mapper,
+        IngestService ingestService = new IngestService(jdbc, maskingHolder, jsonMapper,
                 new io.apilens.server.ingest.IngestProperties(1_048_576L));
-        queryService = new TraceQueryService(new TraceQueryRepository(jdbc, mapper));
+        queryService = new TraceQueryService(new TraceQueryRepository(jdbc, jsonMapper));
 
         // 3) HttpServer bridges POST /v1/spans → ingestService.ingest
         httpServer = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         httpServer.createContext("/v1/spans", exchange -> {
             try (InputStream in = exchange.getRequestBody()) {
                 byte[] body = in.readAllBytes();
-                IngestRequest request = mapper.readValue(body, IngestRequest.class);
+                IngestRequest request = jsonMapper.readValue(body, IngestRequest.class);
                 ingestService.ingest(request);
                 byte[] resp = "{\"accepted\":1}".getBytes();
                 exchange.getResponseHeaders().add("Content-Type", "application/json");

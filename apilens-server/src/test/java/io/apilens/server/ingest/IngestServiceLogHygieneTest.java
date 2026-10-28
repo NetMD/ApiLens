@@ -19,6 +19,8 @@ import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.apilens.server.support.TestMappers;
+import tools.jackson.databind.json.JsonMapper;
 import io.apilens.common.IngestRequest;
 import io.apilens.common.MaskingEngine;
 import io.apilens.common.Payload;
@@ -80,7 +82,9 @@ class IngestServiceLogHygieneTest {
     private static final String FORGED_NAME =
             "svc-forged\nERROR fake line injected by the caller";
 
-    private final ObjectMapper mapper = new ObjectMapper();
+    private final ObjectMapper mapper = TestMappers.forMasking();
+
+    private final JsonMapper jsonMapper = TestMappers.forServices();
 
     @TempDir
     Path tempDir;
@@ -102,7 +106,7 @@ class IngestServiceLogHygieneTest {
         this.jdbc = new JdbcTemplate(dataSource);
         MaskingEngineHolder maskingHolder = new MaskingEngineHolder(new MaskingRuleRepository(jdbc), mapper);
         maskingHolder.reload();
-        this.service = new IngestService(jdbc, maskingHolder, mapper, new IngestProperties(1_048_576L));
+        this.service = new IngestService(jdbc, maskingHolder, jsonMapper, new IngestProperties(1_048_576L));
     }
 
     @AfterEach
@@ -222,7 +226,7 @@ class IngestServiceLogHygieneTest {
         Mockito.when(timingOut.mask(Mockito.any(), Mockito.any())).thenThrow(RegexTimeoutException.INSTANCE);
         return new IngestService(jdbc,
                 new FixedEngineHolder(new MaskingRuleRepository(jdbc), mapper, timingOut),
-                mapper, new IngestProperties(1_048_576L));
+                jsonMapper, new IngestProperties(1_048_576L));
     }
 
     private void injectJdbc(JdbcTemplate replacement) throws Exception {

@@ -15,9 +15,6 @@
  */
 package io.apilens.server.query;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import io.apilens.common.SpanKind;
 import io.apilens.common.SpanStatus;
 import io.apilens.server.ingest.IngestService;
@@ -32,6 +29,9 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowCallbackHandler;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;
+import tools.jackson.core.JacksonException;
+import tools.jackson.core.type.TypeReference;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -63,9 +63,10 @@ public class TraceQueryRepository {
     //   (R25 는 "그쪽이 private 이라" 복사본을 뒀고, 이번에 그 정당화를 지웠다.)
 
     private final JdbcTemplate jdbc;
-    private final ObjectMapper mapper;
+    // [Phase R30] R30/AC-R30-12 — span 속성 JSON 읽기는 Jackson 3 자동 구성 JsonMapper(설계 DD-R30-06).
+    private final JsonMapper mapper;
 
-    public TraceQueryRepository(JdbcTemplate jdbc, ObjectMapper mapper) {
+    public TraceQueryRepository(JdbcTemplate jdbc, JsonMapper mapper) {
         this.jdbc = jdbc;
         this.mapper = mapper;
     }
@@ -602,8 +603,10 @@ public class TraceQueryRepository {
         }
         try {
             return mapper.readValue(json, ATTRIBUTES_TYPE);
-        } catch (JsonProcessingException e) {
+        } catch (JacksonException e) {
             // Defensive: surface raw JSON instead of failing the request
+            // [Phase R30] R30/AC-R30-12 — Jackson 3 예외는 unchecked 지만 이 catch 를 남긴다(설계 DD-R30-06) — 지우면
+            //   깨진 행 하나가 요청 전체를 실패시킨다(방어 반환이 사라진다).
             return Map.of("_raw", json);
         }
     }

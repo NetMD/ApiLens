@@ -16,6 +16,8 @@
 package io.apilens.server.ingest;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.apilens.server.support.TestMappers;
+import tools.jackson.databind.json.JsonMapper;
 import io.apilens.common.IngestRequest;
 import io.apilens.common.Payload;
 import io.apilens.common.PayloadDirection;
@@ -64,7 +66,9 @@ class IngestServiceChunkCommitTest {
     // [Phase R17] SPAN_CHUNK_SIZE=500 과 동일(테스트 경계 명시 — production 상수는 IngestService.SPAN_CHUNK_SIZE).
     private static final int CHUNK = 500;
 
-    private final ObjectMapper mapper = new ObjectMapper();
+    private final ObjectMapper mapper = TestMappers.forMasking();
+
+    private final JsonMapper jsonMapper = TestMappers.forServices();
     @TempDir
     Path tempDir;
     private Path dbFile;
@@ -91,7 +95,7 @@ class IngestServiceChunkCommitTest {
         this.jdbc = new JdbcTemplate(dataSource);
         this.maskingHolder = new MaskingEngineHolder(new MaskingRuleRepository(jdbc), mapper);
         maskingHolder.reload();
-        this.service = new IngestService(jdbc, maskingHolder, mapper, new IngestProperties(1_048_576L));
+        this.service = new IngestService(jdbc, maskingHolder, jsonMapper, new IngestProperties(1_048_576L));
     }
 
     @AfterEach

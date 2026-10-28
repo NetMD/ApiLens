@@ -16,7 +16,8 @@
 package io.apilens.server.web;
 
 import org.springframework.context.annotation.Configuration;
-import org.springframework.lang.NonNull;
+// [Phase R30] R30/AC-R30-04 — Spring Framework 7 이 org.springframework.lang 의 널 표기를 폐기 예고 → JSpecify 표기로(동작 변경 0).
+import org.jspecify.annotations.NonNull;
 import org.springframework.web.servlet.config.annotation.ViewControllerRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 

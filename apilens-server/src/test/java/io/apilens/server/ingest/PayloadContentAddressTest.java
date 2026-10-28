@@ -19,6 +19,8 @@ import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.apilens.server.support.TestMappers;
+import tools.jackson.databind.json.JsonMapper;
 import io.apilens.common.IngestRequest;
 import io.apilens.common.MaskingEngine;
 import io.apilens.common.Payload;
@@ -71,7 +73,9 @@ class PayloadContentAddressTest {
     /** 수집기 가드 한도(기본). 이 값을 <b>1바이트 넘기면</b> 서버가 자른다. */
     private static final long SERVER_LIMIT_BYTES = 1_048_576L;
 
-    private final ObjectMapper mapper = new ObjectMapper();
+    private final ObjectMapper mapper = TestMappers.forMasking();
+
+    private final JsonMapper jsonMapper = TestMappers.forServices();
     @TempDir
     Path tempDir;
     private Path dbFile;
@@ -93,7 +97,7 @@ class PayloadContentAddressTest {
         this.jdbc = new JdbcTemplate(dataSource);
         this.maskingHolder = new MaskingEngineHolder(new MaskingRuleRepository(jdbc), mapper);
         maskingHolder.reload();
-        this.service = new IngestService(jdbc, maskingHolder, mapper, new IngestProperties(SERVER_LIMIT_BYTES));
+        this.service = new IngestService(jdbc, maskingHolder, jsonMapper, new IngestProperties(SERVER_LIMIT_BYTES));
     }
 
     @AfterEach
@@ -215,7 +219,7 @@ class PayloadContentAddressTest {
         Mockito.when(throwing.mask(Mockito.any(), Mockito.any())).thenThrow(RegexTimeoutException.INSTANCE);
         IngestService degrading = new IngestService(jdbc,
                 new ThrowingMaskingHolder(new MaskingRuleRepository(jdbc), mapper, throwing),
-                mapper, new IngestProperties(SERVER_LIMIT_BYTES));
+                jsonMapper, new IngestProperties(SERVER_LIMIT_BYTES));
 
         degrading.ingest(request(span("s-d1", "t1", payload(PayloadDirection.IN, "{\"a\":\"evil-1\"}"))));
         degrading.ingest(request(span("s-d2", "t2", payload(PayloadDirection.IN, "{\"b\":\"evil-2\"}"))));

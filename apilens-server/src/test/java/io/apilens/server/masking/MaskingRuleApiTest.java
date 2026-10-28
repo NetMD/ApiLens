@@ -16,6 +16,8 @@
 package io.apilens.server.masking;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.apilens.server.support.TestMappers;
+import tools.jackson.databind.json.JsonMapper;
 import io.apilens.common.IngestRequest;
 import io.apilens.common.Payload;
 import io.apilens.common.PayloadDirection;
@@ -81,7 +83,9 @@ class MaskingRuleApiTest {
         Flyway.configure().dataSource(ds).locations("classpath:db/migration").load().migrate();
         this.jdbc = new JdbcTemplate(ds);
 
-        ObjectMapper mapper = new ObjectMapper();
+        ObjectMapper mapper = TestMappers.forMasking();
+
+        JsonMapper jsonMapper = TestMappers.forServices();
         MaskingRuleRepository repository = new MaskingRuleRepository(jdbc);
         this.holder = new MaskingEngineHolder(repository, mapper);
         holder.reload(); // startup 1회 — MaskingConfig 동형
@@ -90,7 +94,7 @@ class MaskingRuleApiTest {
         this.mockMvc = MockMvcBuilders
                 .standaloneSetup(new MaskingRuleController(service, previewService))
                 .build();
-        this.ingestService = new IngestService(jdbc, holder, mapper, new IngestProperties(1_048_576L));
+        this.ingestService = new IngestService(jdbc, holder, jsonMapper, new IngestProperties(1_048_576L));
     }
 
     // ─── 목록 (Design §5.3 — default 4종 상단 고정) ─────────────────────────

@@ -15,8 +15,9 @@
  */
 package io.apilens.server.auth;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import io.apilens.server.support.TestMappers;
 import jakarta.servlet.FilterChain;
+import tools.jackson.databind.json.JsonMapper;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
@@ -47,7 +48,8 @@ import static org.mockito.Mockito.verify;
 class ApiKeyAuthFilterTest {
 
     private static final String TOKEN = "s3cr3t-key";
-    private final ObjectMapper mapper = new ObjectMapper();
+    // [Phase R30] R30/AC-R30-12 — 필터는 Jackson 3 JsonMapper 를 받는다(설계 DD-R30-06 · DT-R30-08).
+    private final JsonMapper mapper = TestMappers.forServices();
 
     private ApiKeyAuthFilter filterWithKey(String key) {
         return new ApiKeyAuthFilter(new AuthProperties(key), mapper);
