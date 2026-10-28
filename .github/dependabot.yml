@@ -1,0 +1,16 @@
+# ApiLens Dependabot — 알림만 쓰고 버전 올림 PR 은 열지 않는다(open-pull-requests-limit: 0).
+# [Phase R30] R30/AC-R30-26 — 검사망 세 장치 중 하나(사용자 명시 결정 UD-R30-10 「알림만」).
+#   ★보안 업데이트 PR 은 이 파일이 아니라 저장소 설정이 끈다 · 알림 켜기도 저장소 설정(사용자 손).
+#   ★GitHub 미러에서만 돈다(Gitea origin 밖).
+version: 2
+updates:
+  - package-ecosystem: gradle
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+  - package-ecosystem: npm
+    directory: "/apilens-ui"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0

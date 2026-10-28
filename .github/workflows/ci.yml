@@ -1,5 +1,6 @@
-# ApiLens CI — backend(Gradle/JDK 21·25) + frontend(Node 20) + 단일 jar 임베드 검증
-# + agent shadow jar relocate clean / 회귀 가드 grep.
+# ApiLens CI — backend(Gradle/JDK 21 + smoke 시험 JVM 27) + frontend(Node 20 · npm audit) + 단일 jar 임베드 검증
+# + agent shadow jar relocate clean / 회귀 가드 grep / 지원 라인 가드.
+# [Phase R30] R30/AC-R30-30 — 액션은 그날 최신 메이저(2026-10-28 20:12 releases API 실측 · 전부 node24) · 러너 ubuntu-24.04 고정.
 
 name: ApiLens CI
 
@@ -17,43 +18,65 @@ permissions:
 jobs:
   # ============================================================
   # Job 1: backend-test
-  #   Gradle clean test (matrix JDK 21 primary + JDK 25 smoke)
+  #   Gradle clean test (matrix JDK 21 primary + 시험 JVM 27 smoke)
   #   빌드·테스트·shadow jar relocate 검증을 한 job 에 묶는다
+  # [Phase R30] R30/AC-R30-31 — smoke 다리는 Gradle 을 JDK 21 로 돌리고 server · common 시험 JVM 만 27 로 띄운다
+  #   (Gradle 8.14 는 JDK 27 위에서 데몬이 안 선다 · agent 시험은 21 — Byte Buddy 1.17.8 지원 범위).
+  #   판정은 smoke 다리 끝 notice 한 줄(단계 outcome 8 + 시험 JVM 판)이다 — 단계 실패는 smoke 다리에서 삼켜진다.
   # ============================================================
   backend-test:
     name: Backend (Gradle / JDK ${{ matrix.jdk }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
         include:
           - jdk: '21'
+            test_jdk: ''  # 시험 JVM = 컴파일 toolchain 21
             smoke: false  # 기본 빌드 대상 — 이 JDK 에서 실패하면 CI 실패
-          - jdk: '25'
+          - jdk: '27'
+            test_jdk: '27'  # server · common 시험 JVM 27(사용자 명시 결정 「27 로 바꿔 유지」)
             smoke: true   # 상위 JDK 런타임 확인용 — 실패해도 CI 는 계속(아래 continue-on-error)
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - name: Setup JDK ${{ matrix.jdk }}
-        uses: actions/setup-java@v4
+      # smoke 다리만: 시험 JVM 27 을 먼저 깔고(JAVA_HOME_27_X64) 아래에서 21 을 기본 JAVA_HOME 으로 덮는다.
+      - name: Setup test JDK ${{ matrix.test_jdk }} (smoke only)
+        if: ${{ matrix.smoke }}
+        uses: actions/setup-java@v6
         with:
-          java-version: ${{ matrix.jdk }}
+          java-version: ${{ matrix.test_jdk }}
           distribution: temurin
 
+      - name: Setup JDK 21 (Gradle daemon · compile toolchain)
+        uses: actions/setup-java@v6
+        with:
+          java-version: '21'
+          distribution: temurin
+
+      # Gradle toolchain 이 위에서 깐 27 을 찾게 한다(자동 탐지 경로 밖이라 환경 변수 이름을 알려 준다).
+      - name: Point Gradle toolchains at the test JDK (smoke only)
+        if: ${{ matrix.smoke }}
+        run: |
+          mkdir -p "$HOME/.gradle"
+          echo "org.gradle.java.installations.fromEnv=JAVA_HOME_27_X64" >> "$HOME/.gradle/gradle.properties"
+
       - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v3
+        uses: gradle/actions/setup-gradle@v6
         with:
           cache-read-only: ${{ github.event_name == 'pull_request' && github.actor != 'dependabot[bot]' }}
 
       - name: Verify Gradle wrapper present
+        id: wrapper
         run: |
           if [ ! -f ./gradlew ]; then
-            echo "ERROR: gradle wrapper not generated. Run: gradle wrapper --gradle-version 8.11.1"
+            echo "ERROR: gradle wrapper not generated. Run: gradle wrapper --gradle-version 8.14.6"
             exit 1
           fi
         continue-on-error: ${{ matrix.smoke }}
 
       - name: License header check (idempotent)
+        id: license
         run: bash scripts/apply-license-header.sh --check
         continue-on-error: ${{ matrix.smoke }}
 
@@ -63,6 +86,7 @@ jobs:
       #   ★ 이 가드의 검사 대본은 찾을 무늬를 조각으로 이어 만든다 — 그래야 가드가 자기 선언문을 안 잡는다.
       #   예상 hit 수 = 0 (0 이 「그런 자리가 없다」는 뜻이다 — 2026-09-15 수정 전에는 release.yml 한 줄이 잡혔다).
       - name: "Guard — no workflow expression inside a run: script"
+        id: exprguard
         run: |
           FOUND=$(awk '
             BEGIN { pat = "$" "{" "{" }
@@ -87,15 +111,22 @@ jobs:
           echo "OK: no workflow expression inside any run: script."
         continue-on-error: ${{ matrix.smoke }}
 
+      # [Phase R30] R30/AC-R30-31 — 시험 JVM 판은 Gradle 속성 apilensTestJdk(환경 변수로만 넘긴다 · 위 식 가드) ·
+      #   빈 값이면 21. 빌드 캐시를 끈다 — 캐시에서 시험 결과를 꺼내 오면 시험이 실제로 안 돈다.
       - name: Clean build + test
-        run: ./gradlew clean test
+        id: test
+        env:
+          ORG_GRADLE_PROJECT_apilensTestJdk: ${{ matrix.test_jdk }}
+        run: ./gradlew clean test --no-build-cache
         continue-on-error: ${{ matrix.smoke }}
 
       - name: Build shadow jar (agent)
+        id: shadow
         run: ./gradlew :apilens-agent:shadowJar
         continue-on-error: ${{ matrix.smoke }}
 
       - name: Verify shadow jar relocate clean (D-01 인용)
+        id: relocate
         run: |
           # apilens-agent 의 shadow jar 안에 raw bytebuddy / jackson 클래스 0 hit 검증
           # 글롭 매칭 1개 단언 — 0개(미산출)/2개 이상(stale 혼입) 즉시 실패
@@ -130,6 +161,7 @@ jobs:
       #   시그니처가 raw 패키지를 참조하지 않음(= relocate 누락 0)까지 검증한다. build script 단언 금지,
       #   javap 로 직접 검증한다(빌드 스크립트 안에서 단언하지 않는다).
       - name: Verify agent shadow jar javap relocate clean (V-1, no raw jackson/bytebuddy in our API)
+        id: javap
         run: |
           mapfile -t AGENT_JARS < <(find apilens-agent/build/libs -name 'apilens-agent*.jar' -not -name '*sources*' -not -name '*plain*' | sort)
           if [ ${#AGENT_JARS[@]} -ne 1 ]; then
@@ -165,8 +197,59 @@ jobs:
         continue-on-error: ${{ matrix.smoke }}
 
       - name: Dependencies diff (regression guard)
+        id: deps
         run: ./gradlew :apilens-agent:dependencies --configuration runtimeClasspath
         continue-on-error: ${{ matrix.smoke }}
+
+      # [Phase R30] R30/AC-R30-27 — agent 배포물 안 Jackson 2 판 = 카탈로그 jackson 값(실패 게이트 · primary 만).
+      #   agent 시험 클래스패스가 아니라 shadow jar 를 직접 읽는다(시험 클래스패스의 Jackson 은 서버 경유로 더 높다).
+      - name: Verify agent jar Jackson line matches the catalog
+        if: ${{ !matrix.smoke }}
+        run: |
+          WANT=$(sed -n 's/^jackson = "\([^"]*\)".*/\1/p' gradle/libs.versions.toml | head -n 1)
+          if [ -z "$WANT" ]; then
+            echo "ERROR: 카탈로그에서 jackson 판을 못 읽었습니다."
+            exit 1
+          fi
+          mapfile -t AGENT_JARS < <(find apilens-agent/build/libs -name 'apilens-agent*.jar' -not -name '*sources*' -not -name '*plain*' | sort)
+          if [ ${#AGENT_JARS[@]} -ne 1 ]; then
+            echo "ERROR: agent shadow jar 매칭 개수 비정상 (${#AGENT_JARS[@]}) — 정확히 1개여야 합니다."
+            exit 1
+          fi
+          FAIL=0
+          for MOD in core/jackson-core core/jackson-databind datatype/jackson-datatype-jsr310; do
+            GOT=$(unzip -p "${AGENT_JARS[0]}" "META-INF/maven/com.fasterxml.jackson.${MOD%%/*}/${MOD##*/}/pom.properties" | sed -n 's/^version=//p')
+            echo "${MOD##*/}: jar=$GOT catalog=$WANT"
+            if [ "$GOT" != "$WANT" ]; then FAIL=1; fi
+          done
+          echo "jackson-annotations: jar=$(unzip -p "${AGENT_JARS[0]}" META-INF/maven/com.fasterxml.jackson.core/jackson-annotations/pom.properties | sed -n 's/^version=//p') (기록만)"
+          if [ "$FAIL" -ne 0 ]; then
+            echo "ERROR: agent jar 안 Jackson 판이 카탈로그 jackson 값과 다릅니다."
+            exit 1
+          fi
+          echo "OK: agent jar Jackson line = $WANT"
+
+      # [Phase R30] R30/AC-R30-29 — 지원 라인 가드(경고 · 종료 코드 늘 0 · primary 만). 주석은 늘 정확히 1(notice 또는 warning).
+      - name: Support line guard (Spring Boot OSS support)
+        if: ${{ !matrix.smoke }}
+        run: bash scripts/check-support-line.sh
+
+      # [Phase R30] R30/AC-R30-31 — smoke 다리 판정 한 줄. 값은 env: 로만 받는다(식 가드).
+      - name: Smoke summary (notice)
+        if: ${{ always() && matrix.smoke }}
+        env:
+          O_WRAPPER: ${{ steps.wrapper.outcome }}
+          O_LICENSE: ${{ steps.license.outcome }}
+          O_EXPRGUARD: ${{ steps.exprguard.outcome }}
+          O_TEST: ${{ steps.test.outcome }}
+          O_SHADOW: ${{ steps.shadow.outcome }}
+          O_RELOCATE: ${{ steps.relocate.outcome }}
+          O_JAVAP: ${{ steps.javap.outcome }}
+          O_DEPS: ${{ steps.deps.outcome }}
+        run: |
+          SERVER_JVM=$(head -n 1 apilens-server/build/apilens-test-jvm.txt 2>/dev/null || echo missing)
+          COMMON_JVM=$(head -n 1 apilens-common/build/apilens-test-jvm.txt 2>/dev/null || echo missing)
+          echo "::notice title=smoke::wrapper=$O_WRAPPER license=$O_LICENSE exprguard=$O_EXPRGUARD test=$O_TEST shadow=$O_SHADOW relocate=$O_RELOCATE javap=$O_JAVAP deps=$O_DEPS server_test_jvm=$SERVER_JVM common_test_jvm=$COMMON_JVM"
 
   # ============================================================
   # Job 2: frontend-build
@@ -175,15 +258,15 @@ jobs:
   # ============================================================
   frontend-build:
     name: Frontend (Node 20)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # [Phase R26] R26/AC-R26-38 — 「화면 디렉터리가 있는가」를 묻던 확인 단계와 그 조건문 여섯 곳을
       #   **전수 제거**했다(G-R26-13 축). 화면은 이제 항상 있고, 없으면 그것 자체가 실패여야 한다 —
       #   조건이 남아 있으면 디렉터리가 사라진 날 이 job 이 **아무것도 안 하고 초록**이 된다.
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '20'
           cache: npm
@@ -192,6 +275,12 @@ jobs:
       - name: npm ci
         working-directory: apilens-ui
         run: npm ci
+
+      # [Phase R30] R30/AC-R30-26 — 배포물(dist 정적 파일)에 들어가는 의존성의 high 이상 취약점은 실패시킨다(삼키지 않는다).
+      #   ★못 보는 영역: dev 서버(vite 류) 쪽은 --omit=dev 로 뺐다 — 배포물이 정적 파일이라 받아들인 한계(사용자 명시 결정 UD-R30-15).
+      - name: npm audit (production dependencies, high+)
+        working-directory: apilens-ui
+        run: npm audit --omit=dev --audit-level=high
 
       - name: npm run lint
         working-directory: apilens-ui
@@ -206,7 +295,7 @@ jobs:
         run: npm run build
 
       - name: Upload UI dist
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ui-dist
           path: apilens-ui/dist
@@ -221,13 +310,14 @@ jobs:
   # ============================================================
   integration-build:
     name: Integration (clean build + agent/UI embed)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [backend-test, frontend-build]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
+      # download-artifact v8 은 내려받은 파일의 해시가 안 맞으면 오류로 멈춘다(그 판의 릴리스 노트).
       - name: Download UI dist
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: ui-dist
           path: apilens-ui/dist
@@ -246,13 +336,13 @@ jobs:
           echo "OK: apilens-ui/dist/index.html present."
 
       - name: Setup JDK 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           java-version: '21'
           distribution: temurin
 
       - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v3
+        uses: gradle/actions/setup-gradle@v6
 
       # 릴리스 경로(release.yml)와 **같은 명령**이다. 시험이 backend-test 와 겹치지만 그 중복이 목적이다 —
       # 릴리스 부하를 태그 앞으로 당긴다. `-x test` 를 붙이면 "같은 모양" 이 깨지므로 붙이지 않는다.

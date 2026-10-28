@@ -97,6 +97,31 @@ subprojects {
         "testRuntimeOnly"(rootProject.libs.junit.platform.launcher)
     }
 
+    // [Phase R30] R30/AC-R30-31 — 시험 JVM 판을 Gradle 속성 apilensTestJdk 로 고른다(CI smoke 다리 = 27 · 사용자 명시 결정
+    //   「27 로 바꿔 유지」). 대상은 server · common 뿐이다 — agent 시험은 계측 엔진(Byte Buddy 1.17.8) 지원 범위 때문에 21 그대로.
+    //   속성이 없거나 비어 있으면 21(컴파일 toolchain 과 같음 · 로컬 ./gw test 무변경). 숫자가 아니면 설정 단계에서 멈춘다.
+    //   고른 launcher 의 판을 build/apilens-test-jvm.txt 에 늘 한 줄 쓴다(시험 JVM 안 값이 아니라 Gradle 이 고른 launcher 의 판).
+    //   컴파일 toolchain(위 languageVersion 21)은 건드리지 않는다. CLAUDE.md '절대 변경하지 말아야 할 결정 사항' 1번(Java 21) 인용.
+    if (name == "apilens-server" || name == "apilens-common") {
+        val requestedTestJdk = providers.gradleProperty("apilensTestJdk").getOrElse("").trim()
+        val testJdk = if (requestedTestJdk.isEmpty()) 21 else requestedTestJdk.toIntOrNull()
+            ?: throw GradleException("apilensTestJdk must be a whole number (e.g. 27)")
+        val testLauncher = extensions.getByType<JavaToolchainService>().launcherFor {
+            languageVersion = JavaLanguageVersion.of(testJdk)
+        }
+        val testJvmFile = layout.buildDirectory.file("apilens-test-jvm.txt")
+        tasks.withType<Test>().configureEach {
+            javaLauncher.set(testLauncher)
+            val launcherForRecord = testLauncher
+            val recordFile = testJvmFile
+            doFirst {
+                val out = recordFile.get().asFile
+                out.parentFile.mkdirs()
+                out.writeText(launcherForRecord.get().metadata.javaRuntimeVersion + "\n")
+            }
+        }
+    }
+
     tasks.withType<JavaCompile> {
         options.encoding = "UTF-8"
         options.compilerArgs.addAll(listOf("-Xlint:all", "-parameters"))

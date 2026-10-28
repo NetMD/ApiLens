@@ -1,0 +1,29 @@
+# ApiLens 의존성 그래프 제출 — main 에 push 될 때 Gradle 해석 결과를 GitHub 의존성 그래프에 올린다.
+# [Phase R30] R30/AC-R30-26 — 검사망 세 장치 중 하나(사용자 명시 결정 UD-R30-6 · 10).
+#   결과는 GitHub 의 Dependabot 알림으로만 보인다(빌드를 막지 않는다 · 알림만).
+#   ★쓰기 권한(contents: write)은 이 워크플로에만 둔다 — ci.yml 은 읽기, release.yml 은 자기 job 에서만 쓰기.
+#   ★못 보는 영역: Gitea origin 에서는 이 워크플로가 돌지 않는다(GitHub 미러에서만) · 저장소 설정의
+#     의존성 그래프가 꺼져 있으면 제출이 받아지지 않는다(저장소 설정은 사용자 손).
+name: Dependency submission
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  dependency-submission:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup JDK 21
+        uses: actions/setup-java@v6
+        with:
+          java-version: '21'
+          distribution: temurin
+
+      - name: Generate and submit dependency graph
+        uses: gradle/actions/dependency-submission@v6

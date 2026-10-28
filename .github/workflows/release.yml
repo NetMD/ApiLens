@@ -10,13 +10,14 @@ on:
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    # [Phase R30] R30/AC-R30-30 — 러너 고정 · 액션은 그날 최신 메이저(2026-10-28 20:12 releases API · 전부 node24).
+    runs-on: ubuntu-24.04
     permissions:
       contents: write  # Release 생성 + asset 업로드 권한
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           # [Phase R26] R26/AC-R26-39/R26/AC-R26-40 — 아래 조상 검사가 보려면 **전체 이력**이 필요하다.
           #   기본값(얕은 받기)이면 merge-base 가 볼 커밋이 없어 검사가 **조용히 실패**한다 —
@@ -59,7 +60,7 @@ jobs:
 
       # 1. UI 빌드 (server jar 에 임베드되려면 dist 가 먼저 있어야 함)
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '20'
           cache: 'npm'
@@ -73,7 +74,7 @@ jobs:
 
       # 2. agent shadow jar + server bootJar (UI 임베드) 빌드
       - name: Setup JDK
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: 'temurin'
           java-version: '21'
@@ -116,7 +117,8 @@ jobs:
 
       # 4. Release 생성 + jar 2종 첨부
       - name: Create Release
-        uses: softprops/action-gh-release@v2
+        # v3.0.3 action.yml 실측: 아래 입력 6(name · body_path · draft · prerelease · files · fail_on_unmatched_files) 모두 있음.
+        uses: softprops/action-gh-release@v3
         with:
           name: ApiLens ${{ github.ref_name }}
           body_path: release-notes/${{ github.ref_name }}.md
