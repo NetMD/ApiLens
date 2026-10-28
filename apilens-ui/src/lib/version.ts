@@ -23,4 +23,9 @@
 //   package.json 과 같이 올린다(version.test.ts 가 앞 두 자리 일치를 단언). lock 은 npm 으로 버전 줄만.
 // [Phase Y / R28] AC-28-06-1 (FT-40): v0.8 → v0.9 — v0.9.0 릴리스 UI 표시 라벨 (package.json 0.9.0 동기 · minor = 사용자 확정 ①).
 //   CLAUDE.md ':28' 「9. **버전」 — 제품 버전 원본은 build.gradle.kts, 이 파일은 표시 라벨. lock 은 npm 으로 버전 줄만.
-export const APP_VERSION = 'v0.9';
+// [Phase AA / R30] AC-R30-40 (FR-R30-16 · DD-R30-23): v0.9 → v0.10 — v0.10.0 릴리스 UI 표시 라벨 (package.json 0.10.0 동기).
+//   사용자 명시 비협상 결정(UD-R30-12 「v0.10.0」). CLAUDE.md ':28' 「9. **버전」 — 제품 버전 원본은 build.gradle.kts, 이 파일은 표시 라벨.
+//   라벨이 처음으로 다섯 글자가 된다(minor 두 자리) — 사용처 둘(BrandNav · Setup.tsx wizard 헤더)은 폭 고정 없는 인라인 span 이라
+//   잘림 · 줄바꿈 자리가 없다(R30 dev-frontend 실측 · 최종 확인 = 육안 VR-R30-02). lock 은 npm version 으로 버전 줄만.
+// [R30 · AC-R30-40 · UD-R30-12] 화면 라벨 `v0.10`: `version.ts` 상수 · `package.json` 0.10.0 · lock 버전 줄(npm 으로만) · `version.test.ts` 초록 · ② 하나만 올린 입력은 빨강(기존 `matchesPackageJsonMajorMinor` 가 잡음)
+export const APP_VERSION = 'v0.10';
