@@ -125,7 +125,8 @@ class OpenApiDocsIntegrationTest {
         // [Phase R27] R27/AC-27-05-1 — bump(0.7.1 → 0.8.0) 동반 정정. 이번에도 빨개지기 전에 같은 접촉에서 올렸다.
         // [Phase R28] AC-28-06-1 — bump(0.8.0 → 0.9.0) 동반 정정. 이번에도 빨개지기 전에 같은 접촉에서 올렸다.
         // [Phase R29] R29/AC-R29-40 — bump(0.9.0 → 0.9.1) 동반 정정. 이번에도 빨개지기 전에 같은 접촉에서 올렸다.
-        assertEquals("0.9.1", info.get("version").asText(), "info.version must track the Gradle build version");
+        // [Phase R30] R30/AC-R30-39 — bump(0.9.1 → 0.10.0) 동반 정정. 같은 접촉에서 올렸다.
+        assertEquals("0.10.0", info.get("version").asText(), "info.version must track the Gradle build version");
         assertEquals("ApiLens API", info.get("title").asText());
     }
 

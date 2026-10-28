@@ -67,7 +67,11 @@ allprojects {
     //   UD-R29-1). **스키마 변경 0 · agent 소스 변경 0** — 되돌리는 길은 이전 jar 로 바꾸는 것뿐이다. 새로 빌드한
     //   agent jar 는 제품 버전(0.9.1)을 보고하고, 다시 배포하지 않은 agent 는 이전 라벨 그대로 보인다 — 둘 다 정상이다.
     //   ★OpenApiDocsIntegrationTest 의 info.version 단언도 이번 접촉에서 함께 올렸다.
-    version = "0.9.1"
+    // [Phase R30] R30/AC-R30-39 — 0.9.1 → 0.10.0 (minor: Spring Boot 4.1 판올림 · agent Jackson 2.18.10 재배포 — 사용자 명시
+    //   결정 「v0.10.0」). **스키마 변경 0** — 되돌리는 길은 이전 jar 로 바꾸는 것뿐이다. agent 코드는 그대로지만 안의 Jackson 이
+    //   바뀌어 다시 배포해야 고침판이 대상 앱에 닿는다. 새로 빌드한 agent jar 는 제품 버전(0.10.0)을 보고한다.
+    //   ★OpenApiDocsIntegrationTest 의 info.version 단언도 이번 접촉에서 함께 올렸다.
+    version = "0.10.0"
 }
 
 subprojects {

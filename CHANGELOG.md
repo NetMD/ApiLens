@@ -22,6 +22,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - (candidate) **공유 마스킹 엔진 ReDoS 방어의 현재 상태** — 지금은 실행 시간 상한(deadline)으로 막고 있습니다. 정규식 매칭 자체를 backtracking 없는 방식으로 바꾸는 안은 **검토만 해 본 상태**이고, 채택 여부도 시기도 정해진 것이 없습니다. **다음 agent 라운드로 이관했습니다.**
 - (candidate) JDBC PreparedStatement 파라미터의 이름 기반 마스킹 보강 — 현재 PAYLOAD IN 키가 parameterIndex 라 이름 기반 룰이 매칭되지 않는 한계 개선. **다음 agent 라운드로 이관했습니다.**
 
+## [0.10.0] - 2026-10-28
+
+> **collector(server)를 Spring Boot 4.1 로 올린 판입니다.** 서버가 쓰는 Spring Framework · Tomcat · Hibernate · Flyway · SQLite 드라이버가 모두 새 지원 라인으로 바뀌었습니다.
+> **agent 도 다시 배포하세요** — agent 코드는 바뀌지 않았지만 안에 든 Jackson 이 보안 고침판으로 바뀌었습니다. 새 agent jar 로 바꾸고 대상 앱을 재시작해야 그 고침이 대상 앱에 닿습니다. 다시 배포하지 않은 agent 도 새 collector 로 그대로 보낼 수 있습니다.
+> **DB 스키마는 바뀌지 않습니다.** 마이그레이션이 없어, 되돌리려면 이전 jar 로 바꾸기만 하면 됩니다.
+> 화면 왼쪽 위 버전 라벨이 `v0.10` 으로 바뀝니다.
+
+### BREAKING CHANGES
+
+_이 release 에는 하위호환을 깨는 변경이 없습니다._ API 경로 · 요청 · 응답의 필드 이름 · 타입이 그대로이고, `/v3/api-docs` 문서도 OpenAPI 3.0 꼴 그대로입니다. 아래 「실패 모드 변경」은 agent 가 만들지 않는 잘못된 요청에만 해당합니다.
+
+### Changed
+
+- **서버 지원 라인 전환** — Spring Boot 3.4.1 → 4.1.2 (Spring Framework 7.0 · Tomcat 11.0 · Hibernate 7.4 · Flyway 12.4 · SQLite 드라이버 3.53.4.0 · springdoc 3.2). 서버 JSON 처리는 Jackson 3 가 맡고, 마스킹 엔진만 agent 와 같은 Jackson 2 를 씁니다(서버 안에서 두 판이 함께 있습니다).
+- **실패 모드 변경** — `POST /v1/spans` 본문이 숫자 칸에 `null` 을 넣었거나 올바른 JSON 뒤에 글자가 더 붙어 있으면, 전에는 그 값을 0 으로 읽거나 뒤 글자를 무시하고 `202` 로 받았지만 이제 `400` 으로 거절합니다. agent 는 이런 본문을 만들지 않습니다.
+- **실행 JDK** — 컴파일은 Java 21 그대로이고, 수집기를 Java 21 ~ 27 에서 띄울 수 있습니다.
+- **agent 안의 Jackson** 을 2.18.10 으로 올렸습니다(relocate 된 채 jar 안에 들어 있어 대상 앱의 Jackson 과 부딪히지 않습니다).
+- **빌드 도구** — Gradle wrapper 8.11.1 → 8.14.6. Gradle 9 는 agent jar 안 구성이 달라지는 문제가 있어 이번에는 올리지 않았습니다.
+- **버전 0.9.1 → 0.10.0** (collector jar · agent jar · 화면 라벨 `v0.10`).
+- 문서: 공식 페이지에서 확인한 보안 공지 대조표 `docs/security.md` 를 더했습니다.
+
+### Security
+
+- 이번 판올림으로 Spring Framework · Spring Boot · Tomcat · Jackson · SQLite · logback 의 공지된 취약점 고침판 위로 올라갔습니다. 공지별 영향 범위 · 고침판 · 이 제품에서의 성립 조건은 [`docs/security.md`](docs/security.md) 에 있습니다. 대조한 공지 가운데 이 제품에서 성립 조건이 갖춰진 것은 없었습니다.
+- CI 에 배포물 의존성 취약점 검사(`npm audit`) · 의존성 그래프 제출 · Dependabot 알림 · Spring Boot 지원 기간 경고를 더했습니다.
+
 ## [0.9.1] - 2026-10-20
 
 > **agent 는 다시 배포하지 않아도 됩니다** — agent 코드는 바뀌지 않았습니다. 새로 빌드한 agent jar 로 바꾸고 대상 앱을 재시작하면 agent 버전 라벨이 `0.9.1` 로 보이고, 다시 배포하지 않은 agent 는 이전 라벨 그대로 보입니다. 둘 다 정상입니다.

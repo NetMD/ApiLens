@@ -57,6 +57,7 @@ docs/*
 !docs/agent-options.md
 !docs/otel-attributes.md
 !docs/setup.md
+!docs/security.md
 examples/
 prompt/
 scripts/stop-words.txt

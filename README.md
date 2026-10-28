@@ -71,7 +71,7 @@ what value actually hit the database.* It has been dogfooded against a live prod
 | 📕 단일 jar 배포 | agent + collector + storage + UI 가 하나의 jar |
 | 🧩 표준 호환 | OpenTelemetry 호환 span 모델 · 계측된 요청 흐름의 trace/span ID 는 W3C Trace Context 형식(32/16자리 16진수) (`traceparent` 헤더 전파는 향후 예정 — 아래 [로드맵](#향후-예정--roadmap)) |
 
-- **백엔드 | Backend**: Java 21 (21~25 호환) · Spring Boot 3.x · SQLite + Flyway
+- **백엔드 | Backend**: Java 21 (21~27 호환) · Spring Boot 4.1 · SQLite + Flyway
 - **에이전트 | Agent**: ByteBuddy + premain — 모든 의존성을 `io.apilens.agent.shaded.*` 로 relocate 하여 호스트 앱과 클래스 충돌 0
 - **UI**: React + Vite + TypeScript (단일 jar 안에 임베드)
 
