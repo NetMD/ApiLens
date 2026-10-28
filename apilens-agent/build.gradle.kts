@@ -2,6 +2,11 @@
 // premain 진입점, ByteBuddy로 controller/service/repo/JDBC 자동 instrument
 // 사용자 앱 클래스로더와 충돌 방지를 위해 shadow jar로 의존성 relocate
 
+// [Phase R30] R30/AC-R30-49 — shadow 는 8.3.5 그대로 둔다(설계 정정 DV-B-R30-02 둘째 출구 · Gradle 8.14 경유).
+//   9.6.1 로 올리면 같은 소스에서 jar 가 달라진다 — 판별 다중 판(META-INF/versions/*) 엔트리까지 relocate 되고
+//   manifest 에 Multi-Release: true 가 붙어, 호스트 JVM 이 그 판별 클래스를 실제로 싣게 된다(8.3.5 산출에선 죽은 엔트리).
+//   이 변화를 받을지는 Gradle 9 덩이(CM-R30-3b)에서 정한다. CLAUDE.md '아키텍처 핵심 원칙'(Agent 자체 장애가 호스트 앱에
+//   영향 0) · 'Build 설정 lessons §1'(shadow jar relocate 함정) 인용.
 plugins {
     id("com.gradleup.shadow") version "8.3.5"
 }
@@ -79,6 +84,8 @@ tasks.shadowJar {
 }
 
 // build 태스크가 shadowJar를 산출물로 인식하게
-artifacts {
-    archives(tasks.shadowJar)
+// [Phase R30] R30/AC-R30-49 — Gradle 9 는 archives 구성에 산출물을 적는 꼴을 폐기 예고했다(Gradle 10 에서 오류).
+//   안내대로 assemble 이 shadowJar 를 직접 의존하게 바꾼다 — build/assemble 이 shadow jar 를 만든다는 뜻은 같다.
+tasks.assemble {
+    dependsOn(tasks.shadowJar)
 }
