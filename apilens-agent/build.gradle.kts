@@ -25,7 +25,11 @@ dependencies {
     // agent ↔ server end-to-end 통합 테스트가 이 모듈에 있어서 server를 test 시점에 로드.
     // 반대 방향(server → agent)은 shadow jar의 의존성 흡수 + relocate로 인해 깨지므로
     // 통합 테스트의 거주지로 agent 쪽이 안전하다 (server는 raw 모듈을 그대로 노출).
-    testImplementation(project(":apilens-server"))
+    // [Phase R30] R30/AC-R30-07 — 서버는 dialects 를 판 없는 별칭으로 선언한다(서버 BOM 이 판을 준다). agent 는 BOM 밖이라
+    //   전이로 받으면 판이 비어 해석이 깨진다 → 여기서 뺀다(설계 정정 DV-S-R30-1 갈래 ⓒ · agent 시험은 JPA 방언을 안 쓴다).
+    testImplementation(project(":apilens-server")) {
+        exclude(group = "org.hibernate.orm", module = "hibernate-community-dialects")
+    }
     testImplementation(libs.spring.boot.starter.test)
     // [R11] R11 P0 회수: AdviceSupportSerializeReturnSafetyTest 가 org.springframework.http.ResponseEntity
     // 를 직접 import (Layer 2 unwrapResponseEntity 검증). apilens-server 의 implementation(spring-web)
@@ -39,6 +43,18 @@ dependencies {
     // 통합 테스트가 직접 사용하기 위해 명시적으로 추가.
     testImplementation(libs.flyway.core)
     testImplementation(libs.spring.boot.starter.jdbc)
+}
+
+// [Phase R30] R30/AC-R30-23 — 시험 클래스패스의 계측 엔진(byte-buddy)을 배포물(shadow jar)과 같은 판에 묶는다(설계 DD-R30-19).
+//   Boot 시험 스타터가 끌어오는 assertj 가 더 높은 byte-buddy 를 요청해 시험만 다른 엔진으로 돌게 되면, agent 시험 212 가
+//   배포물을 증명하지 못한다. 시험 구성 두 개에만 건다 — runtimeClasspath(배포물)는 원래 카탈로그 판 그대로다.
+//   CLAUDE.md '아키텍처 핵심 원칙'(Agent 는 가볍게 · 호스트 앱 영향 0) 인용.
+val agentTestByteBuddy = libs.versions.byteBuddy.get()
+configurations.named("testCompileClasspath") {
+    resolutionStrategy.force("net.bytebuddy:byte-buddy:$agentTestByteBuddy", "net.bytebuddy:byte-buddy-agent:$agentTestByteBuddy")
+}
+configurations.named("testRuntimeClasspath") {
+    resolutionStrategy.force("net.bytebuddy:byte-buddy:$agentTestByteBuddy", "net.bytebuddy:byte-buddy-agent:$agentTestByteBuddy")
 }
 
 // [v0.8.0] agent 가 보고하는 버전을 제품 버전에 묶는다 — 빌드가 리소스에 버전을 심고 AgentMain 이 읽는다.
