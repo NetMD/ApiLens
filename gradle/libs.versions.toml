@@ -43,6 +43,11 @@ jackson-jsr310 = { module = "com.fasterxml.jackson.datatype:jackson-datatype-jsr
 jupiter-api = { module = "org.junit.jupiter:junit-jupiter-api", version.ref = "jupiter" }
 jupiter-engine = { module = "org.junit.jupiter:junit-jupiter-engine", version.ref = "jupiter" }
 mockito-core = { module = "org.mockito:mockito-core", version.ref = "mockito" }
+# [Phase R30] R30/AC-R30-01 — 시험 실행기(launcher)를 모듈마다 직접 선언한다(루트 build.gradle.kts subprojects).
+#   Gradle 이 시험 실행기를 스스로 끌어오던 옛 동작은 Gradle 9 에서 없어진다 — 지금 선언해 두어야 9 로 올려도 시험이 돈다.
+#   launcher 는 판을 적지 않는다: junit-bom(판 = jupiter 키)이 판을 준다 — BOM 밖 모듈(agent · common)도 같은 길로 판을 얻는다.
+junit-bom = { module = "org.junit:junit-bom", version.ref = "jupiter" }
+junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher" }
 
 [plugins]
 spring-boot = { id = "org.springframework.boot", version.ref = "springBoot" }

@@ -88,6 +88,15 @@ subprojects {
         useJUnitPlatform()
     }
 
+    // [Phase R30] R30/AC-R30-01 — 시험 실행기(junit-platform-launcher)를 시험 런타임에 직접 선언한다.
+    //   Gradle 이 시험 실행기를 스스로 붙이던 옛 동작은 Gradle 9 에서 없어진다(이 라운드 Gradle 9 판올림의 선행 덩이).
+    //   판은 junit-bom(카탈로그 jupiter 키)이 준다 — Spring BOM 밖인 agent · common 도 같은 길로 판을 얻는다.
+    //   이 블록이 없으면 Gradle 9 에서 시험이 0 건 돌고 초록처럼 보인다 — 순서(이 덩이 → Gradle 판올림)를 바꾸지 않는다.
+    dependencies {
+        "testRuntimeOnly"(platform(rootProject.libs.junit.bom))
+        "testRuntimeOnly"(rootProject.libs.junit.platform.launcher)
+    }
+
     tasks.withType<JavaCompile> {
         options.encoding = "UTF-8"
         options.compilerArgs.addAll(listOf("-Xlint:all", "-parameters"))
