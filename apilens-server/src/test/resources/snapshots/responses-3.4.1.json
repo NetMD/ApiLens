@@ -1,0 +1,2893 @@
+{
+  "capturedAt": "2026-10-28T20:25:41+09:00",
+  "springBootVersion": "3.4.1",
+  "serverInfo": "Apache Tomcat/10.1.34",
+  "fixture": {
+    "source": "ResponseSnapshotIntegrationTest#fixtureBody",
+    "service": "snapshot-svc",
+    "traces": 3,
+    "spans": 9,
+    "payloads": 2,
+    "maskingReactivePayloads": 1,
+    "firstStartTime": 1767225600000
+  },
+  "notes": {
+    "SN-R30-15": "limit=abc (숫자 매개변수에 글자)",
+    "SN-R30-16": "없는 trace id = 0 32 자",
+    "SN-R30-17": "spans[0].startTime = null (원시 필드)",
+    "SN-R30-18": "올바른 본문 끝에 잉여 토큰 ' 1'",
+    "volatile": "같은 판으로 두 번 기록한 두 파일의 트리가 다른 포인터 전부(대상:JSON 포인터) — 0b 커밋 뒤 늘리지 않는다"
+  },
+  "volatile": [
+    "SN-R30-05:/services/0/lastSeenAt",
+    "SN-R30-05:/services/0/registeredAt",
+    "SN-R30-12:/window/fromMs",
+    "SN-R30-12:/window/queriedAtMs",
+    "SN-R30-12:/window/toMs",
+    "SN-R30-13:/servers/0/url"
+  ],
+  "targets": [
+    {
+      "sn": "SN-R30-19",
+      "method": "POST",
+      "path": "/v1/spans",
+      "status": 202,
+      "bodyKind": "json",
+      "body": {
+        "accepted": 9,
+        "traces": 3
+      }
+    },
+    {
+      "sn": "SN-R30-01",
+      "method": "GET",
+      "path": "/v1/traces?service=snapshot-svc",
+      "status": 200,
+      "bodyKind": "json",
+      "body": {
+        "traces": [
+          {
+            "traceId": "5a750000000000000000000000000003",
+            "rootOperation": "GET /orders/3",
+            "serviceName": "snapshot-svc",
+            "startTime": 1767225720000,
+            "durationMs": 120,
+            "status": "OK",
+            "spanCount": 3,
+            "hasError": false
+          },
+          {
+            "traceId": "5a750000000000000000000000000002",
+            "rootOperation": "GET /orders/2",
+            "serviceName": "snapshot-svc",
+            "startTime": 1767225660000,
+            "durationMs": 120,
+            "status": "ERROR",
+            "spanCount": 3,
+            "hasError": true
+          },
+          {
+            "traceId": "5a750000000000000000000000000001",
+            "rootOperation": "GET /orders/1",
+            "serviceName": "snapshot-svc",
+            "startTime": 1767225600000,
+            "durationMs": 120,
+            "status": "OK",
+            "spanCount": 3,
+            "hasError": false
+          }
+        ],
+        "nextCursor": null
+      }
+    },
+    {
+      "sn": "SN-R30-02",
+      "method": "GET",
+      "path": "/v1/traces/5a750000000000000000000000000001",
+      "status": 200,
+      "bodyKind": "json",
+      "body": {
+        "trace": {
+          "traceId": "5a750000000000000000000000000001",
+          "rootOperation": "GET /orders/1",
+          "serviceName": "snapshot-svc",
+          "startTime": 1767225600000,
+          "durationMs": 120,
+          "status": "OK",
+          "spanCount": 3,
+          "hasError": false
+        },
+        "rootSpanId": "5a75000100000000",
+        "spans": [
+          {
+            "spanId": "5a75000100000000",
+            "parentSpanId": null,
+            "serviceName": "snapshot-svc",
+            "operationName": "GET /orders/1",
+            "spanKind": "SERVER",
+            "startTime": 1767225600000,
+            "endTime": 1767225600120,
+            "status": "OK",
+            "attributes": {
+              "http.method": "GET",
+              "http.status_code": 200,
+              "http.route": "/orders/{id}",
+              "sampled": true
+            }
+          },
+          {
+            "spanId": "5a75000100000001",
+            "parentSpanId": "5a75000100000000",
+            "serviceName": "snapshot-svc",
+            "operationName": "OrderService.find",
+            "spanKind": "INTERNAL",
+            "startTime": 1767225600010,
+            "endTime": 1767225600050,
+            "status": "OK",
+            "attributes": {
+              "code.function": "find",
+              "ratio": 0.25
+            }
+          },
+          {
+            "spanId": "5a75000100000002",
+            "parentSpanId": "5a75000100000001",
+            "serviceName": "snapshot-svc",
+            "operationName": "SELECT orders",
+            "spanKind": "DB",
+            "startTime": 1767225600060,
+            "endTime": 1767225600100,
+            "status": "OK",
+            "attributes": {
+              "db.system": "sqlite",
+              "rows": 1,
+              "db.statement": "SELECT * FROM orders WHERE id = ?"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "sn": "SN-R30-03",
+      "method": "GET",
+      "path": "/v1/traces/5a750000000000000000000000000001/spans/5a75000100000000/payloads",
+      "status": 200,
+      "bodyKind": "json",
+      "body": {
+        "payloads": [
+          {
+            "direction": "in",
+            "contentType": "application/json",
+            "body": "{\"user\":\"kim\",\"password\":\"***\"}",
+            "sizeBytes": 38,
+            "truncated": false
+          },
+          {
+            "direction": "out",
+            "contentType": "application/json",
+            "body": "{\"orderId\":1,\"total\":12.5}",
+            "sizeBytes": 27,
+            "truncated": false
+          }
+        ]
+      }
+    },
+    {
+      "sn": "SN-R30-04",
+      "method": "GET",
+      "path": "/v1/trace-points?service=snapshot-svc&since=1767225540000&until=1767229200000",
+      "status": 200,
+      "bodyKind": "json",
+      "body": {
+        "bucketMs": 10000,
+        "totalCount": 3,
+        "errorCount": 1,
+        "errorsReduced": false,
+        "points": [
+          {
+            "traceId": "5a750000000000000000000000000001",
+            "rootOperation": "GET /orders/1",
+            "startTime": 1767225600000,
+            "durationMs": 120,
+            "status": "OK",
+            "hasError": false
+          },
+          {
+            "traceId": "5a750000000000000000000000000003",
+            "rootOperation": "GET /orders/3",
+            "startTime": 1767225720000,
+            "durationMs": 120,
+            "status": "OK",
+            "hasError": false
+          },
+          {
+            "traceId": "5a750000000000000000000000000002",
+            "rootOperation": "GET /orders/2",
+            "startTime": 1767225660000,
+            "durationMs": 120,
+            "status": "ERROR",
+            "hasError": true
+          }
+        ],
+        "buckets": [
+          {
+            "start": 1767225600000,
+            "count": 1,
+            "errorCount": 0
+          },
+          {
+            "start": 1767225660000,
+            "count": 1,
+            "errorCount": 1
+          },
+          {
+            "start": 1767225720000,
+            "count": 1,
+            "errorCount": 0
+          }
+        ]
+      }
+    },
+    {
+      "sn": "SN-R30-05",
+      "method": "GET",
+      "path": "/v1/services",
+      "status": 200,
+      "bodyKind": "json",
+      "body": {
+        "services": [
+          {
+            "name": "snapshot-svc",
+            "registeredAt": 1793186740944,
+            "lastSeenAt": 1793186740944,
+            "source": "auto",
+            "traceCount": 0,
+            "healthStatus": "active",
+            "agentVersion": null
+          }
+        ]
+      }
+    },
+    {
+      "sn": "SN-R30-06",
+      "method": "GET",
+      "path": "/v1/masking-rules",
+      "status": 200,
+      "bodyKind": "json",
+      "body": {
+        "rules": [
+          {
+            "ruleId": 1,
+            "name": "주민번호",
+            "ruleType": "regex",
+            "pattern": "\\d{6}-?\\d{7}",
+            "maskStrategy": "partial",
+            "enabled": true,
+            "isDefault": true
+          },
+          {
+            "ruleId": 2,
+            "name": "카드번호",
+            "ruleType": "regex",
+            "pattern": "\\d{4}-?\\d{4}-?\\d{4}-?\\d{4}",
+            "maskStrategy": "partial",
+            "enabled": true,
+            "isDefault": true
+          },
+          {
+            "ruleId": 3,
+            "name": "password",
+            "ruleType": "field_name",
+            "pattern": "password|passwd|pwd",
+            "maskStrategy": "full",
+            "enabled": true,
+            "isDefault": true
+          },
+          {
+            "ruleId": 4,
+            "name": "token / secret",
+            "ruleType": "field_name",
+            "pattern": "token|secret|authorization|api[_-]?key",
+            "maskStrategy": "full",
+            "enabled": true,
+            "isDefault": true
+          }
+        ]
+      }
+    },
+    {
+      "sn": "SN-R30-07",
+      "method": "POST",
+      "path": "/v1/masking-rules/preview",
+      "status": 200,
+      "bodyKind": "json",
+      "body": {
+        "sample": "{\"ssn\":\"880101-1234567\",\"cardNumber\":\"1234-5678-9012-3456\",\"password\":\"hunter2\",\"token\":\"eyJhbGc\"}",
+        "masked": "{\"ssn\":\"880***********\",\"cardNumber\":\"1234***************\",\"password\":\"***\",\"token\":\"***\"}",
+        "contentType": "application/json"
+      }
+    },
+    {
+      "sn": "SN-R30-08",
+      "method": "GET",
+      "path": "/v1/settings",
+      "status": 200,
+      "bodyKind": "json",
+      "body": {
+        "settings": {
+          "retention.days": 30
+        },
+        "lastCleanupAt": 0
+      }
+    },
+    {
+      "sn": "SN-R30-09",
+      "method": "GET",
+      "path": "/v1/setup/state",
+      "status": 200,
+      "bodyKind": "json",
+      "body": {
+        "completed": false,
+        "completedAt": null,
+        "serverUrl": null
+      }
+    },
+    {
+      "sn": "SN-R30-10",
+      "method": "GET",
+      "path": "/v1/maintenance/status",
+      "status": 200,
+      "bodyKind": "json",
+      "body": {
+        "paused": false,
+        "pausedAt": null,
+        "sqliteBusyEncountered": 0,
+        "sqliteBusyDropped": 0,
+        "traceSummaryDeferred": 0,
+        "dbSizeBytes": 155648,
+        "freePageBytes": 0,
+        "optimizeAdvised": false
+      }
+    },
+    {
+      "sn": "SN-R30-11",
+      "method": "GET",
+      "path": "/v1/services/snapshot-svc/instrument-config",
+      "status": 404,
+      "bodyKind": "json",
+      "body": {
+        "error": "설정이 없습니다: 해당 서비스에 저장된 원격 계측 설정이 없습니다."
+      }
+    },
+    {
+      "sn": "SN-R30-12",
+      "method": "POST",
+      "path": "/v1/instrument/analysis",
+      "status": 200,
+      "bodyKind": "json",
+      "body": {
+        "window": {
+          "fromMs": 1793100341065,
+          "toMs": 1793186741065,
+          "queriedAtMs": 1793186741065
+        },
+        "summary": {
+          "totalSpans": 0,
+          "totalTraces": 0,
+          "avgSpansPerTrace": 0.0,
+          "singleSpanTraceRatio": 0.0,
+          "uniquePayloadBytes": 0
+        },
+        "totalClasses": 0,
+        "truncated": false,
+        "items": []
+      }
+    },
+    {
+      "sn": "SN-R30-13",
+      "method": "GET",
+      "path": "/v3/api-docs",
+      "status": 200,
+      "bodyKind": "json",
+      "body": {
+        "openapi": "3.0.1",
+        "info": {
+          "title": "ApiLens API",
+          "description": "ApiLens 호출 추적 서버의 REST API. 운영 서사(유지보수 503·마스킹·인증 전제)는 docs/api.md 병행.",
+          "version": "0.9.1"
+        },
+        "servers": [
+          {
+            "url": "http://127.0.0.1:51818",
+            "description": "Generated server url"
+          }
+        ],
+        "paths": {
+          "/v1/settings": {
+            "get": {
+              "tags": [
+                "settings-controller"
+              ],
+              "operationId": "getSettings",
+              "responses": {
+                "400": {
+                  "description": "Bad Request",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "200": {
+                  "description": "OK",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "$ref": "#/components/schemas/SettingsResponse"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "put": {
+              "tags": [
+                "settings-controller"
+              ],
+              "operationId": "putSettings",
+              "requestBody": {
+                "content": {
+                  "application/json": {
+                    "schema": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "object"
+                      }
+                    }
+                  }
+                },
+                "required": true
+              },
+              "responses": {
+                "400": {
+                  "description": "Bad Request",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "200": {
+                  "description": "OK",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "$ref": "#/components/schemas/SettingsResponse"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "/v1/services/{serviceName}/instrument-config": {
+            "get": {
+              "tags": [
+                "service-instrument-config-controller"
+              ],
+              "summary": "서비스별 원격 계측 설정 조회 — 미설정이면 404",
+              "operationId": "get",
+              "parameters": [
+                {
+                  "name": "serviceName",
+                  "in": "path",
+                  "required": true,
+                  "schema": {
+                    "type": "string"
+                  }
+                }
+              ],
+              "responses": {
+                "400": {
+                  "description": "Bad Request",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "200": {
+                  "description": "저장된 설정",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "$ref": "#/components/schemas/InstrumentConfigPayload"
+                      }
+                    }
+                  }
+                },
+                "404": {
+                  "description": "설정 없음",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "string",
+                        "example": {
+                          "error": "..."
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "put": {
+              "tags": [
+                "service-instrument-config-controller"
+              ],
+              "summary": "서비스별 원격 계측 설정 저장 (전체 교체·멱등) — agent 는 줄이는 방향만 적용(기준점 = JVM 기동 -D 값)",
+              "operationId": "put",
+              "parameters": [
+                {
+                  "name": "serviceName",
+                  "in": "path",
+                  "required": true,
+                  "schema": {
+                    "type": "string"
+                  }
+                }
+              ],
+              "requestBody": {
+                "content": {
+                  "application/json": {
+                    "schema": {
+                      "$ref": "#/components/schemas/InstrumentConfigPayload"
+                    }
+                  }
+                },
+                "required": true
+              },
+              "responses": {
+                "400": {
+                  "description": "입력 검증 실패 (serviceName 공백/길이, gateExcludes 개수·항목 길이 초과 등)",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "string",
+                        "example": {
+                          "error": "..."
+                        }
+                      }
+                    }
+                  }
+                },
+                "200": {
+                  "description": "저장된 설정 echo",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "$ref": "#/components/schemas/InstrumentConfigPayload"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "delete": {
+              "tags": [
+                "service-instrument-config-controller"
+              ],
+              "summary": "서비스별 원격 계측 설정 철회 (멱등) — agent 에 이미 적용된 값은 되돌리지 않음(복귀는 PUT 또는 JVM 재시작)",
+              "operationId": "delete",
+              "parameters": [
+                {
+                  "name": "serviceName",
+                  "in": "path",
+                  "required": true,
+                  "schema": {
+                    "type": "string"
+                  }
+                }
+              ],
+              "responses": {
+                "400": {
+                  "description": "Bad Request",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "200": {
+                  "description": "OK"
+                }
+              }
+            }
+          },
+          "/v1/spans": {
+            "post": {
+              "tags": [
+                "ingest-controller"
+              ],
+              "summary": "Span 배치 수신 (agent → server ingest)",
+              "operationId": "ingest",
+              "requestBody": {
+                "content": {
+                  "application/json": {
+                    "schema": {
+                      "$ref": "#/components/schemas/IngestRequest"
+                    }
+                  }
+                },
+                "required": true
+              },
+              "responses": {
+                "400": {
+                  "description": "요청 검증 실패 (필수 필드 누락 등)",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "string",
+                        "example": {
+                          "error": "..."
+                        }
+                      }
+                    }
+                  }
+                },
+                "503": {
+                  "description": "유지보수 모드(수신 일시정지) 중 — 저장하지 않고 잠시 거절",
+                  "headers": {
+                    "Retry-After": {
+                      "description": "재시도 권장 대기(초)",
+                      "style": "simple",
+                      "schema": {
+                        "type": "integer",
+                        "example": 60
+                      }
+                    }
+                  },
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "string",
+                        "example": {
+                          "error": "..."
+                        }
+                      }
+                    }
+                  }
+                },
+                "202": {
+                  "description": "정상 수신 — 저장된 span 수와 trace 수를 반환",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "$ref": "#/components/schemas/IngestResponse"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "/v1/setup/complete": {
+            "post": {
+              "tags": [
+                "setup-controller"
+              ],
+              "operationId": "complete",
+              "requestBody": {
+                "content": {
+                  "application/json": {
+                    "schema": {
+                      "$ref": "#/components/schemas/SetupCompleteRequest"
+                    }
+                  }
+                },
+                "required": true
+              },
+              "responses": {
+                "400": {
+                  "description": "Bad Request",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "200": {
+                  "description": "OK",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "$ref": "#/components/schemas/SetupCompleteResponse"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "/v1/masking-rules": {
+            "get": {
+              "tags": [
+                "masking-rule-controller"
+              ],
+              "summary": "마스킹 룰 목록 조회 (default + custom)",
+              "operationId": "list",
+              "responses": {
+                "400": {
+                  "description": "Bad Request",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "409": {
+                  "description": "Conflict",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "404": {
+                  "description": "Not Found",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "200": {
+                  "description": "OK",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "$ref": "#/components/schemas/MaskingRuleListResponse"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "post": {
+              "tags": [
+                "masking-rule-controller"
+              ],
+              "summary": "마스킹 룰 생성 (custom)",
+              "operationId": "create",
+              "requestBody": {
+                "content": {
+                  "application/json": {
+                    "schema": {
+                      "$ref": "#/components/schemas/CreateMaskingRuleRequest"
+                    }
+                  }
+                },
+                "required": true
+              },
+              "responses": {
+                "400": {
+                  "description": "Bad Request",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "409": {
+                  "description": "Conflict",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "404": {
+                  "description": "Not Found",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "201": {
+                  "description": "Created",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "$ref": "#/components/schemas/MaskingRuleDto"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "/v1/masking-rules/preview": {
+            "post": {
+              "tags": [
+                "masking-rule-controller"
+              ],
+              "summary": "마스킹 라이브 프리뷰 (저장 전 화면 상태 반영)",
+              "operationId": "preview",
+              "requestBody": {
+                "content": {
+                  "application/json": {
+                    "schema": {
+                      "$ref": "#/components/schemas/PreviewRequest"
+                    }
+                  }
+                },
+                "required": true
+              },
+              "responses": {
+                "400": {
+                  "description": "Bad Request",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "409": {
+                  "description": "Conflict",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "404": {
+                  "description": "Not Found",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "200": {
+                  "description": "OK",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "$ref": "#/components/schemas/PreviewResponse"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "/v1/maintenance/resume": {
+            "post": {
+              "tags": [
+                "maintenance-controller"
+              ],
+              "summary": "수신 재개 — paused=false 복귀. 멱등",
+              "operationId": "resume",
+              "responses": {
+                "400": {
+                  "description": "Bad Request",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "200": {
+                  "description": "OK",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "$ref": "#/components/schemas/MaintenanceStatusResponse"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "/v1/maintenance/purge": {
+            "post": {
+              "tags": [
+                "maintenance-controller"
+              ],
+              "summary": "전체 삭제 (되돌릴 수 없음) — 파일 보존, 행만 제거",
+              "operationId": "purge",
+              "responses": {
+                "400": {
+                  "description": "Bad Request",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "200": {
+                  "description": "OK",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "$ref": "#/components/schemas/MaintenanceResult"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "/v1/maintenance/pause": {
+            "post": {
+              "tags": [
+                "maintenance-controller"
+              ],
+              "summary": "수신 일시정지 — 이후 적재는 503+Retry-After:60, 저장 0. max-pause cap(30분) 자동 재개. 멱등",
+              "operationId": "pause",
+              "responses": {
+                "400": {
+                  "description": "Bad Request",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "200": {
+                  "description": "OK",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "$ref": "#/components/schemas/MaintenanceStatusResponse"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "/v1/maintenance/optimize": {
+            "post": {
+              "tags": [
+                "maintenance-controller"
+              ],
+              "summary": "online 전체 VACUUM (행 재구성) — 원본 크기만큼 임시 공간 필요, 부족 시 busy=true 부분 실패(예외 안 던짐)",
+              "operationId": "optimize",
+              "responses": {
+                "400": {
+                  "description": "Bad Request",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "200": {
+                  "description": "OK",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "$ref": "#/components/schemas/MaintenanceResult"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "/v1/maintenance/cleanup": {
+            "post": {
+              "tags": [
+                "maintenance-controller"
+              ],
+              "summary": "보관 기간 즉시 적용 (행 DELETE) — 파일 삭제 0, freedBytes 는 삭제량보다 작을 수 있음(정상)",
+              "operationId": "cleanup",
+              "responses": {
+                "400": {
+                  "description": "Bad Request",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "200": {
+                  "description": "OK",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "$ref": "#/components/schemas/MaintenanceResult"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "/v1/instrument/simulation": {
+            "post": {
+              "tags": [
+                "instrument-analysis-controller"
+              ],
+              "summary": "고른 대상을 뺐을 때의 예상 결과 (용량은 감산 · trace 는 재계산) — 읽기 전용, 동시에 하나만 실행",
+              "operationId": "simulate",
+              "requestBody": {
+                "content": {
+                  "application/json": {
+                    "schema": {
+                      "$ref": "#/components/schemas/SimulationRequest"
+                    }
+                  }
+                },
+                "required": true
+              },
+              "responses": {
+                "400": {
+                  "description": "Bad Request",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "504": {
+                  "description": "Gateway Timeout",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "409": {
+                  "description": "Conflict",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "200": {
+                  "description": "OK",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "$ref": "#/components/schemas/SimulationResponse"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "/v1/instrument/analysis": {
+            "post": {
+              "tags": [
+                "instrument-analysis-controller"
+              ],
+              "summary": "서비스 하나의 계측 순위 집계 (온디맨드 · 시간 구간 필수) — 읽기 전용, 동시에 하나만 실행",
+              "operationId": "analyze",
+              "requestBody": {
+                "content": {
+                  "application/json": {
+                    "schema": {
+                      "$ref": "#/components/schemas/AnalysisRequest"
+                    }
+                  }
+                },
+                "required": true
+              },
+              "responses": {
+                "400": {
+                  "description": "Bad Request",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "504": {
+                  "description": "Gateway Timeout",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "409": {
+                  "description": "Conflict",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "200": {
+                  "description": "OK",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "$ref": "#/components/schemas/AnalysisResponse"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "/v1/masking-rules/{ruleId}": {
+            "delete": {
+              "tags": [
+                "masking-rule-controller"
+              ],
+              "summary": "마스킹 룰 삭제 (custom만 — default는 409)",
+              "operationId": "delete_1",
+              "parameters": [
+                {
+                  "name": "ruleId",
+                  "in": "path",
+                  "required": true,
+                  "schema": {
+                    "type": "integer",
+                    "format": "int64"
+                  }
+                }
+              ],
+              "responses": {
+                "400": {
+                  "description": "Bad Request",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "409": {
+                  "description": "Conflict",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "404": {
+                  "description": "Not Found",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "204": {
+                  "description": "No Content"
+                }
+              }
+            },
+            "patch": {
+              "tags": [
+                "masking-rule-controller"
+              ],
+              "summary": "마스킹 룰 토글 (활성/비활성)",
+              "operationId": "toggle",
+              "parameters": [
+                {
+                  "name": "ruleId",
+                  "in": "path",
+                  "required": true,
+                  "schema": {
+                    "type": "integer",
+                    "format": "int64"
+                  }
+                }
+              ],
+              "requestBody": {
+                "content": {
+                  "application/json": {
+                    "schema": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "object"
+                      }
+                    }
+                  }
+                },
+                "required": true
+              },
+              "responses": {
+                "400": {
+                  "description": "Bad Request",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "409": {
+                  "description": "Conflict",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "404": {
+                  "description": "Not Found",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "200": {
+                  "description": "OK",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "$ref": "#/components/schemas/MaskingRuleDto"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "/v1/traces": {
+            "get": {
+              "tags": [
+                "trace-query-controller"
+              ],
+              "summary": "Trace 목록 조회 (대시보드 리스트)",
+              "operationId": "listTraces",
+              "parameters": [
+                {
+                  "name": "service",
+                  "in": "query",
+                  "required": false,
+                  "schema": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "name": "since",
+                  "in": "query",
+                  "required": false,
+                  "schema": {
+                    "type": "integer",
+                    "format": "int64"
+                  }
+                },
+                {
+                  "name": "until",
+                  "in": "query",
+                  "required": false,
+                  "schema": {
+                    "type": "integer",
+                    "format": "int64"
+                  }
+                },
+                {
+                  "name": "status",
+                  "in": "query",
+                  "required": false,
+                  "schema": {
+                    "type": "string",
+                    "enum": [
+                      "OK",
+                      "ERROR"
+                    ]
+                  }
+                },
+                {
+                  "name": "q",
+                  "in": "query",
+                  "required": false,
+                  "schema": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "name": "limit",
+                  "in": "query",
+                  "required": false,
+                  "schema": {
+                    "type": "integer",
+                    "format": "int32"
+                  }
+                },
+                {
+                  "name": "cursor",
+                  "in": "query",
+                  "required": false,
+                  "schema": {
+                    "type": "string"
+                  }
+                }
+              ],
+              "responses": {
+                "400": {
+                  "description": "Bad Request",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "503": {
+                  "description": "Service Unavailable",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "404": {
+                  "description": "Not Found",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "200": {
+                  "description": "OK",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "$ref": "#/components/schemas/TraceListResponse"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "/v1/traces/{traceId}": {
+            "get": {
+              "tags": [
+                "trace-query-controller"
+              ],
+              "summary": "Trace 상세 조회 (노드 그래프용 span 목록)",
+              "operationId": "getTrace",
+              "parameters": [
+                {
+                  "name": "traceId",
+                  "in": "path",
+                  "required": true,
+                  "schema": {
+                    "type": "string"
+                  }
+                }
+              ],
+              "responses": {
+                "400": {
+                  "description": "Bad Request",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "503": {
+                  "description": "Service Unavailable",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "404": {
+                  "description": "Not Found",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "200": {
+                  "description": "OK",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "$ref": "#/components/schemas/TraceDetailResponse"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "/v1/traces/{traceId}/spans/{spanId}/payloads": {
+            "get": {
+              "tags": [
+                "trace-query-controller"
+              ],
+              "summary": "Payload 조회 (노드 클릭 시 lazy load) — body 는 이미 마스킹 적용된 결과(저장 시 1회 적용, 재마스킹 없음)",
+              "operationId": "getPayloads",
+              "parameters": [
+                {
+                  "name": "traceId",
+                  "in": "path",
+                  "required": true,
+                  "schema": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "name": "spanId",
+                  "in": "path",
+                  "required": true,
+                  "schema": {
+                    "type": "string"
+                  }
+                }
+              ],
+              "responses": {
+                "400": {
+                  "description": "Bad Request",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "503": {
+                  "description": "Service Unavailable",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "404": {
+                  "description": "Not Found",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "200": {
+                  "description": "OK",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "$ref": "#/components/schemas/PayloadListResponse"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "/v1/trace-points": {
+            "get": {
+              "tags": [
+                "trace-query-controller"
+              ],
+              "summary": "대표 점 조회 (대시보드 산점도 — 칸마다 가장 느린 정상 trace 하나와 오류)",
+              "operationId": "listTracePoints",
+              "parameters": [
+                {
+                  "name": "service",
+                  "in": "query",
+                  "required": false,
+                  "schema": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "name": "since",
+                  "in": "query",
+                  "required": false,
+                  "schema": {
+                    "type": "integer",
+                    "format": "int64"
+                  }
+                },
+                {
+                  "name": "until",
+                  "in": "query",
+                  "required": false,
+                  "schema": {
+                    "type": "integer",
+                    "format": "int64"
+                  }
+                },
+                {
+                  "name": "status",
+                  "in": "query",
+                  "required": false,
+                  "schema": {
+                    "type": "string",
+                    "enum": [
+                      "OK",
+                      "ERROR"
+                    ]
+                  }
+                },
+                {
+                  "name": "q",
+                  "in": "query",
+                  "required": false,
+                  "schema": {
+                    "type": "string"
+                  }
+                }
+              ],
+              "responses": {
+                "400": {
+                  "description": "Bad Request",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "503": {
+                  "description": "Service Unavailable",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "404": {
+                  "description": "Not Found",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "200": {
+                  "description": "OK",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "$ref": "#/components/schemas/TracePointsResponse"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "/v1/setup/state": {
+            "get": {
+              "tags": [
+                "setup-controller"
+              ],
+              "operationId": "getState",
+              "responses": {
+                "400": {
+                  "description": "Bad Request",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "200": {
+                  "description": "OK",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "$ref": "#/components/schemas/SetupStateResponse"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "/v1/setup/agent-jar": {
+            "get": {
+              "tags": [
+                "setup-controller"
+              ],
+              "operationId": "downloadAgentJar",
+              "responses": {
+                "400": {
+                  "description": "Bad Request",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "200": {
+                  "description": "OK",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "string",
+                        "format": "binary"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "/v1/setup/agent-jar-path": {
+            "get": {
+              "tags": [
+                "setup-controller"
+              ],
+              "operationId": "getAgentJarPath",
+              "responses": {
+                "400": {
+                  "description": "Bad Request",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "200": {
+                  "description": "OK",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "object"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "/v1/services": {
+            "get": {
+              "tags": [
+                "trace-query-controller"
+              ],
+              "operationId": "listServices",
+              "responses": {
+                "400": {
+                  "description": "Bad Request",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "503": {
+                  "description": "Service Unavailable",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "404": {
+                  "description": "Not Found",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "200": {
+                  "description": "OK",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ServiceListResponse"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "/v1/maintenance/status": {
+            "get": {
+              "tags": [
+                "maintenance-controller"
+              ],
+              "summary": "유지보수 상태 조회 — paused 여부·pausedAt echo (cap 경과 시 자가 재개 반영) + SQLITE_BUSY 카운터·요약 실패 카운터(인메모리 — 재시작 시 0 복귀 정상) + DB 크기·회수 가능 빈 공간(바이트, 관측 실패 시 0) + [최적화] 권고 여부(인메모리 — 재시작 뒤 첫 밤 정리 전까지 false 정상)",
+              "operationId": "status",
+              "responses": {
+                "400": {
+                  "description": "Bad Request",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "200": {
+                  "description": "OK",
+                  "content": {
+                    "*/*": {
+                      "schema": {
+                        "$ref": "#/components/schemas/MaintenanceStatusResponse"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "/v1/services/{serviceName}": {
+            "delete": {
+              "tags": [
+                "services-controller"
+              ],
+              "operationId": "delete_2",
+              "parameters": [
+                {
+                  "name": "serviceName",
+                  "in": "path",
+                  "required": true,
+                  "schema": {
+                    "type": "string"
+                  }
+                }
+              ],
+              "responses": {
+                "204": {
+                  "description": "No Content"
+                }
+              }
+            }
+          }
+        },
+        "components": {
+          "schemas": {
+            "SettingsResponse": {
+              "type": "object",
+              "properties": {
+                "settings": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "object"
+                  }
+                },
+                "lastCleanupAt": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              }
+            },
+            "InstrumentConfigPayload": {
+              "type": "object",
+              "properties": {
+                "captureParams": {
+                  "type": "boolean"
+                },
+                "captureResultSet": {
+                  "type": "boolean"
+                },
+                "requireEntryRoot": {
+                  "type": "boolean"
+                },
+                "gateExcludes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "description": "서비스별 원격 계측 설정 — 모든 필드가 선택(없으면 그 축은 지시 없음). agent 는 줄이는 방향만 적용한다(기준점 = JVM 기동 -D 값)"
+            },
+            "IngestRequest": {
+              "type": "object",
+              "properties": {
+                "spans": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Span"
+                  }
+                }
+              }
+            },
+            "Payload": {
+              "type": "object",
+              "properties": {
+                "direction": {
+                  "type": "string",
+                  "enum": [
+                    "IN",
+                    "OUT"
+                  ]
+                },
+                "contentType": {
+                  "type": "string"
+                },
+                "body": {
+                  "type": "string"
+                },
+                "sizeBytes": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "truncated": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "Span": {
+              "type": "object",
+              "properties": {
+                "spanId": {
+                  "type": "string"
+                },
+                "traceId": {
+                  "type": "string"
+                },
+                "parentSpanId": {
+                  "type": "string"
+                },
+                "serviceName": {
+                  "type": "string"
+                },
+                "operationName": {
+                  "type": "string"
+                },
+                "spanKind": {
+                  "type": "string",
+                  "enum": [
+                    "SERVER",
+                    "CLIENT",
+                    "INTERNAL",
+                    "DB",
+                    "UI_EVENT"
+                  ]
+                },
+                "startTime": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "endTime": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "OK",
+                    "ERROR"
+                  ]
+                },
+                "attributes": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "object"
+                  }
+                },
+                "payloads": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Payload"
+                  }
+                }
+              }
+            },
+            "IngestResponse": {
+              "type": "object",
+              "properties": {
+                "accepted": {
+                  "type": "integer",
+                  "format": "int32"
+                },
+                "traces": {
+                  "type": "integer",
+                  "format": "int32"
+                },
+                "instrumentConfig": {
+                  "$ref": "#/components/schemas/InstrumentConfigPayload"
+                }
+              }
+            },
+            "ServiceRegistration": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                }
+              }
+            },
+            "SetupCompleteRequest": {
+              "type": "object",
+              "properties": {
+                "serverUrl": {
+                  "type": "string"
+                },
+                "services": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ServiceRegistration"
+                  }
+                }
+              }
+            },
+            "SetupCompleteResponse": {
+              "type": "object",
+              "properties": {
+                "completed": {
+                  "type": "boolean"
+                },
+                "completedAt": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              }
+            },
+            "CreateMaskingRuleRequest": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "ruleType": {
+                  "type": "string"
+                },
+                "pattern": {
+                  "type": "string"
+                },
+                "maskStrategy": {
+                  "type": "string"
+                },
+                "enabled": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "MaskingRuleDto": {
+              "type": "object",
+              "properties": {
+                "ruleId": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "ruleType": {
+                  "type": "string"
+                },
+                "pattern": {
+                  "type": "string"
+                },
+                "maskStrategy": {
+                  "type": "string"
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "isDefault": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "PreviewRequest": {
+              "type": "object",
+              "properties": {
+                "sample": {
+                  "type": "string"
+                },
+                "contentType": {
+                  "type": "string"
+                },
+                "ruleStates": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/RuleState"
+                  }
+                }
+              }
+            },
+            "RuleState": {
+              "type": "object",
+              "properties": {
+                "ruleId": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "enabled": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "PreviewResponse": {
+              "type": "object",
+              "properties": {
+                "sample": {
+                  "type": "string"
+                },
+                "masked": {
+                  "type": "string"
+                },
+                "contentType": {
+                  "type": "string"
+                }
+              }
+            },
+            "MaintenanceStatusResponse": {
+              "type": "object",
+              "properties": {
+                "paused": {
+                  "type": "boolean"
+                },
+                "pausedAt": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "sqliteBusyEncountered": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "sqliteBusyDropped": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "traceSummaryDeferred": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "dbSizeBytes": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "freePageBytes": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "optimizeAdvised": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "MaintenanceResult": {
+              "type": "object",
+              "properties": {
+                "deletedTraces": {
+                  "type": "integer",
+                  "format": "int32"
+                },
+                "freedBytes": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "dbSizeBytes": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "busy": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "SimulationRequest": {
+              "type": "object",
+              "properties": {
+                "serviceName": {
+                  "type": "string"
+                },
+                "fromMs": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "toMs": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "targets": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "Impact": {
+              "type": "object",
+              "properties": {
+                "remainingSpans": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "resultTraces": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "avgSpansPerTrace": {
+                  "type": "number",
+                  "format": "double"
+                },
+                "singleSpanTraceRatio": {
+                  "type": "number",
+                  "format": "double"
+                }
+              }
+            },
+            "Savings": {
+              "type": "object",
+              "properties": {
+                "spanDelta": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "payloadCountDelta": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "payloadBytesDelta": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              }
+            },
+            "SimulationResponse": {
+              "type": "object",
+              "properties": {
+                "window": {
+                  "$ref": "#/components/schemas/Window"
+                },
+                "savings": {
+                  "$ref": "#/components/schemas/Savings"
+                },
+                "impact": {
+                  "$ref": "#/components/schemas/Impact"
+                },
+                "depthCapped": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "Window": {
+              "type": "object",
+              "properties": {
+                "fromMs": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "toMs": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "queriedAtMs": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              }
+            },
+            "AnalysisRequest": {
+              "type": "object",
+              "properties": {
+                "serviceName": {
+                  "type": "string"
+                },
+                "windowHours": {
+                  "type": "integer",
+                  "format": "int32"
+                }
+              }
+            },
+            "AnalysisResponse": {
+              "type": "object",
+              "properties": {
+                "window": {
+                  "$ref": "#/components/schemas/Window"
+                },
+                "summary": {
+                  "$ref": "#/components/schemas/Summary"
+                },
+                "totalClasses": {
+                  "type": "integer",
+                  "format": "int32"
+                },
+                "truncated": {
+                  "type": "boolean"
+                },
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ClassStat"
+                  }
+                }
+              }
+            },
+            "ClassStat": {
+              "type": "object",
+              "properties": {
+                "className": {
+                  "type": "string"
+                },
+                "spanCount": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "payloadCount": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "payloadBytes": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "spanRank": {
+                  "type": "integer",
+                  "format": "int32"
+                },
+                "payloadCountRank": {
+                  "type": "integer",
+                  "format": "int32"
+                },
+                "payloadBytesRank": {
+                  "type": "integer",
+                  "format": "int32"
+                },
+                "rootRatio": {
+                  "type": "number",
+                  "format": "double"
+                },
+                "backgroundWorker": {
+                  "type": "boolean"
+                },
+                "excludeStatus": {
+                  "type": "string",
+                  "enum": [
+                    "EXCLUDABLE",
+                    "NOT_EXCLUDABLE",
+                    "UNKNOWN"
+                  ]
+                },
+                "excludeReasonCode": {
+                  "type": "string",
+                  "enum": [
+                    "NO_CLASS_NAME",
+                    "PROXY_INSTRUMENTED",
+                    "UNVERIFIED_PATH"
+                  ]
+                },
+                "excludeTarget": {
+                  "type": "string"
+                }
+              }
+            },
+            "Summary": {
+              "type": "object",
+              "properties": {
+                "totalSpans": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "totalTraces": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "avgSpansPerTrace": {
+                  "type": "number",
+                  "format": "double"
+                },
+                "singleSpanTraceRatio": {
+                  "type": "number",
+                  "format": "double"
+                },
+                "uniquePayloadBytes": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              }
+            },
+            "TraceListResponse": {
+              "type": "object",
+              "properties": {
+                "traces": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TraceSummary"
+                  }
+                },
+                "nextCursor": {
+                  "type": "string"
+                }
+              }
+            },
+            "TraceSummary": {
+              "type": "object",
+              "properties": {
+                "traceId": {
+                  "type": "string"
+                },
+                "rootOperation": {
+                  "type": "string"
+                },
+                "serviceName": {
+                  "type": "string"
+                },
+                "startTime": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "durationMs": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "OK",
+                    "ERROR"
+                  ]
+                },
+                "spanCount": {
+                  "type": "integer",
+                  "format": "int32"
+                },
+                "hasError": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "SpanDto": {
+              "type": "object",
+              "properties": {
+                "spanId": {
+                  "type": "string"
+                },
+                "parentSpanId": {
+                  "type": "string"
+                },
+                "serviceName": {
+                  "type": "string"
+                },
+                "operationName": {
+                  "type": "string"
+                },
+                "spanKind": {
+                  "type": "string",
+                  "enum": [
+                    "SERVER",
+                    "CLIENT",
+                    "INTERNAL",
+                    "DB",
+                    "UI_EVENT"
+                  ]
+                },
+                "startTime": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "endTime": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "OK",
+                    "ERROR"
+                  ]
+                },
+                "attributes": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "object"
+                  }
+                }
+              }
+            },
+            "TraceDetailResponse": {
+              "type": "object",
+              "properties": {
+                "trace": {
+                  "$ref": "#/components/schemas/TraceSummary"
+                },
+                "rootSpanId": {
+                  "type": "string"
+                },
+                "spans": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SpanDto"
+                  }
+                }
+              }
+            },
+            "PayloadDto": {
+              "type": "object",
+              "properties": {
+                "direction": {
+                  "type": "string"
+                },
+                "contentType": {
+                  "type": "string"
+                },
+                "body": {
+                  "type": "string"
+                },
+                "sizeBytes": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "truncated": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "PayloadListResponse": {
+              "type": "object",
+              "properties": {
+                "payloads": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PayloadDto"
+                  }
+                }
+              }
+            },
+            "TraceBucket": {
+              "type": "object",
+              "properties": {
+                "start": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "count": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "errorCount": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              }
+            },
+            "TracePoint": {
+              "type": "object",
+              "properties": {
+                "traceId": {
+                  "type": "string"
+                },
+                "rootOperation": {
+                  "type": "string"
+                },
+                "startTime": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "durationMs": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "OK",
+                    "ERROR"
+                  ]
+                },
+                "hasError": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "TracePointsResponse": {
+              "type": "object",
+              "properties": {
+                "bucketMs": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "totalCount": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "errorCount": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "errorsReduced": {
+                  "type": "boolean"
+                },
+                "points": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TracePoint"
+                  }
+                },
+                "buckets": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TraceBucket"
+                  }
+                }
+              }
+            },
+            "SetupStateResponse": {
+              "type": "object",
+              "properties": {
+                "completed": {
+                  "type": "boolean"
+                },
+                "completedAt": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "serverUrl": {
+                  "type": "string"
+                }
+              }
+            },
+            "ServiceInfo": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "registeredAt": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "lastSeenAt": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "source": {
+                  "type": "string"
+                },
+                "traceCount": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "healthStatus": {
+                  "type": "string"
+                },
+                "agentVersion": {
+                  "type": "string"
+                }
+              }
+            },
+            "ServiceListResponse": {
+              "type": "object",
+              "properties": {
+                "services": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ServiceInfo"
+                  }
+                }
+              }
+            },
+            "MaskingRuleListResponse": {
+              "type": "object",
+              "properties": {
+                "rules": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MaskingRuleDto"
+                  }
+                }
+              }
+            },
+            "ErrorResponse": {
+              "required": [
+                "error"
+              ],
+              "type": "object",
+              "properties": {
+                "error": {
+                  "type": "string",
+                  "example": "요청을 처리할 수 없습니다."
+                }
+              },
+              "description": "ApiLens 공통 오류 응답 — flat 단일 표준(400/404/409/503). 컨텍스트 필드(traceId 등)가 추가로 붙을 수 있음."
+            }
+          }
+        }
+      }
+    },
+    {
+      "sn": "SN-R30-14",
+      "method": "GET",
+      "path": "/v1/traces?service=snapshot-svc",
+      "status": 401,
+      "bodyKind": "json",
+      "body": {
+        "error": "unauthorized"
+      }
+    },
+    {
+      "sn": "SN-R30-15",
+      "method": "GET",
+      "path": "/v1/traces?service=snapshot-svc&limit=abc",
+      "status": 400,
+      "bodyKind": "json",
+      "body": {
+        "error": "invalid parameter value"
+      }
+    },
+    {
+      "sn": "SN-R30-16",
+      "method": "GET",
+      "path": "/v1/traces/00000000000000000000000000000000",
+      "status": 404,
+      "bodyKind": "json",
+      "body": {
+        "error": "trace not found",
+        "traceId": "00000000000000000000000000000000"
+      }
+    },
+    {
+      "sn": "SN-R30-17",
+      "method": "POST",
+      "path": "/v1/spans",
+      "status": 202,
+      "bodyKind": "json",
+      "body": {
+        "accepted": 1,
+        "traces": 1
+      }
+    },
+    {
+      "sn": "SN-R30-18",
+      "method": "POST",
+      "path": "/v1/spans",
+      "status": 202,
+      "bodyKind": "json",
+      "body": {
+        "accepted": 1,
+        "traces": 1
+      }
+    }
+  ]
+}

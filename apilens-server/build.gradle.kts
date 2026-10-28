@@ -32,6 +32,15 @@ dependencies {
     // agent ↔ server end-to-end 통합 테스트는 apilens-agent 모듈에 둔다.
 }
 
+// [Phase R30] R30/AC-R30-02/R30/AC-R30-13 — 응답 스냅샷 시험(ResponseSnapshotIntegrationTest)의 기록 모드 스위치.
+//   Gradle 속성 apilensSnapshotRecord(값 = 출력 절대경로)를 시험 JVM 시스템 속성으로 넘긴다 · 없으면 빈 값 = 비교 모드.
+//   평소 ./gw test 는 늘 비교 모드다 — 기록은 판을 올리기 전 기준을 뜰 때만 손으로 켠다. 사용자 명시 비협상 결정
+//   (AC-R30-02 「3.4.1 응답 모양 스냅샷」 · 3.5 첫 커밋보다 먼저). CLAUDE.md '아키텍처 핵심 원칙'(단일 jar · 신뢰망) 인용 —
+//   시험 classpath 밖(배포 jar · bootRun)에는 닿지 않는다.
+tasks.test {
+    systemProperty("apilens.snapshot.record", providers.gradleProperty("apilensSnapshotRecord").getOrElse(""))
+}
+
 // ─── build-info 생성 (게이트 E — info.version 단일 출처) ────────────────────
 // [Phase R16] FR-06/게이트 E — META-INF/build-info.properties(build.version = Gradle version)를 생성.
 //   spring-boot-starter-actuator 가 이 파일에서 BuildProperties 빈을 자동 등록하고,
