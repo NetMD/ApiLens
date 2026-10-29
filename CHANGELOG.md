@@ -22,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - (candidate) **공유 마스킹 엔진 ReDoS 방어의 현재 상태** — 지금은 실행 시간 상한(deadline)으로 막고 있습니다. 정규식 매칭 자체를 backtracking 없는 방식으로 바꾸는 안은 **검토만 해 본 상태**이고, 채택 여부도 시기도 정해진 것이 없습니다. **다음 agent 라운드로 이관했습니다.**
 - (candidate) JDBC PreparedStatement 파라미터의 이름 기반 마스킹 보강 — 현재 PAYLOAD IN 키가 parameterIndex 라 이름 기반 룰이 매칭되지 않는 한계 개선. **다음 agent 라운드로 이관했습니다.**
 
-## [0.10.0] - YYYY-MM-DD
+## [0.10.0] - 2026-10-29
 
 > **collector(server)를 Spring Boot 4.1 로 올린 판입니다.** 서버가 쓰는 Spring Framework · Tomcat · Hibernate · Flyway · SQLite 드라이버가 모두 새 지원 라인으로 바뀌었습니다.
 > **agent 도 다시 배포하세요** — agent 코드는 바뀌지 않았지만 안에 든 Jackson 이 보안 고침판으로 바뀌었습니다. 새 agent jar 로 바꾸고 대상 앱을 재시작해야 그 고침이 대상 앱에 닿습니다. 차례는 **collector 를 먼저 올리고, agent 는 그 뒤에** 바꿉니다. 다시 배포하지 않은 agent 도 새 collector 로 그대로 보낼 수 있습니다.
