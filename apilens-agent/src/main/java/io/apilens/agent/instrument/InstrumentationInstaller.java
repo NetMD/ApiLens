@@ -19,6 +19,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.apilens.agent.config.AgentConfig;
+import io.apilens.agent.instrument.advice.ClientHttpRequestAdvice;
 import io.apilens.agent.instrument.advice.ControllerAdvice;
 import io.apilens.agent.instrument.advice.JdbcAdvice;
 import io.apilens.agent.instrument.advice.JdbcConnectionAdvice;
@@ -36,10 +37,12 @@ import net.bytebuddy.agent.builder.AgentBuilder;
 import net.bytebuddy.asm.Advice;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.dynamic.DynamicType;
+import net.bytebuddy.matcher.ElementMatcher;
 import net.bytebuddy.matcher.ElementMatchers;
 import net.bytebuddy.utility.JavaModule;
 
 import java.lang.instrument.Instrumentation;
+import java.util.List;
 import java.util.Set;
 
 /**
@@ -140,10 +143,7 @@ public final class InstrumentationInstaller {
         REQUIRE_ENTRY_ROOT = config.requireEntryRoot();
 
         try {
-            AgentBuilder builder = new AgentBuilder.Default()
-                    .with(AgentBuilder.RedefinitionStrategy.RETRANSFORMATION)
-                    .with(AgentBuilder.InitializationStrategy.NoOp.INSTANCE)
-                    .with(AgentBuilder.TypeStrategy.Default.REDEFINE);
+            AgentBuilder builder = baseBuilder();
 
             // debug=true 일 때만 transform 시도/실패를 stderr에 출력 (production 노이즈 회피)
             if (config.debug()) {
@@ -155,8 +155,7 @@ public final class InstrumentationInstaller {
                     //   비협상 결정(NFR-05: default 빈 목록 → userExcludedTypes(List.of())=none() →
                     //   ignoredTypes().or(none())=ignoredTypes() byte-identical). weaving 시점 결정,
                     //   런타임 비용 0 — static 필드 불요(advice 런타임 미참조). CLAUDE.md 'Agent 는 가볍게' 인용.
-                    .ignore(SpringMatchers.ignoredTypes()
-                            .or(SpringMatchers.userExcludedTypes(config.excludePackages())))
+                    .ignore(ignoreMatcher(config.excludePackages()))
                     // 1) Controllers — root SERVER span
                     .type(SpringMatchers.annotatedWithController())
                     .transform((b, t, cl, m, pd) -> b.visit(
@@ -193,11 +192,16 @@ public final class InstrumentationInstaller {
                             Advice.to(JdbcGetResultSetAdvice.class).on(SpringMatchers.preparedStatementGetResultSetMethod())))
                     // 5) MyBatis MapperProxy.invoke — one span per @Mapper interface call.
                     //    Spring matchers can't reach user @Mapper interfaces (no concrete impl),
-                    //    so we intercept the proxy's invoke instead. Covers the VAMS-style
+                    //    so we intercept the proxy's invoke instead. Covers the common
                     //    Controller → Service → Mapper → mapper.xml layered architecture.
                     .type(SpringMatchers.mybatisMapperProxy())
                     .transform((b, t, cl, m, pd) -> b.visit(
                             Advice.to(MyBatisMapperAdvice.class).on(SpringMatchers.mybatisMapperProxyInvoke())));
+
+            // 6) [Phase R31] R31/AC-R31-19/AC-R31-20 — 외부 호출(CLIENT). MyBatis 묶음 뒤 · captureParams 묶음 앞.
+            //    끄는 길 = 위 .ignore 의 운영자 제외 접두(org.springframework.http.client.) — 새 옵션 0.
+            //    사용자 명시 비협상 결정(UD-R31-10). CLAUDE.md '아키텍처 핵심 원칙'(Agent 는 가볍게) 인용.
+            builder = withClientHttp(builder);
 
             // 4d/4e) Phase E3 — JDBC parameter capture (사용자 비협상 D-01/D-03).
             //   Opt-in 토글이 켜졌을 때(default true) 만 매처 등록. captureParams=false 면
@@ -216,12 +220,36 @@ public final class InstrumentationInstaller {
             }
 
             builder.installOn(instrumentation);
-            logger.info("ApiLens instrumentation installed (controller/service/repository/jdbc)"
+            logger.info("ApiLens instrumentation installed (controller/service/repository/jdbc/http-client)"
                     + (config.debug() ? " [DEBUG listener active]" : ""));
         } catch (Throwable t) {
             // host app must keep running even if instrumentation fails entirely
             logger.error("instrumentation install failed; agent transport-only mode", t);
         }
+    }
+
+    // ─── [Phase R31] 설계 DD-R31-18 — install() 이 쓰는 조각 셋. 직조 시험이 production 과 같은
+    //     전략 · 무시 매처 · advice · 메서드 매처를 그대로 조립해 증명하게 한다(조립 순서는 install() 몫). ───
+
+    /** The three strategies every ApiLens builder uses (retransformation, no-op init, redefine). */
+    static AgentBuilder baseBuilder() {
+        return new AgentBuilder.Default()
+                .with(AgentBuilder.RedefinitionStrategy.RETRANSFORMATION)
+                .with(AgentBuilder.InitializationStrategy.NoOp.INSTANCE)
+                .with(AgentBuilder.TypeStrategy.Default.REDEFINE);
+    }
+
+    /** Built-in ignore list plus the operator's {@code exclude-packages} prefixes. */
+    static ElementMatcher.Junction<TypeDescription> ignoreMatcher(List<String> excludePackages) {
+        return SpringMatchers.ignoredTypes().or(SpringMatchers.userExcludedTypes(excludePackages));
+    }
+
+    /** Adds the outbound HTTP (CLIENT) transformation to {@code builder}. */
+    static AgentBuilder.Identified.Extendable withClientHttp(AgentBuilder builder) {
+        return builder
+                .type(SpringMatchers.clientHttpRequestType())
+                .transform((b, t, cl, m, pd) -> b.visit(
+                        Advice.to(ClientHttpRequestAdvice.class).on(SpringMatchers.clientHttpRequestExecuteMethod())));
     }
 
     /**

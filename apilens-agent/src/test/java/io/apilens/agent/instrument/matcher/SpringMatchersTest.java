@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Test;
 import java.lang.reflect.Method;
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -68,6 +69,59 @@ class SpringMatchersTest {
         assertFalse(matcher.matches(typeNamed("com.example.checkout.OrderController")));
         assertFalse(matcher.matches(typeNamed("org.springframework.web.bind.RequestMappingHandlerAdapter")),
                 "Spring framework classes themselves must be visited (they host user controllers)");
+    }
+
+    // ─── [Phase R31] 외부 호출 매처 · 묶음 ⓑ (설계 부록 A2-3 TC-R31-41~44) ───────────
+
+    /** TC-R31-41 — R31/AC-R31-20: 무시 목록이 외부 호출 직조 대상을 <b>안</b> 잡는다(상수화 중 넓은 접두 0). */
+    @Test
+    void keepsClientHttpRequestOutOfIgnoredTypes() {
+        ElementMatcher<TypeDescription> matcher = SpringMatchers.ignoredTypes();
+
+        assertFalse(matcher.matches(typeNamed("org.springframework.http.client.AbstractClientHttpRequest")));
+    }
+
+    /**
+     * TC-R31-42 — R31/AC-R31-22 ⓑ verbatim (UD-R31-11 비협상): "새 상수의 원소 = 옛 `ignoredTypes()` 접두와
+     * 원소 수 · 글자가 같다(원소마다 대조)". 옛 11 글자 목록을 이 시험 안에 글자로 적는다.
+     */
+    @Test
+    void keepsFrameworkIgnorePrefixesIdenticalToOldList() {
+        List<String> old = List.of(
+                "io.apilens.",
+                "net.bytebuddy.",
+                "com.fasterxml.jackson.",
+                "org.springframework.boot.loader.",
+                "org.springframework.boot.autoconfigure.",
+                "org.springframework.web.servlet.handler.",
+                "sun.",
+                "jdk.",
+                "java.",
+                "javax.",
+                "jakarta.");
+
+        assertEquals(old.size(), SpringMatchers.FRAMEWORK_IGNORE_PREFIXES.size());
+        for (int i = 0; i < old.size(); i++) {
+            assertEquals(old.get(i), SpringMatchers.FRAMEWORK_IGNORE_PREFIXES.get(i), "원소 " + i);
+        }
+    }
+
+    /** TC-R31-43 — 설계 DD-R31-01: 타입 매처는 정확한 이름만 — 하위 구현 이름은 안 잡는다. */
+    @Test
+    void matchesExactClientHttpRequestTypeOnly() {
+        ElementMatcher<TypeDescription> matcher = SpringMatchers.clientHttpRequestType();
+
+        assertTrue(matcher.matches(typeNamed("org.springframework.http.client.AbstractClientHttpRequest")));
+        assertFalse(matcher.matches(typeNamed("org.springframework.http.client.SimpleClientHttpRequest")));
+    }
+
+    /** TC-R31-44 — R31/AC-R31-19 매처 층: 운영자 제외 접두 {@code org.springframework.http.client.} 가 그 타입을 잡는다. */
+    @Test
+    void excludesClientHttpRequestByOperatorPrefix() {
+        ElementMatcher<TypeDescription> matcher =
+                SpringMatchers.userExcludedTypes(List.of("org.springframework.http.client."));
+
+        assertTrue(matcher.matches(typeNamed("org.springframework.http.client.AbstractClientHttpRequest")));
     }
 
     // ─── UT-10 ~ UT-14: MethodDescription-based matcher tests ───────────────
@@ -228,7 +282,7 @@ class SpringMatchersTest {
     }
 
     /**
-     * UT-MATCH-03: setObject 매치 단언 (Phase E3 fix¹ — VAMS dogfooding R13).
+     * UT-MATCH-03: setObject 매치 단언 (Phase E3 fix¹ — 운영 앱 dogfooding R13).
      *
      * <p>MyBatis UnknownTypeHandler 등이 setLong/setInt 대신
      * setObject(i, value[, jdbcType[, scaleOrLength]]) 호출하는 케이스가 광범위
@@ -245,7 +299,7 @@ class SpringMatchersTest {
     }
 
     /**
-     * UT-MATCH-04 ~ 05b: Phase E3 fix² (2026-05-14 VAMS dogfooding R14) — whitelist
+     * UT-MATCH-04 ~ 05b: Phase E3 fix² (2026-05-14 운영 앱 dogfooding R14) — whitelist
      * → blacklist 전환. 모든 setXxx(int parameterIndex, ...) 패턴이 매처에 포함되어야
      * 한다 (D-04 "표준 JDBC API 전부 cover" 정신). driver-specific setter
      * (setOracleObject 등) 까지 잡혀도 advice 본문이 try-catch silent drop 이라
@@ -457,7 +511,8 @@ class SpringMatchersTest {
 
     /** Synthesise a TypeDescription with a specific name — enough for nameStartsWith matchers. */
     private static TypeDescription typeNamed(String name) {
-        return new TypeDescription.Latent(name, 0, TypeDescription.Generic.OBJECT);
+        // [Phase R31] R31/AC-R31-22 — 묶음 ⓒ: 폐기 예고 상수 대신 같은 값을 주는 대체 API(단언값은 그대로).
+        return new TypeDescription.Latent(name, 0, TypeDescription.ForLoadedType.of(Object.class).asGenericType());
     }
 
     /** Build a {@link MethodDescription} from a reflective {@link Method}. */

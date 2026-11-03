@@ -69,6 +69,15 @@ public final class AdviceSupport {
      */
     private static final ThreadLocal<Boolean> IN_DB_SPAN = ThreadLocal.withInitial(() -> Boolean.FALSE);
 
+    /**
+     * [Phase R31] R31/AC-R31-09/AC-R31-10/AC-R31-65/AC-R31-66 — 외부 호출 재진입 가드(설계 DD-R31-07 ·
+     * 정정 DV-A-R31-3). 값 = enter 가 한 번 읽어 만든 요청 속성 맵 · 초기값 없음(null = 꺼짐).
+     * 진짜 frame 을 만든 쪽만 세우고, 그 쪽 exit 의 <b>첫 동작</b>이 꺼내면서 지운다 — 예외 · 상태 읽기
+     * 결과와 무관. 인터셉터 있는 클라이언트는 바깥 요청 안에서 안쪽 요청의 같은 메서드를 같은 스레드로
+     * 다시 부르므로, 가드가 없으면 호출 한 번에 기록이 둘이 된다.
+     */
+    private static final ThreadLocal<Map<String, Object>> IN_CLIENT_SPAN = new ThreadLocal<>();
+
     private AdviceSupport() {
     }
 
@@ -175,6 +184,81 @@ public final class AdviceSupport {
     }
 
     /**
+     * {@code @OnMethodEnter} helper for the outbound HTTP (CLIENT) span. Reads the request
+     * once, then goes through the common {@link #enter(String, String)} funnel (entry-point
+     * option and gate checks happen there, unchanged). Returns {@link TraceContext.Frame#SKIPPED}
+     * for a nested call on the same thread while an outer call is being recorded.
+     */
+    public static TraceContext.Frame enterClientSpan(Object request) {
+        // [Phase R31] 설계 정정 DV-A-R31-7 — frame 을 try 밖에 둔다. push 뒤 무엇이 터져도 진짜 frame 을
+        //   돌려줘야 exit 가 그것을 pop 한다(가드를 못 세웠어도 exit 의 해제는 무해).
+        TraceContext.Frame frame = null;
+        try {
+            if (IN_CLIENT_SPAN.get() != null) {
+                return TraceContext.Frame.SKIPPED;               // 같은 스레드 안쪽 호출 — 바깥이 기록 중
+            }
+            ClientHttpSupport.ClientCall call = ClientHttpSupport.describe(request);
+            frame = enter(call.operationName(), "CLIENT");
+            if (frame != null && frame != TraceContext.Frame.SKIPPED) {
+                // 진짜 frame 을 만든 쪽만 세운다 — 억제 · 게이트 제외 갈래는 안 세우므로 「억제 뒤 영구 억제」가 없다.
+                IN_CLIENT_SPAN.set(call.attributes());
+            }
+            return frame;
+        } catch (Throwable t) {
+            return frame;
+        }
+    }
+
+    /**
+     * {@code @OnMethodExit} helper for the CLIENT span. {@code request} is kept in the
+     * signature for argument-order stability; the request attributes come from the guard
+     * set at enter, so the request is not read a second time.
+     */
+    public static void exitClientSpan(TraceContext.Frame frame, Object request, Object response, Throwable thrown) {
+        boolean owner = frame != null && frame != TraceContext.Frame.SKIPPED;
+        if (!owner) {
+            return;                                              // 안쪽 · 억제 · enter 실패는 기록하지 않는다
+        }
+        // [Phase R31] R31/AC-R31-10/AC-R31-65/AC-R31-66 — 가드 해제 위치 = 이 메서드의 첫 동작. 상태 읽기 ·
+        //   예외 갈래보다 앞이라, 그 뒤 무엇이 터져도 같은 스레드의 다음 외부 호출은 다시 기록된다.
+        Map<String, Object> attrs = IN_CLIENT_SPAN.get();
+        IN_CLIENT_SPAN.remove();
+        boolean handedOff = false;
+        try {
+            if (attrs == null) {
+                attrs = new HashMap<>();
+            }
+            Throwable effectiveThrown = thrown;                  // execute() 자체의 예외는 그대로
+            if (thrown == null && response != null) {
+                // [Phase R31] R31/AC-R31-01/AC-R31-74 — 갈래 ⓐ(사용자 명시 비협상 결정 UD-R31-9): 본문 있는 POST 는
+                //   execute() 가 응답 머리를 안 기다리고 돌아온다. 호스트가 바로 다음에 할 응답 머리 대기
+                //   (상태 읽기)를 여기서 먼저 한다 — 호스트의 다음 읽기는 이미 받은 값을 읽으므로 추가 차단 0.
+                //   측정 범위는 응답 머리(상태 코드)까지다. CLAUDE.md '아키텍처 핵심 원칙'(절대 호스트 thread block 안 함) 인용.
+                ClientHttpSupport.StatusRead read = ClientHttpSupport.readStatus(response);
+                if (read.code() != null) {
+                    attrs.put(ClientHttpSupport.KEY_STATUS_CODE, read.code());
+                } else if (read.hostFailure() != null) {
+                    // [Phase R31] R31/AC-R31-03 — effectiveThrown: 응답 머리를 기다리다 난 호스트 쪽 실패(시간 초과 등)는
+                    //   execute() 가 던진 것이 아니라 thrown 이 비어 있다. 원인을 푼 실제 예외를 exit 의 둘째 인자로
+                    //   넘겨야 상태 · 예외 타입 · 메시지 · 스택이 한 길(exit)로 함께 기록된다. 호스트에는 다시 던지지 않는다.
+                    effectiveThrown = read.hostFailure();
+                }
+            }
+            handedOff = true;
+            exit(frame, effectiveThrown, attrs, List.of());     // payload 는 늘 빈 목록(UD-R31-3 — 본문 0)
+        } catch (Throwable t) {
+            if (!handedOff) {
+                exit(frame, thrown, null, null);                 // 조립 중 무엇이 터져도 스택은 pop
+            }
+        }
+    }
+
+    /** Test-only reset of the CLIENT re-entrancy guard on the current thread. */
+    static void clearClientGuard() {
+        IN_CLIENT_SPAN.remove();
+    }
+
+    /**
      * {@code @OnMethodExit} helper — pops the frame, builds a {@link Span},
      * and enqueues it. {@code attributes} and payloads are nullable.
      */
@@ -199,6 +283,8 @@ public final class AdviceSupport {
                 return;
             }
             // popped should == frame in well-behaved cases; if not, prefer popped (live stack)
+            // advice 는 대상 메서드에 인라인되므로, 어떤 계측 메서드의 exit 가 Error 등으로 건너뛰어지면 스택 맨 위가 이 frame 이 아닐 수 있다.
+            // 그때는 살아 있는 스택(popped)을 믿고, 아래로 걸어 내려가 frame 을 찾는 복구는 하지 않는다(호스트 스레드 비용 우선).
             TraceContext.Frame f = popped;
 
             long now = System.currentTimeMillis();

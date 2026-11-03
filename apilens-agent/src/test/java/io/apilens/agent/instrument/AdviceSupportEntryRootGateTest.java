@@ -64,6 +64,8 @@ class AdviceSupportEntryRootGateTest {
     void teardown() {
         TraceContext.clear();
         AdviceSupport.markDbSpanExited(true);
+        // [Phase R31] 설계 정정 DV-A-R31-8 — 외부 호출 가드도 시험마다 지운다(시험 수 불변).
+        AdviceSupport.clearClientGuard();
         InstrumentationInstaller.REQUIRE_ENTRY_ROOT = false;
         InstrumentationInstaller.GATE_EXCLUDED_NAMES = Set.of();
         InstrumentationInstaller.QUEUE = null;
@@ -235,6 +237,48 @@ class AdviceSupportEntryRootGateTest {
         AdviceSupport.exit(excluded, null, null, null);
         AdviceSupport.exit(server, null, null, null);
         assertEquals(2, drainCount());
+    }
+
+    // ─── [Phase R31] 외부 호출(CLIENT) × 진입점 옵션 (설계 부록 A2-3 TC-R31-45 · 46 · RC-R31-6) ──────
+
+    /**
+     * TC-R31-45 — R31/AC-R31-17 verbatim (UD-R31-10 비협상): "진입점 옵션을 **주지 않은**(기본값) 설치 · 열린
+     * 기록 없는 스레드(depth 0) → CLIENT 1개가 흐름의 시작점". exit 뒤 가드가 꺼져 다음 호출도 진짜 frame.
+     */
+    @Test
+    void recordsClientRootWhenGateOff() {
+        TraceContext.Frame frame = AdviceSupport.enterClientSpan(new Object());
+
+        assertNotSame(TraceContext.Frame.SKIPPED, frame, "옵션 꺼짐 · 깊이 0 → 진짜 frame");
+        AdviceSupport.exitClientSpan(frame, new Object(), null, null);
+        assertEquals(1, drainCount(), "CLIENT 1");
+
+        TraceContext.Frame next = AdviceSupport.enterClientSpan(new Object());
+        assertNotSame(TraceContext.Frame.SKIPPED, next, "가드가 꺼져 있어야 다음 호출도 기록");
+        AdviceSupport.exitClientSpan(next, new Object(), null, null);
+        assertEquals(1, drainCount());
+    }
+
+    /**
+     * TC-R31-46 — R31/AC-R31-18 verbatim (UD-R31-10 비협상): "옵션 켜짐 · depth 0 → 0개 · SERVER 기록 아래(depth 1)
+     * → 1개". 억제 갈래는 가드를 세우지 않으므로 이어지는 SERVER 아래 호출이 진짜 frame 을 받는다(가드 누수 0).
+     */
+    @Test
+    void recordsClientUnderServerAfterSuppressedRootWhenGateOn() {
+        InstrumentationInstaller.REQUIRE_ENTRY_ROOT = true;
+
+        TraceContext.Frame suppressed = AdviceSupport.enterClientSpan(new Object());
+        assertSame(TraceContext.Frame.SKIPPED, suppressed, "옵션 켬 · 깊이 0 → 억제");
+        AdviceSupport.exitClientSpan(suppressed, new Object(), null, null);
+        assertEquals(0, drainCount());
+
+        TraceContext.Frame server = AdviceSupport.enter("com.acme.Api#get", "SERVER");
+        TraceContext.Frame client = AdviceSupport.enterClientSpan(new Object());
+        assertNotSame(TraceContext.Frame.SKIPPED, client, "억제 갈래가 가드를 세웠다면 여기가 SKIPPED");
+        assertEquals(server.spanId, client.parentSpanId);
+        AdviceSupport.exitClientSpan(client, new Object(), null, null);
+        AdviceSupport.exit(server, null, null, null);
+        assertEquals(2, drainCount(), "SERVER + CLIENT");
     }
 
     private int drainCount() {

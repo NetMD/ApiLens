@@ -42,12 +42,59 @@ public final class SpringMatchers {
 
     /**
      * MyBatis runtime proxy backing every user-defined {@code @Mapper interface}.
-     * Used as the single instrumentation point for mapper-layer spans — VAMS-style
+     * Used as the single instrumentation point for mapper-layer spans — the common
      * Controller → Service → Mapper → mapper.xml layered architecture.
      */
     public static final String MYBATIS_MAPPER_PROXY = "org.apache.ibatis.binding.MapperProxy";
 
+    /**
+     * Spring's base class of every built-in outbound request implementation. Its
+     * {@code execute()} is declared {@code public final} here only, so matching the exact
+     * name is enough — subtypes have no {@code execute()} of their own to weave.
+     */
+    // [Phase R31] R31/AC-R31-20 — 정확 일치 이름(설계 DD-R31-01). 무시 목록에 넓은 Spring 접두를 넣지 않는다.
+    public static final String ABSTRACT_CLIENT_HTTP_REQUEST = "org.springframework.http.client.AbstractClientHttpRequest";
+
+    /**
+     * Prefixes skipped during instrumentation scanning — framework / agent / JDK classes.
+     * Immutable; {@link #ignoredTypes()} is assembled from this list in this order.
+     *
+     * <p>회귀 가드 (절대 추가 금지): {@code org.springframework.*} (전체) · {@code org.springframework.data.*}
+     * · {@code org.springframework.web.bind.*} — 아래 {@link #ignoredTypes()} javadoc 참조.
+     */
+    // [Phase R31] R31/AC-R31-22 — 묶음 ⓑ: 옛 ignoredTypes() 의 접두 11개를 글자 · 순서 그대로 옮긴 불변 목록.
+    //   사용자 명시 비협상 결정(UD-R31-11 — 묶음 ⓐⓑⓒ 만). 배열이 아니라 List.of — public 배열은 바깥에서 바꿀 수 있다.
+    //   CLAUDE.md 'Build 설정 lessons §1'(shadow jar relocate — 글자를 안 바꾸므로 shadow 결과도 옛 jar 와 같다) 인용.
+    public static final List<String> FRAMEWORK_IGNORE_PREFIXES = List.of(
+            "io.apilens.",
+            "net.bytebuddy.",
+            "com.fasterxml.jackson.",
+            "org.springframework.boot.loader.",
+            "org.springframework.boot.autoconfigure.", // ← 신규 (US-05)
+            "org.springframework.web.servlet.handler.", // ← 신규 (US-05)
+            "sun.",
+            "jdk.",
+            "java.",
+            "javax.",
+            "jakarta.");
+
     private SpringMatchers() {
+    }
+
+    /**
+     * [Phase R31] R31/AC-R31-20 — matches exactly {@link #ABSTRACT_CLIENT_HTTP_REQUEST}
+     * (no subtype matching: the woven method lives on this class only).
+     */
+    public static ElementMatcher.Junction<TypeDescription> clientHttpRequestType() {
+        return ElementMatchers.named(ABSTRACT_CLIENT_HTTP_REQUEST);
+    }
+
+    /** [Phase R31] 설계 DD-R31-01 — {@code public} non-static no-arg {@code execute()}. */
+    public static ElementMatcher.Junction<MethodDescription> clientHttpRequestExecuteMethod() {
+        return ElementMatchers.<MethodDescription>named("execute")
+                .and(ElementMatchers.takesArguments(0))
+                .and(ElementMatchers.isPublic())
+                .and(ElementMatchers.not(ElementMatchers.isStatic()));
     }
 
     /** Matches a class annotated with {@code @RestController} or {@code @Controller}. */
@@ -117,8 +164,8 @@ public final class SpringMatchers {
      * <p>AC mapping: AC-02-1 / AC-02-3 / AC-02-4 (planner §2 US-02).
      */
     public static ElementMatcher.Junction<MethodDescription> preparedStatementSetParamMethods() {
-        // Phase E3 fix² (2026-05-14 VAMS dogfooding R14) — whitelist → blacklist 전환.
-        // 직전 12-setter + setObject whitelist 가 VAMS 운영망에서 여전히 PAYLOAD IN 0 hit.
+        // Phase E3 fix² (2026-05-14 운영 앱 dogfooding R14) — whitelist → blacklist 전환.
+        // 직전 12-setter + setObject whitelist 가 운영 앱 운영망에서 여전히 PAYLOAD IN 0 hit.
         // MyBatis / HikariCP / driver wrapping layer 가 호출하는 setter 가 다층적이고
         // wrapper 별로 다른 setter 가 사용될 수 있어 whitelist 한계. D-04 "표준 JDBC API 전부
         // cover" 정신은 PreparedStatement 표준 인터페이스의 setXxx(int parameterIndex, ...)
@@ -252,17 +299,12 @@ public final class SpringMatchers {
      * </ul>
      */
     public static ElementMatcher.Junction<TypeDescription> ignoredTypes() {
-        return ElementMatchers.<TypeDescription>nameStartsWith("io.apilens.")
-                .or(ElementMatchers.nameStartsWith("net.bytebuddy."))
-                .or(ElementMatchers.nameStartsWith("com.fasterxml.jackson."))
-                .or(ElementMatchers.nameStartsWith("org.springframework.boot.loader."))
-                .or(ElementMatchers.nameStartsWith("org.springframework.boot.autoconfigure.")) // ← 신규 (US-05)
-                .or(ElementMatchers.nameStartsWith("org.springframework.web.servlet.handler.")) // ← 신규 (US-05)
-                .or(ElementMatchers.nameStartsWith("sun."))
-                .or(ElementMatchers.nameStartsWith("jdk."))
-                .or(ElementMatchers.nameStartsWith("java."))
-                .or(ElementMatchers.nameStartsWith("javax."))
-                .or(ElementMatchers.nameStartsWith("jakarta."));
+        // [Phase R31] R31/AC-R31-22 — 묶음 ⓑ: 목록(FRAMEWORK_IGNORE_PREFIXES)으로 조립. 동작은 옛 or 사슬과 같다.
+        ElementMatcher.Junction<TypeDescription> m = ElementMatchers.none();
+        for (String prefix : FRAMEWORK_IGNORE_PREFIXES) {
+            m = m.or(ElementMatchers.nameStartsWith(prefix));
+        }
+        return m;
     }
 
     /**
