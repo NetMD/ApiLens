@@ -71,7 +71,10 @@ allprojects {
     //   결정 「v0.10.0」). **스키마 변경 0** — 되돌리는 길은 이전 jar 로 바꾸는 것뿐이다. agent 코드는 그대로지만 안의 Jackson 이
     //   바뀌어 다시 배포해야 고침판이 대상 앱에 닿는다. 새로 빌드한 agent jar 는 제품 버전(0.10.0)을 보고한다.
     //   ★OpenApiDocsIntegrationTest 의 info.version 단언도 이번 접촉에서 함께 올렸다.
-    version = "0.10.0"
+    // [Phase R31] R31/AC-R31-52 — 한 단계 minor 올림(외부 호출 구간 · agent 다시 배포 — 사용자 명시 결정 UD-R31-4).
+    //   **스키마 변경 0** — 되돌리는 길은 이전 jar 로 바꾸는 것뿐이다. 새로 빌드한 agent jar 는 이 제품 버전을 보고한다.
+    //   ★OpenApiDocsIntegrationTest 의 info.version 단언 · 화면 버전 라벨(dev-frontend 몫)도 같은 덩이에서 올렸다.
+    version = "0.11.0"
 }
 
 subprojects {

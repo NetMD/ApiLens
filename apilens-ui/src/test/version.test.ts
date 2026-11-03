@@ -18,6 +18,7 @@ describe('APP_VERSION — 표시 라벨 일치', () => {
     const [major, minor] = pkg.version.split('.');
     expect(APP_VERSION).toBe(`v${major}.${minor}`);
     // [R30 · AC-R30-40 · UD-R30-12] 화면 라벨 `v0.10`(처음으로 다섯 글자) — 정확 값 고정.
-    expect(APP_VERSION).toBe('v0.10');
+    // [R31 · AC-R31-52 · DD-R31-28 · UD-R31-4] 다음 판올림 — 정확 값을 v0.11 로 올림(시험 수 불변).
+    expect(APP_VERSION).toBe('v0.11');
   });
 });
