@@ -15,12 +15,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- (candidate) `JdbcParamSerializer` 의 `java.time` 타입 확장 (LocalDate / LocalDateTime / LocalTime / ZonedDateTime). **다음 agent 라운드로 이관했습니다.**
+- (candidate) `JdbcParamSerializer` 의 `java.time` 타입 확장 (LocalDate / LocalDateTime / LocalTime / ZonedDateTime). **v0.11.0 에는 들어가지 않았습니다 — 시기 미정.**
 
 ### Security
 
-- (candidate) **공유 마스킹 엔진 ReDoS 방어의 현재 상태** — 지금은 실행 시간 상한(deadline)으로 막고 있습니다. 정규식 매칭 자체를 backtracking 없는 방식으로 바꾸는 안은 **검토만 해 본 상태**이고, 채택 여부도 시기도 정해진 것이 없습니다. **다음 agent 라운드로 이관했습니다.**
-- (candidate) JDBC PreparedStatement 파라미터의 이름 기반 마스킹 보강 — 현재 PAYLOAD IN 키가 parameterIndex 라 이름 기반 룰이 매칭되지 않는 한계 개선. **다음 agent 라운드로 이관했습니다.**
+- (candidate) **공유 마스킹 엔진 ReDoS 방어의 현재 상태** — 지금은 실행 시간 상한(deadline)으로 막고 있습니다. 정규식 매칭 자체를 backtracking 없는 방식으로 바꾸는 안은 **검토만 해 본 상태**이고, 채택 여부도 시기도 정해진 것이 없습니다. **v0.11.0 에는 들어가지 않았습니다 — 시기 미정.**
+- (candidate) JDBC PreparedStatement 파라미터의 이름 기반 마스킹 보강 — 현재 PAYLOAD IN 키가 parameterIndex 라 이름 기반 룰이 매칭되지 않는 한계 개선. **v0.11.0 에는 들어가지 않았습니다 — 시기 미정.**
+
+## [0.11.0] - YYYY-MM-DD
+
+> **agent 와 collector(server)를 다시 배포하세요** — 차례는 **collector 를 먼저 올리고, agent 는 그 뒤에** 바꿉니다(대상 앱 재시작). 다시 배포하지 않은 agent 도 새 collector 로 그대로 보낼 수 있고, 그때는 외부 호출 구간만 안 보입니다.
+> **DB 스키마는 바뀌지 않습니다.** 마이그레이션이 없어, 되돌리려면 이전 jar 로 바꾸기만 하면 됩니다.
+> 화면 왼쪽 위 버전 라벨이 `v0.11` 으로 바뀝니다.
+
+### BREAKING CHANGES
+
+_이 release 에는 하위호환을 깨는 변경이 없습니다._ API 경로 · 요청 · 응답의 필드 이름 · 타입이 그대로입니다.
+
+### Added
+
+- **외부 호출 구간** — 앱이 바깥 HTTP 서버를 부르고 응답 머리(상태 코드)를 받기까지를 노드 그래프의 주황 노드로 표시합니다 — 메서드 · 호스트:포트 · 경로 · 상태 코드. Spring Framework 6.2 · 7.0 의 RestClient · RestTemplate 이 쓰는 Spring 내장 요청 구현을 계측합니다. 쿼리 · 사용자 정보 · 요청/응답 본문은 저장하지 않고, 4xx · 5xx 와 연결 실패 · 시간 초과는 오류로 칠합니다. 경로는 그대로 보입니다 — 경로에 넣은 값(경로 매개변수 포함)은 마스킹을 거치지 않습니다. 들어오는 요청 안에서 부르면 그 흐름의 자식으로, 요청 밖(예약 작업 · 별도 스레드)에서 부르면 그 호출 하나가 흐름의 시작점으로 기록됩니다.
+
+### Changed
+
+- **상세 화면 머리글** — 긴 이름이 한 줄로 줄고 마우스를 올리면 전체가 보입니다. 외부 호출 하나뿐인 흐름은 메서드 · 호스트:포트 · 경로로 보입니다.
+- **선택한 노드 카드** — 머리에 마우스를 올리면 전체 이름이 보입니다. 오류 상자에 예외 타입 줄이 메시지 위에 따로 붙습니다(모든 종류의 오류 카드에 같은 줄이 생깁니다).
+- **계측 분석 화면** — 이름이 하나뿐인 계측 행이 「DB 접근 (전체)」에서 「DB 접근 · 외부 호출 (전체)」로 바뀝니다. 외부 호출 기록도 클래스 이름이 없어 이 행에 함께 셉니다.
+- **버전 0.10.0 → 0.11.0** (collector jar · agent jar · 화면 라벨 `v0.11`).
+
+### Docs
+
+- README 「현재 한계」 — 외부 호출의 측정 범위(응답 머리까지) · 기록하지 않는 클라이언트(JDK 내장 클라이언트 직접 호출 · WebClient · 자체 HTTP 클라이언트) · 비동기 경계 · 끄는 길을 적었습니다.
+- Agent 옵션 — 외부 호출 기록 끄기(`exclude-packages=org.springframework.http.client.`) 소절과 진입점 옵션과의 관계 한 줄.
+- 속성 명세 — `server.address` · `server.port` 두 키 · CLIENT 의 `http.url` 이 담는 것 · 지금 속성은 마스킹을 거치지 않는다는 정정.
 
 ## [0.10.0] - 2026-10-29
 

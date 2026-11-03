@@ -15,11 +15,17 @@ agent가 이 명세를 따라야 UI 측 표시 로직이 깔끔해진다.
 | -------------------- | ------ | --------------------- | ------------------------------------ |
 | `http.method`        | string | `"POST"`              | 메서드                               |
 | `http.url`           | string | `"/api/orders/42"`    | full path or full URL (운영자 가독성) |
+| `server.address`     | string | `"192.0.2.39"`        | (CLIENT) 부른 상대 호스트 — IPv6 는 괄호 없이 |
+| `server.port`        | int    | `1234`, `443`         | (CLIENT) 부른 상대 포트 — URL 에 없으면 스킴 기본값(http 80 · https 443) · 그 밖 스킴은 키 없음 · `http.url` 에는 기본 포트를 채우지 않음 |
 | `http.route`         | string | `"/api/orders/{id}"`  | 라우트 패턴 (path variable 추상화)   |
 | `http.status_code`   | int    | `200`, `500`          | 응답 상태                            |
 
-`http.url`은 query string 포함해도 OK 단, 마스킹 룰이 query에는 적용되지 **않음**
-주의 (현재 마스킹은 payload 본문만). PII가 URL에 들어가면 별도 처리 필요 — v0.2.
+(SERVER) `http.url`은 query string 포함해도 OK 단, 마스킹 룰이 query에는 적용되지 **않음**
+주의 (현재 마스킹은 payload 본문만). PII가 URL에 들어가면 별도 처리 필요.
+
+**CLIENT span 의 `http.url` 은 스킴 · 호스트 · 포트 · 경로만 담습니다**(ApiLens agent 가 보낸 기록 기준 — 서버는 속성을 검사 · 마스킹하지 않습니다) — 쿼리 · 프래그먼트 · 사용자 정보는 agent 가 보내기 전에 뺍니다. 경로(`;` 뒤 경로 매개변수 포함)는 마스킹을 거치지 않으므로 경로에 넣은 값은 그대로 보입니다.
+
+HTTP 메서드 · URL · 상태 코드는 SERVER 와 같은 이름(`http.*`)을 그대로 쓰고, 상대 주소만 현행 이름(`server.address` · `server.port`)을 씁니다 — 오류 판정 키(`http.status_code`)를 바꾸지 않기 위해서입니다.
 
 ---
 
@@ -32,7 +38,7 @@ agent가 이 명세를 따라야 UI 측 표시 로직이 깔끔해진다.
 | `db.rows_affected`    | int    | `1`, `0`                        | UPDATE/DELETE/INSERT의 영향 row |
 | `db.connection`       | string | `"jdbc:postgresql://..."`       | 마스킹 권장 (호스트/계정 노출) |
 
-`db.parameters`는 마스킹 엔진이 적용 — 주민번호/카드번호가 들어오면 알아서 가림.
+`db.parameters`는 마스킹 엔진이 적용 — 주민번호/카드번호가 들어오면 알아서 가림(현재 attributes 는 마스킹을 거치지 않습니다 — 위 HTTP 절 참조).
 
 ---
 
@@ -66,7 +72,7 @@ UI는 status=ERROR span 옆에 stacktrace 박스를 빨갛게 표시 (CLAUDE.md 
 | SpanKind   | 용도                                                              |
 | ---------- | ----------------------------------------------------------------- |
 | `SERVER`   | 들어오는 요청을 받는 쪽 (HTTP controller 진입 등)                 |
-| `CLIENT`   | 외부로 나가는 호출 (HTTP client, 외부 API 호출 등)                |
+| `CLIENT`   | 외부로 나가는 호출 (HTTP client, 외부 API 호출 등) — v0.11.0 부터 Spring RestClient · RestTemplate 외부 호출(응답 머리까지) |
 | `INTERNAL` | 같은 프로세스 안의 내부 작업 (`@Service` 메서드, agent.startup 등)|
 | `DB`       | DB 호출 (JDBC PreparedStatement 등). DB 속성 표가 적용되는 span   |
 | `UI_EVENT` | 브라우저 측 이벤트 (JS tracer — 향후 사용)                        |
@@ -96,4 +102,4 @@ UI는 status=ERROR span 옆에 stacktrace 박스를 빨갛게 표시 (CLAUDE.md 
 3. payload(body)와 attributes는 별도 흐름. body는 `payloads` 테이블, attributes는
    `spans.attributes_json`. 큰 데이터는 attributes에 넣지 말고 payload로 보내라.
 4. 값에 PII가 들어갈 가능성이 있는 attribute(`db.parameters`, `http.url` 등)는
-   마스킹 엔진의 정규식 룰이 적용되도록 텍스트 직렬화 시 일관된 형태 유지.
+   마스킹 엔진의 정규식 룰이 적용되도록 텍스트 직렬화 시 일관된 형태 유지(현재 attributes 는 마스킹을 거치지 않습니다 — 위 HTTP 절 참조).

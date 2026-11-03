@@ -280,6 +280,16 @@ PAYLOAD IN 본문의 키는 **JDBC parameterIndex 의 decimal string** 입니다
 `apilens.instrument.require-entry-root`(진입점 없는 흐름 만들지 않기) 옵션을 함께
 검토하세요.
 
+### 외부 호출 기록 끄기
+
+v0.11.0 부터 agent 는 Spring 의 `org.springframework.http.client.AbstractClientHttpRequest` 를 계측해 외부 호출 구간을 기록합니다. 끄려면 이 옵션에 `org.springframework.http.client.` 를 더합니다. 이 접두는 그 패키지의 계측 전부를 끕니다(지금 그 패키지에 걸린 계측은 외부 호출 하나뿐입니다). 원격 계측 설정의 개별 제외로는 끌 수 없습니다 — 외부 호출 기록의 이름에는 클래스 이름이 없기 때문입니다.
+
+```bash
+-Dapilens.instrument.exclude-packages=org.springframework.http.client.
+```
+
+외부 호출 기록은 응답 머리(상태 코드)까지를 잽니다 — 응답을 읽지도 닫지도 않고 버리는 코드에서는 agent 가 응답 머리를 기다리는 만큼 그 호출이 늦어질 수 있습니다. 그런 코드가 있다면 이 접두로 끄세요.
+
 ## `apilens.instrument.require-entry-root` (opt-in) — 진입점 없는 흐름 만들지 않기
 
 기본 꺼짐. 켜면 **흐름의 시작점이 되려는 기록의 종류가 진입점(들어오는 요청을 받는
@@ -311,6 +321,7 @@ controller 계층)이 아니면 그 흐름 자체를 만들지 않습니다.**
   영향을 받습니다.** "요청 처리 중에 일어난 일" 이라고 해서 전부 남는 것은 아닙니다.
 - 억제된 시작점 아래에서 이어지는 호출들도 함께 억제됩니다(일관 억제 — 반쪽 흐름이
   남지 않습니다).
+- 외부 호출도 진입점이 아닙니다 — 이 옵션을 켜면 들어오는 요청 밖(예약 작업 · 별도 스레드)에서 시작한 외부 호출은 기록하지 않습니다.
 - agent 시작 알림(`operationName=agent.startup`)은 이 옵션과 무관하게 계속 전송됩니다
   — 서비스 화면의 agent 버전 표시가 유지됩니다.
 - 이 옵션은 조각남 한계의 **완화이지 소멸이 아닙니다** — 켜지 않으면 동작은 이전과
