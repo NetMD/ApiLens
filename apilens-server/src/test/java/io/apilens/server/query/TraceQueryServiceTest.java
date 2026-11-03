@@ -54,6 +54,7 @@ import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -161,6 +162,49 @@ class TraceQueryServiceTest {
         assertEquals("POST", firstSpan.attributes().get("http.method"));
         assertEquals(200, ((Number) firstSpan.attributes().get("http.status_code")).intValue());
         assertEquals("INSERT INTO orders ...", secondSpan.attributes().get("db.statement"));
+    }
+
+    /**
+     * [Phase R31] TC-R31-50 — R31/AC-R31-24 verbatim (UD-R31-5 비협상 · 스키마 0): "CLIENT span 을 보내면 상세
+     * 조회가 `spanKind = "CLIENT"` 와 보낸 속성을 그대로 돌려준다". 서버 생산 코드는 0 줄 — 이 시험이 종류
+     * 허용 목록 검사가 없음과 숫자 두 키(server.port · http.status_code)가 저장 JSON 왕복
+     * (serializeAttributes → parseAttributes)에서 Integer 로 남음을 고정한다(정정 DV-S-R31-4 · 수신 JSON 해석은
+     * agent 통합 시험 몫). 부모 없는 CLIENT 는 흐름의 시작점이라 목록의 rootOperation · 상태로도 보인다.
+     */
+    @Test
+    void returnsClientSpanKindAndAttributesUnchanged() {
+        String name = "HTTP POST 192.0.2.39:1234/v1/chat/completions";
+        Span client = new Span(
+                "span-c", "trace-client-1", null,
+                "checkout", name, SpanKind.CLIENT,
+                5_000L, 5_640L, SpanStatus.ERROR,
+                Map.of("http.method", "POST",
+                        "http.url", "http://192.0.2.39:1234/v1/chat/completions",
+                        "server.address", "192.0.2.39",
+                        "server.port", 1234,
+                        "http.status_code", 503),
+                List.of()
+        );
+        ingestService.ingest(new IngestRequest(List.of(client)));
+
+        TraceDetailResponse detail = queryService.getTrace("trace-client-1");
+        assertEquals(1, detail.spans().size());
+        SpanDto span = detail.spans().get(0);
+        assertEquals(SpanKind.CLIENT, span.spanKind());
+        assertEquals(name, span.operationName());
+        Map<String, Object> attrs = span.attributes();
+        assertEquals("POST", attrs.get("http.method"));
+        assertEquals("http://192.0.2.39:1234/v1/chat/completions", attrs.get("http.url"));
+        assertEquals("192.0.2.39", attrs.get("server.address"));
+        assertInstanceOf(Integer.class, attrs.get("server.port"));
+        assertInstanceOf(Integer.class, attrs.get("http.status_code"));
+        assertEquals(1234, attrs.get("server.port"));
+        assertEquals(503, attrs.get("http.status_code"));
+
+        TraceListResponse list = queryService.listTraces(null, null, null, null, null, null);
+        assertEquals(1, list.traces().size());
+        assertEquals(name, list.traces().get(0).rootOperation());
+        assertEquals(SpanStatus.ERROR, list.traces().get(0).status());
     }
 
     // ─── 3. Payload lazy load with masking preserved ─────────────────────
