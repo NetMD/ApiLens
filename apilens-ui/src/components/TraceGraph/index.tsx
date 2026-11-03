@@ -45,8 +45,16 @@ function TraceGraphInner({ spans, selectedSpanId, onSelectSpan, traceId }: Props
   );
 
   // selected 표시는 React Flow node.selected boolean prop으로 주입.
+  // [Phase AB / R31] DV-U-R31-5 · AC-R31-27 곁 — 노드 겉 틀(Tab 초점 자리)의 접근 이름 = operation 이름 원문.
+  //   노드 안 글자는 31 · 28 글자로 줄어드므로 화면 읽기 프로그램에는 줄이지 않은 이름을 준다(layout.ts 무접촉 — 여기서 덧붙임).
+  //   확인 = 실브라우저 스모크(Chrome 접근성 패널) — happy-dom 에서 React Flow 노드 겉 틀이 그려지는지 미확인이라 단위 시험 없음.
   const nodes = useMemo(
-    () => rawNodes.map((n) => ({ ...n, selected: n.id === selectedSpanId })),
+    () =>
+      rawNodes.map((n) => ({
+        ...n,
+        selected: n.id === selectedSpanId,
+        ariaLabel: n.data.span.operationName,
+      })),
     [rawNodes, selectedSpanId],
   );
 

@@ -17,6 +17,13 @@ import type { NodeProps } from '@xyflow/react';
 import { Handle, Position } from '@xyflow/react';
 import type { SpanDetail, SpanKind } from '../../types/api';
 import { shortenOperation } from '../../lib/format';
+import {
+  CLIENT_LABEL_LINE_MAX_CHARS,
+  CLIENT_SECONDARY_MAX_CHARS,
+  clientCallText,
+  fitTwoLines,
+  truncateEnd,
+} from '../../lib/spanLabels';
 import { radius as computeRadius } from './nodeSizing';
 import type { SpanFlowNode } from './types';
 
@@ -26,11 +33,25 @@ import type { SpanFlowNode } from './types';
  *
  *   - SERVER : http.method + path
  *   - DB     : "SQL <KIND>" (SELECT/INSERT/UPDATE/DELETE) — mybatis 주석 prefix 제거
- *   - 그 외  : undefined (secondary 미표시, layout 그대로)
+ *   - CLIENT : 메서드 + 호스트:포트 + 경로를 31 글자로 끝 자름 (R31 · 아래 CLIENT 갈래 주석) · 속성이 없으면 undefined
+ *   - 그 외(INTERNAL · UI_EVENT) : undefined (secondary 미표시, layout 그대로)
  *
  * duration / status 같은 메트릭은 SelectedSpanCard 헤더에 별도 표시되므로 secondary에 중복 X.
  */
 function secondaryLabel(span: SpanDetail): string | undefined {
+  // [Phase AB / R31] AC-R31-25/AC-R31-27/AC-R31-28 — 외부 호출(CLIENT) 노드 아래 줄. 사용자 명시 비협상 결정(UD-R31-6).
+  //   프리브리프 UD-R31-6 원문(글자 그대로): 「UI = 노드 그래프 끝 외부 노드(수평 흐름 · 노드 시간 강조 안 함 · 에러 시 stack trace 박스) + 상세 패널에 호스트·경로·상태 코드」
+  //   PM GA-R31-12(비협상 · UD-R31-6): 「그래프 노드 아래 줄: 보이는 글자 = 줄인 꼴 · `title` = 전체 · 띄어쓰기 없는 긴 경로 1행에서 가로 넘침 없음」
+  //   기획 [보충] AC-R31-25: 「노드 아래 줄 보이는 글자에 메서드 · 호스트 · 경로가 있다(예 `POST 192.0.2.39:1234/v1/chat/completions`). 메서드 + 공백 + 호스트:포트가 28자 이하(BV-R31-03 · 12 · 13)면 호스트:포트 전체가 보이고 줄임은 경로에서만 · 넘으면(BV-R31-02 · 04) 메서드 + 호스트 첫 8자 이상 + `…`(UC-R31-3) · 포트 키가 없으면 `:{포트}` 를 통째로 빼고 `:undefined` · `:-1` · 끝 콜론 `h:/` 0(BV-R31-06)」
+  //   기획 AC-R31-27: 「노드 마우스 올림 글(`title`) = 줄이지 않은 전체(메서드 · 호스트:포트 · 경로가 다 있음)」 — 바깥 틀 title={span.operationName} 그대로.
+  //   기획 [보충] AC-R31-28: 「BV-R31-01 경로에서 노드 아래 줄이 노드 틀 폭(`NODE_W` 180) 안 — 이웃 열 노드 글자와 안 겹친다」
+  //   CLAUDE.md 「UI 디자인 철학」 인용: 「수평 시간 흐름 — 왼쪽=시작점(브라우저), 오른쪽=DB/외부 API」 · 「node duration은 시각적으로 강조 안 함」.
+  //   수단 = 설계 DD-R31-21(글자 수 상한 31 · `<text>` 하나 · 줄 나눔 0 — SVG 는 스스로 줄을 안 바꾼다).
+  //   고정 시험 = src/components/TraceGraph/__tests__/SpanNode.test.tsx TC-R31-73 · 75 · 76 · 81 + src/test/spanLabels.test.ts TC-R31-61 · 65~67.
+  if (span.spanKind === 'CLIENT') {
+    const call = clientCallText(span.attributes);
+    return call === undefined ? undefined : truncateEnd(call, CLIENT_SECONDARY_MAX_CHARS);
+  }
   if (span.spanKind === 'SERVER') {
     const method = span.attributes['http.method'];
     const route = span.attributes['http.route'];
@@ -71,12 +92,13 @@ const PILL_RX = 10;
 
 // raw hex lookup (설계서 §3.4 박제 — index.css @theme 토큰의 hex 미러).
 // 새 spanKind 추가 시 index.css @theme 토큰과 동시 갱신 필수 (NFR-05).
+// [Phase AB / R31] AC-R31-42 · DD-R31-24 — 서버가 보내지 않는 종류 행(옛 외부 종류 이름) 뺌. 화면 종류 = 서버 enum 다섯.
+//   CLIENT(외부 호출) = 주황 그대로(범례 「external」 점과 같은 색) · UI_EVENT = 보라(범례 「browser」 점).
 const SPAN_KIND_FILL_HEX: Record<string, string> = {
   SERVER: '#1D9E75',
   INTERNAL: '#1D9E75',
   DB: '#378ADD',
   CLIENT: '#EF9F27',
-  EXTERNAL: '#EF9F27',
   UI_EVENT: '#7F77DD',
 };
 const FALLBACK_FILL_HEX = '#1D9E75'; // span-server fallback (BL-03 / BL-05 안전망)
@@ -99,10 +121,16 @@ export function SpanNode({ data, selected }: NodeProps<SpanFlowNode>): ReactNode
 
   // 사용자 명시 + mockup 박제: 라벨을 두 줄로 분리 ("DashboardController" / "#getSystemInfo").
   // shortenOperation 결과의 # 기준 split. '#' 없는 단순 이름(jdbc.execute 등)은 한 줄.
+  // [Phase AB / R31] AC-R31-26/AC-R31-31 · DD-R31-21 — CLIENT 만 두 줄 × 줄마다 28 글자(「HTTP POST」 / 「호스트:포트경로…」).
+  //   CLIENT 이름에는 '#' 가 없어 옛 규칙이면 URL 이 한 줄로 통째 실려 노드 틀 180 px 을 넘는다. 다른 종류는 옛 규칙 그대로(AC-R31-68).
   const shortened = shortenOperation(span.operationName);
   const hashIdx = shortened.indexOf('#');
-  const labelLine1 = hashIdx === -1 ? shortened : shortened.substring(0, hashIdx);
-  const labelLine2 = hashIdx === -1 ? null : shortened.substring(hashIdx); // "#method"
+  const [labelLine1, labelLine2]: [string, string | null] =
+    span.spanKind === 'CLIENT'
+      ? fitTwoLines(shortened, CLIENT_LABEL_LINE_MAX_CHARS)
+      : hashIdx === -1
+        ? [shortened, null]
+        : [shortened.substring(0, hashIdx), shortened.substring(hashIdx)]; // "#method"
 
   // spanKind 별 부가 정보 — HTTP path / SQL kind. mockup 박제: 노드 아래.
   const secondary = secondaryLabel(span);

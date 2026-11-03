@@ -395,4 +395,24 @@ describe('계측 분석 화면 — 임계 반응 · 절감/부작용 짝 · 확�
     fireEvent.click(screen.getByRole('button', { name: '분석 실행' }));
     expect(await screen.findByText('고유 본문 합 0 B')).toBeInTheDocument();
   });
+
+  // [Phase AB / R31] TC-R31-90 (DV-U-R31-2 · LM-R31-6) — v0.11.0 부터 외부 호출(CLIENT) 기록도 클래스 이름이 없어
+  //   고정 합계 행(className '')에 섞인다. 그 행 이름과 대안 안내 글자를 설계 정정 표 값 그대로 고정한다
+  //   (노출 문구 확인 = 기획 최종 검토 STEP 15 넘김 — 바뀌면 이 시험 글자도 같이 바꾼다).
+  it('TC-R31-90 displaysFixedRowNameAndHintIncludingOutboundCalls — 고정 합계 행 이름 · 안내에 외부 호출 몫이 보인다', async () => {
+    mockApi(0.3);
+    renderScreen();
+    fireEvent.click(screen.getByRole('button', { name: '분석 실행' }));
+    await screen.findByLabelText('com.acme.batch.OrderSyncJob 선택');
+
+    expect(screen.getByText('DB 접근 · 외부 호출 (전체)')).toBeInTheDocument();
+    expect(screen.queryByText('DB 접근 (전체)')).toBe(null);
+    expect(
+      screen.getByText(
+        '이 항목은 계측 제외 옵션으로 뺄 수 없어요(외부 호출 몫은 agent 시작 옵션으로 끕니다). 저장되는 결과 자료를 끄는 다른 옵션을 보세요',
+      ),
+    ).toBeInTheDocument();
+    // 옵션 문자열(-D 키명)은 화면에 0 — 이 파일 머리 규약(문서로 안내).
+    expect(screen.queryByText(/-Dapilens/)).toBe(null);
+  });
 });

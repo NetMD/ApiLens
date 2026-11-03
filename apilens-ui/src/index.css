@@ -9,7 +9,7 @@
  */
 @theme {
   --color-span-server: #1D9E75;
-  --color-span-client: #7F77DD;
+  --color-span-browser: #7F77DD; /* [R31/AC-R31-42 · DD-R31-24] 범례 「browser」 점 색 · 토큰 이름만 바꿈(hex 그대로 · 소비처 0). CLIENT(외부 호출) 노드는 아래 external 주황 */
   --color-span-internal: #1D9E75;
   --color-span-db: #378ADD;
   --color-span-external: #EF9F27;

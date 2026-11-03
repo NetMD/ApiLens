@@ -145,4 +145,32 @@ describe('computeLayout', () => {
     expect(__LAYOUT_PARAMS__.NODESEP).toBe(70);
     expect(__LAYOUT_PARAMS__.RANKSEP).toBe(150);
   });
+
+  // [Phase AB / R31] TC-R31-88 · 89 — 외부 호출(CLIENT) 노드 자리(AC-R31-59 · 60 · 사용자 명시 비협상 결정 UD-R31-6
+  //   「노드 그래프 끝 외부 노드(수평 흐름 …)」). layout.ts 는 이 라운드 무접촉(G-R31-16) — 지금 배치를 고정하는 시험만 더한다.
+  it('TC-R31-88 SERVER → INTERNAL → {CLIENT, INTERNAL → DB} 에서 CLIENT 는 부모보다 오른쪽 · 그 호출 가지의 끝 (AC-R31-59)', () => {
+    const spans = [
+      span('S', null, 'SERVER'),
+      span('I', 'S', 'INTERNAL'),
+      span('C', 'I', 'CLIENT'),
+      span('J', 'I', 'INTERNAL'),
+      span('D', 'J', 'DB'),
+    ];
+    const r = computeLayout(spans);
+    const x = (id: string): number => r.nodes.find((n) => n.id === id)!.position.x;
+    // 수평 흐름 — 왼쪽 = 시작점.
+    expect(x('S')).toBeLessThan(x('I'));
+    // 외부 노드는 부모 오른쪽 열(자기 가지의 끝 · 자식 없음).
+    expect(x('C')).toBeGreaterThan(x('I'));
+    expect(r.edges.some((e) => e.source === 'C')).toBe(false);
+    // 열 = 깊이라 더 깊은 DB 가 CLIENT 보다 오른쪽인 것이 정상이다(CLIENT.x < DB.x) — 「화면 전체 오른쪽 끝」 이 아니다.
+    expect(x('C')).toBeLessThan(x('D'));
+  });
+
+  it('TC-R31-89 단독 흐름(CLIENT 하나) → 노드 1 · 엣지 0 (AC-R31-60 · 배치 무변경 고정 — 이 라운드 기능 증명 아님)', () => {
+    const r = computeLayout([span('C', null, 'CLIENT')]);
+    expect(r.nodes).toHaveLength(1);
+    expect(r.edges).toHaveLength(0);
+    expect(r.nodes[0]!.id).toBe('C');
+  });
 });

@@ -40,8 +40,11 @@ interface Props {
 /** 사유 코드 → 화면 문구 (문구 단일 거주지 = UX 문구표. 서버는 코드만 보낸다). */
 const REASON_TEXT: Readonly<Record<ExcludeReasonCode, string>> = {
   // T-27 — 이름이 하나뿐인 계측(고정 합계 행)의 대안 안내.
+  // [Phase AB / R31] DV-U-R31-2 · LM-R31-6 — v0.11.0 부터 외부 호출(CLIENT) 기록도 클래스 이름이 없어 이 행에 섞인다.
+  //   괄호 한 마디로 외부 호출 몫을 끄는 길(agent 시작 옵션)을 알린다 — 옵션 문자열(-D 키명)은 화면에 0(이 파일 머리 규약 · 문서로 안내).
+  //   문구 = 설계 정정 표 DV-U-R31-2 초안 그대로 · 노출 문구 확인은 기획 최종 검토(STEP 15) 넘김.
   NO_CLASS_NAME:
-    '이 항목은 계측 제외 옵션으로 뺄 수 없어요. 저장되는 결과 자료를 끄는 다른 옵션을 보세요',
+    '이 항목은 계측 제외 옵션으로 뺄 수 없어요(외부 호출 몫은 agent 시작 옵션으로 끕니다). 저장되는 결과 자료를 끄는 다른 옵션을 보세요',
   // [Phase R20] R20/AC-11-2/AC-12-1 — T-31 불가 사유(ⓐ) + 원격 게이트 대안 안내(ⓑ) 2요소 통합.
   // 사용자 명시 비협상 결정 (Q-U9 — "weaving 제외는 불가, 원격 게이트로는 개별 제외 가능" 취지).
   // 설계 §1-⑧ 확정 문구 바이트 그대로 — dev 임시 창작 금지. ⓐ부 앞 문장 = R19 확정 문구 verbatim 보존.
@@ -284,8 +287,8 @@ function RankRow({
       <td className="px-4 py-3 align-top">
         <div className="flex items-center gap-2">
           <span className="font-mono text-sm text-stone-900">
-            {/* T-26 — 이름이 하나뿐인 계측 행 */}
-            {fixed ? 'DB 접근 (전체)' : classSimpleName(item.className)}
+            {/* T-26 — 이름이 하나뿐인 계측 행 · [Phase AB / R31] DV-U-R31-2 — 외부 호출(CLIENT) 기록도 이 행에 섞여 이름에 더함(설계 정정 표 값) */}
+            {fixed ? 'DB 접근 · 외부 호출 (전체)' : classSimpleName(item.className)}
           </span>
           {item.backgroundWorker && (
             // T-18 · T-19 — 배지 설명은 못 읽어도 손해가 없는 부가 정보라 title 로 둔다.

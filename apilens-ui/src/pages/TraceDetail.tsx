@@ -21,6 +21,7 @@ import type { SpanDetail } from '../types/api';
 import { ApiError } from '../api/client';
 import { TraceNotFoundError, fetchTraceDetail } from '../api/traces';
 import { formatDuration, shortenOperation } from '../lib/format';
+import { rootHttpDescription } from '../lib/spanLabels';
 import { SLOW_THRESHOLD_MS } from '../lib/colors';
 import { TraceGraph } from '../components/TraceGraph';
 import { Legend } from '../components/TraceGraph/Legend';
@@ -55,34 +56,10 @@ function computeChildSummary(
   return parts.length > 0 ? parts.join(', ') : undefined;
 }
 
-/**
- * Mockup 박제 (docs/mockups/apilens_trace_detail_node_graph.html line 6~8):
- *   "POST /api/orders" 같은 HTTP method + path 형태로 헤더 메인 라벨 구성.
- *
- * 우선순위: root span의 `http.method` + `http.route`/`http.url` → 그 외엔 rootOperation fallback.
- * url 이 full URL이면 pathname 만 떼서 표기.
- */
-function rootHttpDescription(
-  spans: ReadonlyArray<SpanDetail>,
-  rootOperation: string,
-): string {
-  const root = spans.find((s) => s.parentSpanId === null) ?? spans[0];
-  if (!root) return rootOperation;
-  const method = root.attributes['http.method'];
-  const route = root.attributes['http.route'];
-  const url = root.attributes['http.url'];
-  const path = typeof route === 'string' ? route : typeof url === 'string' ? url : null;
-  if (typeof method === 'string' && path !== null) {
-    let cleanPath = path;
-    try {
-      cleanPath = new URL(path).pathname;
-    } catch {
-      // path가 이미 pathname 형태인 경우 그대로
-    }
-    return `${method} ${cleanPath}`;
-  }
-  return rootOperation;
-}
+// Mockup 박제 (docs/mockups/apilens_trace_detail_node_graph.html line 6~8):
+//   "POST /api/orders" 같은 HTTP method + path 형태로 헤더 메인 라벨 구성.
+// [Phase AB / R31] AC-R31-37/68 · DD-R31-20/22 — 그 라벨 함수 rootHttpDescription 은 lib/spanLabels.ts 로 옮겼다
+//   (노드 · 카드 · 머리글이 같은 키 글자를 읽게 한 곳으로). CLIENT 뿌리 갈래만 더했고 다른 종류의 글자는 옮기기 전과 같다.
 
 function TraceErrorState({ error }: { error: unknown }): ReactNode {
   // status code로만 분기 — BE 본문 노출 금지.
@@ -161,17 +138,23 @@ export function TraceDetail(): ReactNode {
           ←
         </Link>
         {/* mockup 박제: ← back  trace <short-id>  <METHOD> <path>  ─── duration · status */}
+        {/* [Phase AB / R31] AC-R31-37/38/39/40 · DD-R31-22 — 머리글 한 줄 끝 줄임(백로그 AR-R29-21 결함 ① ②).
+            이름 칸 = min-w-0 truncate(줄이면 「…」 · 한 줄 · h-14 그대로) + 마우스 올림 글 = trace.rootOperation 원문(모든 종류).
+            양옆 칸(trace 짧은 번호 · 오른쪽 걸린 시간 · 상태 · ERR) = shrink-0 — 긴 이름이 그 칸을 밀어내지 않게. */}
         {traceId && (
-          <span className="font-mono text-xs text-stone-500">
+          <span className="shrink-0 font-mono text-xs text-stone-500">
             trace {traceId.slice(0, 8)}
           </span>
         )}
-        <span className="font-mono text-base font-semibold text-stone-900">
+        <span
+          className="min-w-0 truncate font-mono text-base font-semibold text-stone-900"
+          title={trace?.rootOperation}
+        >
           {trace
             ? shortenOperation(rootHttpDescription(spans, trace.rootOperation))
             : 'Trace'}
         </span>
-        <span className="ml-auto flex items-center gap-3 font-mono text-sm text-stone-500">
+        <span className="ml-auto flex shrink-0 items-center gap-3 font-mono text-sm text-stone-500">
           {trace && (
             <>
               <span>{formatDuration(trace.durationMs)}</span>

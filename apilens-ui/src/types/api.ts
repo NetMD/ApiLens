@@ -559,7 +559,9 @@ export interface ApiErrorBody {
 // docs/api.md "GET /v1/traces/{traceId}" 응답 계약을 그대로 고정.
 // ────────────────────────────────────────────────────────────────────────────
 
-export type SpanKind = 'SERVER' | 'CLIENT' | 'INTERNAL' | 'DB' | 'EXTERNAL';
+// [Phase AB / R31] AC-R31-42 · DD-R31-24 — 서버 enum(`io.apilens.common.SpanKind`) 다섯과 같게 맞춘다:
+//   서버에 없는 옛 외부 종류 이름을 빼고 UI_EVENT 를 더함. 외부 호출 구간은 CLIENT(주황 노드)로 온다.
+export type SpanKind = 'SERVER' | 'CLIENT' | 'INTERNAL' | 'DB' | 'UI_EVENT';
 
 export interface SpanDetail {
   spanId: string;

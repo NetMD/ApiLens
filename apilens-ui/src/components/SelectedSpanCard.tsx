@@ -20,7 +20,8 @@
 //   - PayloadView IN/OUT lazy load — 그대로
 //
 // BL-09 Attributes 그룹 분류:
-//   1. HTTP : http.method / http.url / http.route / http.status_code
+//   1. HTTP : lib/spanLabels.ts 의 HTTP_KEYS 차례 — 메서드 → URL → 외부 호출 상대 주소 → 상대 포트 → route → 상태 코드
+//             ([Phase AB / R31] AC-R31-32 · DD-R31-23 — 상대 주소 · 포트 두 키가 「Other」 로 떨어지지 않게 더함 · 키 글자는 그 파일에만)
 //   2. DB   : db.statement / db.parameters / db.rows_affected / db.connection
 //   3. (exception.* 는 Other에서 제외 — ExceptionBox 전용)
 //   4. Code : code.namespace / code.function
@@ -30,11 +31,13 @@
 // ERROR 시:
 //   - 헤더 #FEE2E2 배경 (NFR-05 8 토큰에 미포함이라 raw hex 허용 — mockup 박제)
 //   - ExceptionBox: #FEF2F2 배경 + #E24B4A 4px left border (border-status-error 토큰 사용)
+//   - exception.type 이 있으면 메시지 위에 타입 줄 하나 ([Phase AB / R31] AC-R31-62 · DD-R31-35 — 모든 종류 같은 상자)
 //   - exception.message 굵게 + exception.stacktrace pre
 //   - stacktrace 부재 시 "(stacktrace not captured)" graceful (R5)
 import type { ReactNode } from 'react';
 import type { SpanDetail } from '../types/api';
 import { formatDuration, shortenOperation } from '../lib/format';
+import { HTTP_KEYS } from '../lib/spanLabels';
 import { PayloadView } from './PayloadView';
 
 interface Props {
@@ -55,7 +58,7 @@ interface AttrGroup {
   entries: Array<[string, unknown]>;
 }
 
-const HTTP_KEYS = ['http.method', 'http.url', 'http.route', 'http.status_code'];
+// HTTP_KEYS 는 lib/spanLabels.ts 에서 import ([Phase AB / R31] AC-R31-41 — 키 글자 한 곳).
 const DB_KEYS = ['db.statement', 'db.parameters', 'db.rows_affected', 'db.connection'];
 const CODE_KEYS = ['code.namespace', 'code.function'];
 
@@ -100,6 +103,7 @@ function formatAttrValue(v: unknown): string {
 }
 
 function ExceptionBox({ attrs }: { attrs: Record<string, unknown> }): ReactNode {
+  const type = attrs['exception.type'];
   const message = attrs['exception.message'];
   const stacktrace = attrs['exception.stacktrace'];
   const messageText = typeof message === 'string' ? message : '(no message)';
@@ -107,6 +111,12 @@ function ExceptionBox({ attrs }: { attrs: Record<string, unknown> }): ReactNode 
     typeof stacktrace === 'string' ? stacktrace : '(stacktrace not captured)';
   return (
     <div className="border-l-4 border-status-error bg-[#FEF2F2] p-3 font-mono text-xs">
+      {/* [Phase AB / R31] AC-R31-62 · DD-R31-35 — 예외 타입 줄(있을 때만 · 메시지 위 따로 한 줄). 사용자 명시 비협상 결정(UD-R31-6 「에러 시 stack trace 박스」).
+          종류로 가르지 않는다 — 다른 종류의 오류 카드에도 같은 줄이 생긴다(의도). 타입이 없으면(예외 없는 4xx 등) 옛 상자 그대로.
+          CLAUDE.md 「UI 디자인 철학」 인용: 「에러 시 stack trace 즉시 표시 — 노드가 빨갛게 멈추고 옆에 에러 박스」. */}
+      {typeof type === 'string' && type !== '' && (
+        <div className="mb-1 font-semibold text-stone-700 break-all">{type}</div>
+      )}
       <div className="mb-2 font-bold text-status-error break-all">{messageText}</div>
       <pre className="whitespace-pre-wrap break-all text-stone-700">{stackText}</pre>
     </div>
@@ -183,7 +193,12 @@ export function SelectedSpanCard({
           isError ? 'bg-[#FEE2E2]' : '',
         ].join(' ')}
       >
-        <div className="font-mono text-sm font-medium text-stone-900 break-all">
+        {/* [Phase AB / R31] AC-R31-34/35/36 · DD-R31-23 — 보이는 글자 = shortenOperation 결과 전체(줄이지 않고 break-all 줄바꿈 그대로) ·
+            마우스 올림 글 = operation 이름 원문(신설). 줄 수가 늘어도 카드 안 세로 굴림(max-h-[45vh] overflow-auto)이 받는다. */}
+        <div
+          className="font-mono text-sm font-medium text-stone-900 break-all"
+          title={span.operationName}
+        >
           {shortenOperation(span.operationName)}
         </div>
         <div className="mt-0.5 font-mono text-xs text-stone-500">
