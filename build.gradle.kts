@@ -74,7 +74,11 @@ allprojects {
     // [Phase R31] R31/AC-R31-52 — 한 단계 minor 올림(외부 호출 구간 · agent 다시 배포 — 사용자 명시 결정 UD-R31-4).
     //   **스키마 변경 0** — 되돌리는 길은 이전 jar 로 바꾸는 것뿐이다. 새로 빌드한 agent jar 는 이 제품 버전을 보고한다.
     //   ★OpenApiDocsIntegrationTest 의 info.version 단언 · 화면 버전 라벨(dev-frontend 몫)도 같은 덩이에서 올렸다.
-    version = "0.11.0"
+    // [Phase R32] R32/AC-R32-05-1 — 한 단계 patch 올림(빌드 도구 정비 · YAML 입구 닫기 — 사용자 명시 결정). **스키마 변경 0 ·
+    //   agent 소스 변경 0** — 되돌리는 길은 이전 jar 로 바꾸는 것뿐이다. 새로 빌드한 agent jar 는 이 제품 버전을 보고하고(버전
+    //   리소스 둘만 다름), 다시 배포하지 않은 agent 는 이전 라벨 그대로 보인다 — 둘 다 정상이다. 이 줄을 올린 커밋은 Gradle 9
+    //   비교 · 합침 뒤다(R32/AC-R32-05-1 순서). ★info.version 단언은 같은 접촉에서 올렸다 · 화면 라벨은 major.minor 라 그대로.
+    version = "0.11.1"
 }
 
 subprojects {

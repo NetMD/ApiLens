@@ -15,12 +15,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- (candidate) `JdbcParamSerializer` 의 `java.time` 타입 확장 (LocalDate / LocalDateTime / LocalTime / ZonedDateTime). **v0.11.0 에는 들어가지 않았습니다 — 시기 미정.**
+- (candidate) `JdbcParamSerializer` 의 `java.time` 타입 확장 (LocalDate / LocalDateTime / LocalTime / ZonedDateTime). **v0.11.1 에는 들어가지 않았습니다 — 시기 미정.**
 
 ### Security
 
-- (candidate) **공유 마스킹 엔진 ReDoS 방어의 현재 상태** — 지금은 실행 시간 상한(deadline)으로 막고 있습니다. 정규식 매칭 자체를 backtracking 없는 방식으로 바꾸는 안은 **검토만 해 본 상태**이고, 채택 여부도 시기도 정해진 것이 없습니다. **v0.11.0 에는 들어가지 않았습니다 — 시기 미정.**
-- (candidate) JDBC PreparedStatement 파라미터의 이름 기반 마스킹 보강 — 현재 PAYLOAD IN 키가 parameterIndex 라 이름 기반 룰이 매칭되지 않는 한계 개선. **v0.11.0 에는 들어가지 않았습니다 — 시기 미정.**
+- (candidate) **공유 마스킹 엔진 ReDoS 방어의 현재 상태** — 지금은 실행 시간 상한(deadline)으로 막고 있습니다. 정규식 매칭 자체를 backtracking 없는 방식으로 바꾸는 안은 **검토만 해 본 상태**이고, 채택 여부도 시기도 정해진 것이 없습니다. **v0.11.1 에는 들어가지 않았습니다 — 시기 미정.**
+- (candidate) JDBC PreparedStatement 파라미터의 이름 기반 마스킹 보강 — 현재 PAYLOAD IN 키가 parameterIndex 라 이름 기반 룰이 매칭되지 않는 한계 개선. **v0.11.1 에는 들어가지 않았습니다 — 시기 미정.**
+
+## [0.11.1] - 2026-11-11
+
+> **collector(server) jar 만 바꾸면 됩니다 — agent 는 다시 배포하지 않아도 됩니다.** agent 코드는 바뀌지 않았고, 0.11.0 agent 를 그대로 써도 됩니다. 새로 빌드한 agent jar 로 바꾸고 대상 앱을 재시작하면 agent 버전 라벨이 `0.11.1` 로 보이고, 다시 배포하지 않은 agent 는 `0.11.0` 라벨 그대로 보입니다. 둘 다 정상입니다.
+> **DB 스키마는 바뀌지 않습니다.** 마이그레이션이 없어, 되돌리려면 이전 jar 로 바꾸기만 하면 됩니다. 되돌릴 때 백업을 복원할 필요가 없습니다.
+> **YAML 로 요청을 보내던 곳이 있으면 먼저 확인하세요** — 아래 BREAKING CHANGES 입니다. agent 와 화면은 JSON 만 쓰므로 해당하지 않습니다.
+> 화면 왼쪽 위 버전 라벨은 `v0.11` 그대로입니다 — 판은 `/v3/api-docs` 의 `info.version`(`0.11.1`)으로 확인하세요.
+
+### BREAKING CHANGES
+
+**서버가 YAML 로 요청을 받지도, YAML 로 답하지도 않습니다.** agent 는 JSON 만 보내고 화면도 JSON 만 쓰므로 둘 다 영향이 없습니다. YAML 로 직접 보내거나 YAML 응답을 받던 스크립트 · 도구가 있으면 JSON 으로 바꾸세요.
+
+- **YAML 본문(`Content-Type: application/yaml`)을 보내면 `415` 를 받습니다.** 수집 입구 `POST /v1/spans` 는 전에는 YAML 본문을 `202` 로 받았고, `POST /v1/setup/complete` 는 `200` 으로 받았습니다. 요청 본문을 받는 다른 API 도 같습니다. 거절된 본문은 저장되지 않습니다.
+- **응답을 YAML 로만 받겠다고 한 요청(`Accept: application/yaml` 하나)은 `406` 을 받습니다.** 전에는 `200` 과 YAML 응답이었습니다(예: `GET /v1/services`). YAML 과 JSON 을 함께 적은 요청은 JSON 으로 답합니다.
+- **API 문서의 YAML 판 `/v3/api-docs.yaml` 은 그대로 `200` 입니다.** `/v3/api-docs`(JSON) · `/swagger-ui` 도 그대로입니다.
+- 0.10.0 에서 JSON 본문의 숫자 칸 `null` 과 올바른 JSON 뒤에 더 붙은 글자를 `400` 으로 거절하게 바꿀 때, YAML 본문은 그 변경 밖이라 같은 경우를 `202` 로 받았습니다(숫자 칸 `null` 은 0 으로 저장). 이번에 그 YAML 입구를 닫아, 인증 없이 열린 수집 입구가 받는 본문 형식이 JSON 하나가 됐습니다.
+
+### Changed
+
+- **빌드 도구** — Gradle wrapper 8.14.6 → 9.9.0 · agent jar 를 묶는 shadow 플러그인 8.3.5 → 8.3.11. agent jar 안의 클래스와 파일은 0.11.0 과 같고, 다른 것은 버전 표시 두 곳(`agent-version.properties` · manifest 의 `Implementation-Version`)뿐입니다. jar 를 묶는 방식이 바뀌어 jar 안 파일 날짜가 모두 1980-02-01 로 보이고, agent jar 파일은 약 120 KB 커집니다.
+- **화면 빌드 Node 24** — CI 와 릴리스 빌드가 화면을 Node 24 로 짓습니다. 직접 빌드할 때 필요한 Node 판도 24 이상입니다.
+- **컴파일 경고 정리** — 서버 소스의 컴파일 경고를 0 으로 맞췄습니다. 동작은 바뀌지 않습니다.
+- **자동 시험 보강** — 토큰 없이 두 번 인코딩한 `..` 경로로 보호된 조회를 읽을 수 없는지 · Spring Boot 지원 기간 경고가 끝 날짜 앞 · 당일 · 뒤에 맞는 줄을 내는지 · 밤 정리의 빈 공간 회수가 실패했을 때와 WAL 체크포인트가 막혔을 때의 로그 줄 · 밤 정리와 데이터 받기가 겹칠 때 받은 데이터를 잃지 않는지를 시험이 지킵니다. 이 시험들로 바뀐 제품 동작은 없습니다.
+- **버전 0.11.0 → 0.11.1** (collector jar · agent jar). 화면 왼쪽 위 라벨은 `v0.11` 그대로입니다.
+
+### Docs
+
+- 보안 공지 대조표 [`docs/security.md`](docs/security.md) — 표마다 「확인 시각」 칸을 더했습니다. 공지 내용과 판정은 그대로이고, 칸의 시각은 그 묶음을 확인한 시간대입니다.
+- README — 「현재 한계」에서 YAML 본문 줄을 뺐습니다(이제 YAML 을 받지 않습니다). 「직접 빌드」 요구사항을 Node 24 이상으로 고쳤습니다.
 
 ## [0.11.0] - 2026-11-03
 
