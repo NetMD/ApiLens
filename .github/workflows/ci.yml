@@ -21,7 +21,8 @@ jobs:
   #   Gradle clean test (matrix JDK 21 primary + 시험 JVM 27 smoke)
   #   빌드·테스트·shadow jar relocate 검증을 한 job 에 묶는다
   # [Phase R30] R30/AC-R30-31 — smoke 다리는 Gradle 을 JDK 21 로 돌리고 server · common 시험 JVM 만 27 로 띄운다
-  #   (Gradle 8.14 는 JDK 27 위에서 데몬이 안 선다 · agent 시험은 21 — Byte Buddy 1.17.8 지원 범위).
+  #   (데몬 JDK 는 컴파일 toolchain 과 같은 21 로 둔다 · agent 시험은 21 — Byte Buddy 1.17.8 지원 범위).
+  #   [Phase R32] R32/AC-R32-01-18 — Gradle 9.9.0 데몬은 JDK 27 에서도 선다(2026-11 실측) — 그래도 데몬은 21 로 둔다.
   #   판정은 smoke 다리 끝 notice 한 줄(단계 outcome 8 + 시험 JVM 판)이다 — 단계 실패는 smoke 다리에서 삼켜진다.
   # ============================================================
   backend-test:
@@ -70,7 +71,7 @@ jobs:
         id: wrapper
         run: |
           if [ ! -f ./gradlew ]; then
-            echo "ERROR: gradle wrapper not generated. Run: gradle wrapper --gradle-version 8.14.6"
+            echo "ERROR: gradle wrapper not generated. Run: gradle wrapper --gradle-version 9.9.0"
             exit 1
           fi
         continue-on-error: ${{ matrix.smoke }}
