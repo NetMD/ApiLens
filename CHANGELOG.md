@@ -34,14 +34,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 **서버가 YAML 로 요청을 받지도, YAML 로 답하지도 않습니다.** agent 는 JSON 만 보내고 화면도 JSON 만 쓰므로 둘 다 영향이 없습니다. YAML 로 직접 보내거나 YAML 응답을 받던 스크립트 · 도구가 있으면 JSON 으로 바꾸세요.
 
 - **YAML 본문(`Content-Type: application/yaml`)을 보내면 `415` 를 받습니다.** 수집 입구 `POST /v1/spans` 는 전에는 YAML 본문을 `202` 로 받았고, `POST /v1/setup/complete` 는 `200` 으로 받았습니다. 요청 본문을 받는 다른 API 도 같습니다. 거절된 본문은 저장되지 않습니다.
-- **응답을 YAML 로만 받겠다고 한 요청(`Accept: application/yaml` 하나)은 `406` 을 받습니다.** 전에는 `200` 과 YAML 응답이었습니다(예: `GET /v1/services`). YAML 과 JSON 을 함께 적은 요청은 JSON 으로 답합니다.
+- **응답을 YAML 로만 받겠다고 한 요청(`Accept: application/yaml` 하나)은 오류 없이 처리되면 `406` 을 받습니다.** 전에는 `200` 과 YAML 응답이었습니다(예: `GET /v1/services`). YAML 과 JSON 을 함께 적은 요청은 JSON 으로 답합니다. 오류로 끝나는 요청 가운데 일부(없는 trace 조회 · 잘못된 span id 를 담은 수집 요청 등)는 YAML 로만 받겠다고 하면 `500` 을 받고, 수집기 로그에 `ERROR` 와 스택이 남습니다(0.11.0 은 이 두 요청에 `404` · `400` 으로 답했습니다). `application/xml` 처럼 서버가 내지 않는 다른 형식만 받겠다고 한 요청과 같은 동작입니다.
 - **API 문서의 YAML 판 `/v3/api-docs.yaml` 은 그대로 `200` 입니다.** `/v3/api-docs`(JSON) · `/swagger-ui` 도 그대로입니다.
 - 0.10.0 에서 JSON 본문의 숫자 칸 `null` 과 올바른 JSON 뒤에 더 붙은 글자를 `400` 으로 거절하게 바꿀 때, YAML 본문은 그 변경 밖이라 같은 경우를 `202` 로 받았습니다(숫자 칸 `null` 은 0 으로 저장). 이번에 그 YAML 입구를 닫아, 인증 없이 열린 수집 입구가 받는 본문 형식이 JSON 하나가 됐습니다.
 
 ### Changed
 
-- **빌드 도구** — Gradle wrapper 8.14.6 → 9.9.0 · agent jar 를 묶는 shadow 플러그인 8.3.5 → 8.3.11. agent jar 안의 클래스와 파일은 0.11.0 과 같고, 다른 것은 버전 표시 두 곳(`agent-version.properties` · manifest 의 `Implementation-Version`)뿐입니다. jar 를 묶는 방식이 바뀌어 jar 안 파일 날짜가 모두 1980-02-01 로 보이고, agent jar 파일은 약 120 KB 커집니다.
-- **화면 빌드 Node 24** — CI 와 릴리스 빌드가 화면을 Node 24 로 짓습니다. 직접 빌드할 때 필요한 Node 판도 24 이상입니다.
+- **빌드 도구** — Gradle wrapper 8.14.6 → 9.9.1 · agent jar 를 묶는 shadow 플러그인 8.3.5 → 8.3.11. agent jar 안의 클래스와 파일은 0.11.0 과 같고, 다른 것은 버전 표시 두 곳(`agent-version.properties` · manifest 의 `Implementation-Version`)뿐입니다. jar 를 묶는 방식이 바뀌어 jar 안 파일 날짜가 모두 1980-02-01 로 보이고, agent jar 파일은 약 120 KB 커집니다.
+- **화면 빌드 Node 24** — CI 와 릴리스 빌드가 화면을 Node 24 로 짓습니다. 직접 빌드할 때 지원하는 Node 판은 24 이상입니다.
 - **컴파일 경고 정리** — 서버 소스의 컴파일 경고를 0 으로 맞췄습니다. 동작은 바뀌지 않습니다.
 - **자동 시험 보강** — 토큰 없이 두 번 인코딩한 `..` 경로로 보호된 조회를 읽을 수 없는지 · Spring Boot 지원 기간 경고가 끝 날짜 앞 · 당일 · 뒤에 맞는 줄을 내는지 · 밤 정리의 빈 공간 회수가 실패했을 때와 WAL 체크포인트가 막혔을 때의 로그 줄 · 밤 정리와 데이터 받기가 겹칠 때 받은 데이터를 잃지 않는지를 시험이 지킵니다. 이 시험들로 바뀐 제품 동작은 없습니다.
 - **버전 0.11.0 → 0.11.1** (collector jar · agent jar). 화면 왼쪽 위 라벨은 `v0.11` 그대로입니다.
