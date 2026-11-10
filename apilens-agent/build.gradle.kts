@@ -2,7 +2,7 @@
 // premain 진입점, ByteBuddy로 controller/service/repo/JDBC 자동 instrument
 // 사용자 앱 클래스로더와 충돌 방지를 위해 shadow jar로 의존성 relocate
 
-// [Phase R32] R32/AC-R32-01-6 — shadow 는 8 계열 8.3.11 을 쓴다(Gradle 9.9.0 에서 서는 판). 그 산출은 8.3.5 산출과 엔트리 이름 · CRC ·
+// [Phase R32] R32/AC-R32-01-6 — shadow 는 8 계열 8.3.11 을 쓴다(Gradle 9.9.1 에서 서는 판). 그 산출은 8.3.5 산출과 엔트리 이름 · CRC ·
 //   길이 · manifest 가 같고, 포장(엔트리 순서 · 고정 시각 · 엔트리마다 16 B 데이터 서술자)만 다르다(2026-11 실측).
 //   9.x 는 쓰지 않는다 — 기본 산출 manifest 에 Multi-Release: true 가 붙어 호스트 JVM 이 판별(META-INF/versions/*) 클래스를
 //   싣게 된다(8.3.x 산출에선 안 실림). 받을지는 따로 정한다. CLAUDE.md '아키텍처 핵심 원칙'(Agent 자체 장애가 호스트 앱에
