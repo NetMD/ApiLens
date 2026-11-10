@@ -133,7 +133,7 @@ app, and restart — the first trace usually appears within a second or two.
 ## 직접 빌드 | Build from Source
 
 ```bash
-# 요구사항 | Requirements: JDK 21, Node 20+ (Gradle wrapper 포함)
+# 요구사항 | Requirements: JDK 21, Node 24+ (Gradle wrapper 포함)
 
 git clone https://github.com/NetMD/ApiLens.git
 cd ApiLens

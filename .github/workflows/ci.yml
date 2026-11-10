@@ -1,4 +1,4 @@
-# ApiLens CI — backend(Gradle/JDK 21 + smoke 시험 JVM 27) + frontend(Node 20 · npm audit) + 단일 jar 임베드 검증
+# ApiLens CI — backend(Gradle/JDK 21 + smoke 시험 JVM 27) + frontend(Node 24 · npm audit) + 단일 jar 임베드 검증
 # + agent shadow jar relocate clean / 회귀 가드 grep / 지원 라인 가드.
 # [Phase R30] R30/AC-R30-30 — 액션은 그날 최신 메이저(2026-10-28 20:12 releases API 실측 · 전부 node24) · 러너 ubuntu-24.04 고정.
 
@@ -253,11 +253,11 @@ jobs:
 
   # ============================================================
   # Job 2: frontend-build
-  #   Node 20 + npm ci + lint + test + build
+  #   Node 24 + npm ci + lint + test + build
   #   빌드 산출물(dist)을 통합 job 으로 넘긴다 — 통합 job 이 화면 자원을 임베드해야 하기 때문이다
   # ============================================================
   frontend-build:
-    name: Frontend (Node 20)
+    name: Frontend (Node 24)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -268,7 +268,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: '24'
           cache: npm
           cache-dependency-path: apilens-ui/package-lock.json
 
