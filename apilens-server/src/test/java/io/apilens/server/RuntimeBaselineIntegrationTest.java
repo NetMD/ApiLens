@@ -22,9 +22,13 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.SpringBootVersion;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.ApplicationContext;
+import org.springframework.http.MediaType;
 import org.springframework.http.converter.HttpMessageConverter;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.web.servlet.HandlerExceptionResolver;
+import org.springframework.web.servlet.handler.HandlerExceptionResolverComposite;
+import org.springframework.web.servlet.mvc.method.annotation.ExceptionHandlerExceptionResolver;
 import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerAdapter;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -123,7 +127,8 @@ class RuntimeBaselineIntegrationTest {
      * <p>★한계 그 자리에(설계와 다른 자리 · dev-backend Phase B 결정 요약 자진 신고): Spring Framework 7 은 Jackson 2 YAML
      * 모듈이 클래스패스에 있으면 YAML 변환기({@code MappingJackson2YamlHttpMessageConverter})를 기본으로 붙인다 — springdoc 3 이
      * 그 모듈을 끌어온다. 그래서 「클래스 이름에 MappingJackson2 0」(설계 §5.4 원문)은 4.1 에서 성립하지 않는다. 이 시험은
-     * <b>JSON</b> 변환기만 단언하고 YAML 변환기의 처분(받음 / 뺌)은 설계 검토로 넘겼다.
+     * <b>JSON</b> 변환기만 단언한다. [Phase R32] R32/AC-R32-03-6 — YAML 변환기는 이제 수집 · 조회 입구의 변환기 목록에서
+     * 뺐다(설정 클래스 한 자리) — 아래 {@link #registersNoYamlCapableConverter()} 가 단언한다.
      */
     @Test
     void servesJsonBodiesWithJackson3ConvertersOnly() {
@@ -136,6 +141,43 @@ class RuntimeBaselineIntegrationTest {
         long jackson3Json = converters.stream().filter(c -> c.getClass().getName().contains("JacksonJson")).count();
         assertEquals(0, jackson2Json, "Jackson 2 JSON 변환기 0 — 실제 " + converters);
         assertTrue(jackson3Json >= 1, "Jackson 3 JSON 변환기 1 이상 — 실제 " + converters);
+    }
+
+    /**
+     * [Phase R32] R32/AC-R32-03-1/R32/AC-R32-03-3/R32/AC-R32-03-7 — 처리기 어댑터와 예외 처리기 두 목록 모두에 YAML 을 읽거나 쓸
+     * 수 있는 변환기가 0 이고, 바이트 · JSON 변환기는 남는다. 사용자 명시 결정(YAML 입구 닫기 · API 문서 YAML 판 유지).
+     *
+     * <p>클래스 이름이 아니라 동작(그 형식을 읽을 수 있나 · 쓸 수 있나)으로 센다 — Jackson 2 · 3 어느 YAML 변환기든 같은
+     * 기준으로 잡힌다. 바이트 변환기가 남는 것은 API 문서 YAML 판(바이트 응답)이 사는 조건이다.
+     */
+    @Test
+    void registersNoYamlCapableConverter() {
+        MediaType yaml = MediaType.parseMediaType("application/yaml");
+        List<HttpMessageConverter<?>> adapter =
+                context.getBean(RequestMappingHandlerAdapter.class).getMessageConverters();
+        List<HttpMessageConverter<?>> resolver = exceptionHandlerConverters();
+        for (List<HttpMessageConverter<?>> list : List.of(adapter, resolver)) {
+            long yamlCapable = list.stream()
+                    .filter(c -> c.canRead(Map.class, yaml) || c.canWrite(Map.class, yaml))
+                    .count();
+            assertEquals(0, yamlCapable, "YAML 을 읽거나 쓸 수 있는 변환기 0 — 실제 " + list);
+            assertTrue(list.stream().anyMatch(c -> c.canWrite(byte[].class, MediaType.APPLICATION_OCTET_STREAM)),
+                    "바이트 변환기는 남는다 — 실제 " + list);
+            assertTrue(list.stream().anyMatch(c -> c.canRead(Map.class, MediaType.APPLICATION_JSON)),
+                    "JSON 변환기는 남는다 — 실제 " + list);
+        }
+    }
+
+    /** 예외 처리기({@code @ExceptionHandler} 응답)가 쓰는 변환기 목록 — 합성 해석기 안에서 꺼낸다. */
+    private List<HttpMessageConverter<?>> exceptionHandlerConverters() {
+        HandlerExceptionResolverComposite composite =
+                context.getBean("handlerExceptionResolver", HandlerExceptionResolverComposite.class);
+        for (HandlerExceptionResolver r : composite.getExceptionResolvers()) {
+            if (r instanceof ExceptionHandlerExceptionResolver eh) {
+                return eh.getMessageConverters();
+            }
+        }
+        throw new AssertionError("전제: 예외 처리기 해석기가 합성 해석기 안에 있다 — 실제 " + composite.getExceptionResolvers());
     }
 
     /** 클래스가 든 jar 의 Maven 메타(pom.properties)에서 판을 읽는다. */
