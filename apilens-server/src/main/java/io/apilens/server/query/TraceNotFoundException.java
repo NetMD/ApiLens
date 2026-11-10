@@ -20,6 +20,8 @@ package io.apilens.server.query;
  */
 public class TraceNotFoundException extends RuntimeException {
 
+    private static final long serialVersionUID = 1L;
+
     private final String traceId;
 
     public TraceNotFoundException(String traceId) {

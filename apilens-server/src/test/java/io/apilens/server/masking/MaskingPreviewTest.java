@@ -177,6 +177,8 @@ class MaskingPreviewTest {
                     () -> previewService.preview(new PreviewRequest(
                             "{\"note\":\"evil-redos-input\"}", "application/json", null)));
             assertEquals("preview timed out: pattern too complex for this sample", e.getMessage());
+            // [Phase R32] AC-R32-02-1 · TC-R32-24 — 전제 단언: 위 예외가 가로챈 엔진의 mask() 에서 나왔는가(생성 0 이면 가로채기 밖의 길).
+            assertFalse(mocked.constructed().isEmpty(), "preview() 가 가로챈 MaskingEngine 을 실제로 만들어야 한다");
         }
     }
 

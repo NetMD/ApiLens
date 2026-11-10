@@ -70,6 +70,9 @@ public final class CursorCodec {
     }
 
     public static class InvalidCursorException extends IllegalArgumentException {
+
+        private static final long serialVersionUID = 1L;
+
         public InvalidCursorException(String message) {
             super(message);
         }

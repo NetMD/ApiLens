@@ -20,6 +20,8 @@ package io.apilens.server.masking;
  */
 public class MaskingRuleNotFoundException extends RuntimeException {
 
+    private static final long serialVersionUID = 1L;
+
     public MaskingRuleNotFoundException(long ruleId) {
         super("rule not found: " + ruleId);
     }

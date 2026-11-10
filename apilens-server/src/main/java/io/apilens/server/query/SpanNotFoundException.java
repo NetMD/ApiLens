@@ -20,6 +20,8 @@ package io.apilens.server.query;
  */
 public class SpanNotFoundException extends RuntimeException {
 
+    private static final long serialVersionUID = 1L;
+
     private final String traceId;
     private final String spanId;
 

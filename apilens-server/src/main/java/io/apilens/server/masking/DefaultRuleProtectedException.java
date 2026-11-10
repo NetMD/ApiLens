@@ -24,6 +24,8 @@ package io.apilens.server.masking;
  */
 public class DefaultRuleProtectedException extends RuntimeException {
 
+    private static final long serialVersionUID = 1L;
+
     public DefaultRuleProtectedException(long ruleId) {
         super("default rule cannot be deleted: " + ruleId);
     }
