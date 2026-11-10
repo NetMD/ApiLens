@@ -22,7 +22,7 @@ import jakarta.servlet.http.HttpServletRequest;
  *
  * <p>// [Phase K] AC-01-3/AC-03-1 — R14-D04 비협상: ingest(POST /v1/spans) 무인증 화이트리스트
  * // (agent HttpTransport 무변경). 사용자 명시 비협상 결정.
- * // CLAUDE.md '절대 변경하지 말아야 할 결정 사항' (포트 8765·신뢰망) 인용.
+ * // 출처 = R14 PM R14-D04(사용자 명시 비협상 결정). [Phase R32] R32/AC-R32-04-7 — 출처 줄을 결정 문서로 바로잡았다.
  *
  * <p>★설계 핵심 (default-deny for /v1/**, Design §2.2)★: 화이트리스트를 "면제 목록 enumerate"
  * 가 아니라 <b>"/v1/** 와 /actuator/** 가 아니면 정적 자산(면제)"</b> 의 역방향 기본값으로 둔다.
@@ -36,6 +36,9 @@ import jakarta.servlet.http.HttpServletRequest;
  *   <li>정적 자산·SPA forward — /v1/** 도 /actuator/** 도 아닌 모든 경로 (index.html, /assets/**,
  *       /setup, /services, /traces/**, /settings 등 — WebMvcConfig forward 포함)</li>
  * </ul>
+ *
+ * <p>예외: 경로에 {@code %} 나 {@code ;} 가 들어 있으면 위 면제를 하나도 적용하지 않는다 — 보호 쪽으로 판정한다
+ * ({@link #isWhitelisted} 의 두 가드).
  *
  * <p>그 외 {@code /v1/**} 와 {@code /actuator/**} (health 제외) 는 전부 보호(토큰 필수).
  */
@@ -73,7 +76,7 @@ final class AuthWhitelist {
         // [Phase R29] R29/AC-R29-55 — 행렬 파라미터(;)가 든 경로는 면제하지 않는다. 사용자 명시 결정 (가) 2026-10-20(SEC-R29-01).
         //   면제 판정은 원문 경로를 보고 Spring MVC 라우팅은 ; 뒤를 떼고 보므로, 둘이 갈려 /v1;/… 가 면제로 빠진 채 토큰 없이
         //   보호 처리기에 닿았다 — 그 갈림을 끊는다. 인코딩 꼴(%3B)은 바로 위 percent 가드가 이미 막는다. 좁히는 방향만이다 —
-        //   수신(R14-D04) · 평문 setup · 정적 자산 면제는 그대로(CLAUDE.md '절대 변경하지 말아야 할 결정 사항').
+        //   수신(R14-D04) · 평문 setup · 정적 자산 면제는 그대로(R14 PM R14-D04).
         //   ★한계 그 자리에: 정적 자산 · 화면 딥링크 이름에 ; 가 있으면 면제 밖으로 나가 화면이 깨진다 — 틀리는 방향이 위험한
         //     쪽이다. 지금 0 이다(빌드 산출물 이름 · 화면 경로 실측). 이 서버는 세션을 안 써 경로에 세션 식별자도 안 붙는다.
         if (path.indexOf(';') >= 0) {

@@ -111,8 +111,11 @@ class AuthWhitelistPathIntegrationTest {
     }
 
     /**
-     * [Phase R29] R29/AC-R29-35 verbatim: "{@code /v1/setup/../trace-points} 를 글자 그대로(토큰 없이) 보내면 처리기에
-     * 못 닿고 대표 점 본문이 안 나온다. {@code AuthWhitelist.java} diff 0". SEC-R28-02 방향 시험.
+     * [Phase R29] R29/AC-R29-35 — {@code /v1/setup/../trace-points} 를 글자 그대로(토큰 없이) 보내면 처리기에 못 닿고 대표 점
+     * 본문이 안 나온다. SEC-R28-02 방향 시험. [Phase R32] R32/AC-R32-04-7 — 그 AC 는 면제 판정 파일을 고치지 않는다는 조건을
+     * 함께 달았는데, 그 조건은 R29 재작업이 면제 판정에 {@code ;} 가드를 넣으면서 낡았다. 지금 면제 판정은
+     * {@code AuthWhitelist#isWhitelisted} 의 {@code %} · {@code ;} 가드를 지난 뒤에만 면제 접두를 본다 — 이 경로는 둘 다 없어
+     * 면제 접두로 필터를 지나고, 라우팅에서 막힌다(아래).
      *
      * <p>면제 접두({@code /v1/setup/})라 필터는 지나가지만 Spring 경로가 원문 {@code ..} 를 접지 않아 맞는 처리기가 없다 →
      * <b>404</b>(R28 보안 실기동 SV-03 · SV-18 과 같은 값 · 이 파일 첫 실행값으로 확인). 본문 단언은 따옴표를 포함한 JSON 키
