@@ -29,6 +29,7 @@ import org.mockito.Mockito;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.jdbc.datasource.SimpleDriverDataSource;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionCallback;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -654,6 +655,79 @@ class RetentionCleanupServiceTest {
         assertEquals(0, countLinesStartingWith(lines, "reclaim batches:"), "실제: " + lines);
         assertEquals(1, countLinesStartingWith(lines, "free page reclaim skipped — insufficient disk."),
                 "가드 거부 warn 한 줄(문면 그대로) — 실제: " + lines);
+    }
+
+    // ─── [Phase R32] 회수 입구 예외 · 체크포인트 busy 실물 (R32/AC-R32-04-5 · R32/AC-R32-04-6) ─────────────────
+
+    /**
+     * [Phase R32] R32/AC-R32-04-5 — 기획 AC 원문: "회수 루프 첫 빈 페이지 읽기 예외 갈래 — {@code reclaim start:} ·
+     * {@code reclaim done:} · {@code reclaim batches:} 0 · warn {@code free page reclaim failed} 1 · 그 시험 이름 실행 1".
+     *
+     * <p>회수 입구의 첫 문장(빈 페이지 읽기)이 던지면 시작 줄조차 안 찍히고 자체 catch 의 warn 한 줄로 끝난다 — 정리 자체는
+     * 막지 않는다. 모의는 그 읽기 한 가지에만 건다(다른 PRAGMA 는 실제 DB).
+     */
+    @Test
+    void logsOnlyTheFailureWarnWhenTheFirstFreelistReadThrows() {
+        JdbcTemplate throwingRead = Mockito.spy(jdbc);
+        Mockito.doThrow(new DataAccessResourceFailureException("simulated freelist read failure"))
+                .when(throwingRead).queryForObject("PRAGMA freelist_count", Long.class);
+        RetentionCleanupService svc = new RetentionCleanupService(throwingRead, txManager, settingsService);
+
+        List<String> lines = captureRetentionLines(
+                () -> assertDoesNotThrow(() -> svc.reclaimFreePagesWithin(1_000, 250)));
+
+        // 전제 — 모의가 실제로 한 번 불렸다(안 불리면 아래 0 셋이 빈 그물이다).
+        Mockito.verify(throwingRead, Mockito.times(1)).queryForObject("PRAGMA freelist_count", Long.class);
+        assertEquals(0, countLinesStartingWith(lines, "reclaim start:"), "시작 줄 0 — 실제: " + lines);
+        assertEquals(0, countLinesStartingWith(lines, "reclaim done:"), "회수 요약 0 — 실제: " + lines);
+        assertEquals(0, countLinesStartingWith(lines, "reclaim batches:"), "묶음 줄 0 — 실제: " + lines);
+        assertEquals(1, countLinesStartingWith(lines, "free page reclaim failed — cleanup itself succeeded"),
+                "실패 warn 한 줄(문면 그대로) — 실제: " + lines);
+    }
+
+    /**
+     * [Phase R32] R32/AC-R32-04-6 — 기획 AC 원문: "다른 연결이 읽기 트랜잭션을 연 채 정리를 돌리면
+     * {@code wal checkpoint: … busy=1} 줄이 실물로 찍힘".
+     *
+     * <p>모의가 아니라 실제 두 연결이다. 읽는 연결을 <b>먼저</b> 연다 — 다른 연결이 마지막으로 닫힐 때 WAL 이 체크포인트 ·
+     * 삭제되지 않게 해야 그 읽기가 WAL 위의 스냅숏을 쥔다. 이 시험만 쓰는 데이터 소스는 체크포인트 대기 상한을 500 ms 로
+     * 둔다(합격선에 시간 없음 · 대기 상한일 뿐). 드라이버로 직접 연다 — {@code SQLiteDataSource} 는 URL 의
+     * {@code busy_timeout} 을 무시하고 3000 을 쓴다(이 라운드 실측).
+     */
+    @Test
+    void logsBusyOneWhenAnotherConnectionHoldsAReadTransaction() throws Exception {
+        DataSource walSource = new SimpleDriverDataSource(new org.sqlite.JDBC(),
+                "jdbc:sqlite:" + dbFile.toAbsolutePath() + "?journal_mode=WAL&busy_timeout=500");
+        JdbcTemplate walJdbc = new JdbcTemplate(walSource);
+        RetentionCleanupService svc =
+                new RetentionCleanupService(walJdbc, new DataSourceTransactionManager(walSource), settingsService);
+        assertEquals("wal", walJdbc.queryForObject("PRAGMA journal_mode", String.class), "전제: 시험 DB 가 WAL");
+
+        long now = System.currentTimeMillis();
+        try (java.sql.Connection reader = walSource.getConnection()) {
+            insertTraceTree("t-expired", now - 100 * DAY_MS);
+            insertTraceTree("t-live", now - DAY_MS);
+            reader.setAutoCommit(false);
+            try (java.sql.Statement st = reader.createStatement();
+                 java.sql.ResultSet rs = st.executeQuery("SELECT COUNT(*) FROM traces")) {
+                assertTrue(rs.next(), "전제: 읽는 연결이 실제로 읽었다(읽기 트랜잭션 시작)");
+                assertEquals(2, rs.getInt(1), "전제: 읽는 연결이 넣은 두 trace 를 본다");
+            }
+            Path wal = Path.of(dbFile.toAbsolutePath() + "-wal");
+            assertTrue(Files.exists(wal) && Files.size(wal) > 0, "전제: 정리 전 -wal 파일 크기 > 0");
+
+            List<String> lines = captureRetentionLines(() -> svc.cleanup(now));
+
+            assertEquals(1, linesStartingWith(lines, "wal_checkpoint(TRUNCATE) busy").size(),
+                    "기존 busy 줄 한 줄 — 실제: " + lines);
+            List<String> waitLines = linesStartingWith(lines, "wal checkpoint:");
+            assertEquals(1, waitLines.size(), "새 줄 ② 한 줄 — 실제: " + lines);
+            assertTrue(waitLines.get(0).contains(" busy=1 "), "busy=1 이 실물로 찍힌다 — 실제: " + waitLines.get(0));
+            assertTrue(numberAfter(lines, "wal checkpoint: elapsedMs=") >= 0, "전제: 숫자 칸 꼴");
+            long walFrames = Long.parseLong(waitLines.get(0).replaceAll(".* walFrames=(\\d+) .*", "$1"));
+            assertTrue(walFrames > 0, "walFrames > 0 — 실제: " + waitLines.get(0));
+            reader.rollback();
+        }
     }
 
     // ─── [Phase R22] ④ 정리 시각 upsert (R22/AC-04-1) ────────────────────────

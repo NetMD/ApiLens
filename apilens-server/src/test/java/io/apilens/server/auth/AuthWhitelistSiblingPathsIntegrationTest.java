@@ -77,9 +77,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <p>★「200 이 아니다」 대신 세 값으로 좁혔다 — 「200 이 아니다」는 500 같은 엉뚱한 실패도 통과시키는 빈 그물이다
  * (같은 폴더 {@code AuthWhitelistPathIntegrationTest} 의 RA-R26-11 교훈).
  *
- * <p>★한계 그 자리에: 갈래 9 는 표본이다 — 새 우회 꼴을 다 덮지 않는다. 보호 대상을 늘릴 때는 9 갈래 전부를 함께 더한다.
- * {@code AuthWhitelist.java} 는 이 시험 때문에 고치지 않는다(diff 0 · 사용자 명시 비협상 결정 · CLAUDE.md '절대 변경하지
- * 말아야 할 결정 사항' 의 포트 8765 · 신뢰망 전제 인용).
+ * <p>[Phase R32] R32/AC-R32-04-2 — 열 번째 갈래 = 이중 인코딩({@code %252e%252e})을 보호 대상 넷 전부에 더했다(행 이름
+ * SB-R32-01~04 · 기존 SB-R30 번호는 그대로). 단언은 기존 갈래 행과 같은 불변(③)이고, 같은 대상의 첫째 갈래 행과 상태를
+ * 맞대는 것은 표(TSV)로 QA 가 한다.
+ *
+ * <p>★한계 그 자리에: 갈래 10 은 표본이다 — 새 우회 꼴을 다 덮지 않는다. 보호 대상을 늘릴 때는 10 갈래 전부를 함께 더한다.
+ * 이 시험은 면제 판정을 바꾸지 않는다 — 판정은 {@code AuthWhitelist#isWhitelisted} 의 {@code %} · {@code ;} 가드와
+ * 수신 면제(출처 = R14 PM R14-D04 · 사용자 명시 비협상 결정)다.
  */
 @SpringBootTest(
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
@@ -169,8 +173,9 @@ class AuthWhitelistSiblingPathsIntegrationTest {
             "P4", "/actuator/info");
 
     /**
-     * 부록 E 의 43 행 — 갈래 9 × 보호 4(SB-R30-01~36) + 보호 기준 4(37~40) + 면제 기준 3(41~43). 행 번호 =
-     * (갈래 − 1) × 4 + 보호 대상 번호. 차례는 표 차례 그대로다.
+     * 47 행 · 갈래 10 — 부록 E 의 43 행(갈래 9 × 보호 4(SB-R30-01~36) + 보호 기준 4(37~40) + 면제 기준 3(41~43))
+     * 뒤에 열 번째 갈래 × 보호 4(SB-R32-01~04)를 붙였다. SB-R30 행 번호 = (갈래 − 1) × 4 + 보호 대상 번호 ·
+     * SB-R32 행은 이 식 밖이다(뒤에 붙여 R30 표와의 행 대조를 지킨다). 차례는 표 차례 그대로다.
      */
     static Stream<Row> rows() {
         // P1~P3 는 /v1/{R} 꼴 · P4 는 /actuator 꼴 — 갈래마다 원문을 펼쳐 쓴다(부록 E 열 그대로).
@@ -202,6 +207,14 @@ class AuthWhitelistSiblingPathsIntegrationTest {
         rows.add(new Row(id(n++), "POST", "/v1/spans", Kind.EXEMPT_BASE, ""));
         rows.add(new Row(id(n++), "GET", "/v1/setup/state", Kind.EXEMPT_BASE, ""));
         rows.add(new Row(id(n++), "GET", "/actuator/health", Kind.EXEMPT_BASE, ""));
+        // [Phase R32] R32/AC-R32-04-2 — g10 이중 인코딩 · 보호 대상 넷 전부(한 대상만 더하지 않는다).
+        String[] doubleEncoded = {"/v1/setup/%252e%252e/", "/actuator/health/%252e%252e/info"};
+        int m = 1;
+        for (int p = 0; p < 3; p++) {
+            rows.add(new Row(String.format("SB-R32-%02d", m++), "GET", doubleEncoded[0] + r[p], Kind.SIBLING,
+                    "P" + (p + 1)));
+        }
+        rows.add(new Row(String.format("SB-R32-%02d", m), "GET", doubleEncoded[1], Kind.SIBLING, "P4"));
         return rows.stream();
     }
 
