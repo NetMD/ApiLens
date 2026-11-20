@@ -23,7 +23,7 @@ spring:
   #   busy_timeout=10000    writer 경합 시 10초 대기 (connection 수준 — URL 적용이 유일하게 안전)
   # auto_vacuum 은 URL 로 넣지 않는다 (실측 — DbPragmaTest V-06 봉인): sqlite-jdbc 3.47.1 의
   #   SQLiteConfig.Pragma 에 AUTO_VACUUM 이 없어 URL 파라미터가 silent drop 됐다.
-  #   [Phase R30] R30/AC-R30-21 — 드라이버는 이제 Boot BOM 관리판(4.1.2 = 3.53.4.0)이다. URL 에 안 넣는 원칙은 그대로이고
+  #   [Phase R30] R30/AC-R30-21 · [Phase R33] — 드라이버 판은 카탈로그 sqliteJdbc 키(3.54.1.0)가 든다(AC-R30-21 되돌림). URL 에 안 넣는 원칙은 그대로이고
   #   판이 바뀐 뒤의 동작은 DbPragmaTest read-back 이 다시 잰다(이 주석은 그 판의 동작을 단언하지 않는다).
   #   INCREMENTAL 전환(신규/기존 DB 공통)은 StartupDbInitializer 가 동일 connection 에서
   #   PRAGMA + VACUUM 1회 수행 (멱등 — Design §2-A2 결정 2 의 ApplicationRunner 축이 전담).

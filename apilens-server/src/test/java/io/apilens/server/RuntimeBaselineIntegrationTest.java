@@ -50,8 +50,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * [Phase R30] R30/AC-R30-10/R30/AC-R30-27 — 해석된 실물 판과 Jackson 배선을 잰다(설계 DT-R30-04 · §5.4 · 검사망의 실패 게이트).
  *
- * <p>AC-R30-27(비협상)은 해석 버전 고정 시험을 서버 단언 다섯(Boot 4.1 계열 · Tomcat 11.0 계열 · sqlite-jdbc 3.53.4.0 ·
- * 서버 Jackson 2 2.21.7 · Jackson 3 3.1 계열)과 agent 단언 하나(agent jar 안 Jackson 2 판 = 카탈로그 {@code jackson} 키 값 ·
+ * <p>AC-R30-27(비협상)은 해석 버전 고정 시험을 서버 단언 다섯(Boot 4.1 계열 · Tomcat 11.0 계열 · sqlite-jdbc 3.54.1.0 ·
+ * 서버 Jackson 2 2.21.8 · Jackson 3 3.1 계열)과 agent 단언 하나(agent jar 안 Jackson 2 판 = 카탈로그 {@code jackson} 키 값 ·
  * CI 단계가 읽음)로 따로 두고 실패 게이트로 삼는다. agent 단언은 shadow jar 를 직접 읽는 CI 단계가 맡는다(설계 DD-R30-12 ·
  * DT-R30-15) — 이 파일은 서버 다섯과 배선만이다. [Phase R32] R32/AC-R32-04-1 — 옛 인용에 적힌 agent 판 글자는 판올림마다
  * 낡아서, 판 글자 대신 그 값을 읽는 자리(카탈로그 키)를 적었다.
@@ -101,13 +101,13 @@ class RuntimeBaselineIntegrationTest {
     /** 서버 판 다섯 — 설계 DD-R30-02 판 고정 값(점 값). */
     @Test
     void resolvesTheTargetLibraryLines() throws Exception {
-        assertEquals("4.1.2", SpringBootVersion.getVersion(), "Spring Boot 판");
+        assertEquals("4.1.3", SpringBootVersion.getVersion(), "Spring Boot 판");
         assertTrue(ServerInfo.getServerNumber().startsWith("11.0.27"),
                 "Tomcat 판 — 실제 " + ServerInfo.getServerNumber());
-        assertEquals("3.53.4.0", pomVersionOf(org.sqlite.JDBC.class, "org.xerial", "sqlite-jdbc"), "sqlite-jdbc 판");
-        assertEquals("2.21.7", com.fasterxml.jackson.databind.cfg.PackageVersion.VERSION.toString(),
+        assertEquals("3.54.1.0", pomVersionOf(org.sqlite.JDBC.class, "org.xerial", "sqlite-jdbc"), "sqlite-jdbc 판");
+        assertEquals("2.21.8", com.fasterxml.jackson.databind.cfg.PackageVersion.VERSION.toString(),
                 "서버 Jackson 2 판(jackson-2-bom)");
-        assertEquals("3.1.7", tools.jackson.databind.cfg.PackageVersion.VERSION.toString(), "Jackson 3 판");
+        assertEquals("3.1.8", tools.jackson.databind.cfg.PackageVersion.VERSION.toString(), "Jackson 3 판");
     }
 
     /** Jackson 빈 — Jackson 2 는 마스킹 전용 이름 빈 하나 · Jackson 3 JsonMapper 하나. */

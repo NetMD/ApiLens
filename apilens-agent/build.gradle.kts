@@ -37,8 +37,8 @@ dependencies {
     // [Phase R12] #20 — 영구 의존성으로 확정 (사전 체크리스트 #11, 사용자 명시 결정. Design §2-#20):
     // "회수 라운드 한정" → 영구화. AdviceSupportSerializeReturnSafetyTest 는 영구 회귀 가드
     // 테스트이며, Build lessons §3 (implementation 은 transitive 비노출)상 직접 추가가 유일 해법.
-    // [Phase R30] R30/AC-R30-24 — Boot 4.1 스타터 이름(web → webmvc) · sqlite 는 판을 든 시험 전용 별칭(설계 DD-R30-18 ·
-    //   서버 별칭은 판이 없어 BOM 밖인 여기서는 해석이 안 된다).
+    // [Phase R30] R30/AC-R30-24 — Boot 4.1 스타터 이름(web → webmvc) · sqlite 는 판을 든 시험 전용 별칭(설계 DD-R30-18).
+    //   [Phase R33] 서버 별칭도 같은 sqliteJdbc 키로 판을 들게 됐지만 여기는 시험 전용 별칭을 그대로 쓴다(agent 시험 classpath 그대로).
     testImplementation(libs.spring.boot.starter.webmvc)
     testImplementation(libs.sqlite.jdbc.agent.test)
     // server는 Flyway + JdbcTemplate을 implementation()으로 쓰므로 transitive 노출 안 됨.

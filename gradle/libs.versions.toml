@@ -1,17 +1,17 @@
 [versions]
 java = "21"
-# [Phase R30] R30/AC-R30-07 — 3.4.1 → 3.5.16 → 4.1.2(두 단계 판올림 · 설계 DD-R30-02 판 고정 · 사용자 명시 결정 「길 ⓐ 전면 이행」).
-springBoot = "4.1.2"
+# [Phase R30] R30/AC-R30-07 — 3.4.1 → 3.5.16 → 4.1.2(두 단계 판올림 · 설계 DD-R30-02 · 사용자 명시 결정 「길 ⓐ 전면 이행」) · [Phase R33] → 4.1.3(patch · 사용자 명시 결정 UQ-R33-1).
+springBoot = "4.1.3"
 springDependencyMgmt = "1.1.7"
 # byteBuddy 는 4.1.2 BOM(1.18.15)과 다른 것이 의도다 — agent 배포물의 계측 엔진 판(설계 DD-R30-03 예외 · OQ-R30-15 ⓐ).
 byteBuddy = "1.17.8"
-# [Phase R30] R30/AC-R30-07 — 아래 넷(flyway · sqliteJdbc · jupiter · mockito)은 그 단계 서버 BOM 값에 맞춘다(설계 DD-R30-03 ·
-#   BOM 밖 agent · common 시험이 서버와 같은 판을 쓰게). 서버는 이 키를 쓰지 않는다 — 서버 별칭은 판이 없어 BOM 이 판을 준다.
+# [Phase R30] R30/AC-R30-07 — 아래 flyway · jupiter · mockito 는 그 단계 서버 BOM 값에 맞춘다(설계 DD-R30-03 · BOM 밖 agent · common 시험이 서버와 같은 판을 쓰게).
+#   [Phase R33] sqliteJdbc 는 예외다 — BOM 관리판(Boot 4.1.3 BOM = 3.53.4.0) 밖에서 판을 들고, 서버 별칭 · agent 시험 별칭이 둘 다 이 키를 쓴다(AC-R30-21 되돌림).
 flyway = "12.4.0"
-sqliteJdbc = "3.53.4.0"
+sqliteJdbc = "3.54.1.0"
 # [Phase R30] R30/AC-R30-23 — agent · common 의 Jackson 2 라인 2.18.2 → 2.18.12(사용자 명시 비협상 결정 UD-R30-4 · 다형 타입 ·
 #   InetSocketAddress · 대소문자 무시 계열 고침판 + 재작업 회차 1 사용자 결정 「(나) 2.18.12 로 올림」 — 2.18.11 고침 공지 4건).
-#   서버 실행판은 이 키가 아니라 Boot BOM(jackson-2-bom 2.21.7)이 정한다.
+#   서버 실행판은 이 키가 아니라 Boot BOM(jackson-2-bom · 4.1.3 BOM 에서 2.21.8)이 정한다.
 #   agent jar 안에서는 relocate 된다 — CLAUDE.md 'Build 설정 lessons §1'(shadow jar relocate 함정) 인용.
 jackson = "2.18.12"
 jupiter = "6.0.3"
@@ -41,9 +41,9 @@ springdoc-openapi-starter-webmvc-ui = { module = "org.springdoc:springdoc-openap
 
 # Persistence
 flyway-core = { module = "org.flywaydb:flyway-core", version.ref = "flyway" }
-# [Phase R30] R30/AC-R30-21 — sqlite-jdbc 고정 해제: 서버 별칭은 판 없음(BOM 관리판 3.53.4.0 · 사용자 명시 결정 「BOM 실물
-#   3.53.4.0 수용」) · agent 시험은 BOM 밖이라 판을 든 별칭을 따로 쓴다(설계 DD-R30-18 · 서버 해석에 안 닿는다).
-sqlite-jdbc = { module = "org.xerial:sqlite-jdbc" }
+# [Phase R33] AC-R30-21 되돌림(2026-11-20 사용자 결정 · BOM 밖에서 판을 든다) — 서버 별칭도 sqliteJdbc 키(3.54.1.0)를 따른다.
+#   직접 적은 판이 BOM 관리판(3.53.4.0)보다 앞선다(의존성 관리 플러그인 · 확인 = dependencyInsight) · agent 시험 별칭은 그대로 따로 둔다(설계 DD-R30-18).
+sqlite-jdbc = { module = "org.xerial:sqlite-jdbc", version.ref = "sqliteJdbc" }
 sqlite-jdbc-agent-test = { module = "org.xerial:sqlite-jdbc", version.ref = "sqliteJdbc" }
 # [Phase R30] R30/AC-R30-07 — dialects 는 판을 적지 않는다(서버 BOM 이 core 와 같은 판을 준다 · 직접 선언 판이 BOM 을
 #   이기던 6.5.3 고정을 끊는다 · 설계 DD-R30-03). 서버만 쓰는 별칭이다 — agent 시험은 서버 의존에서 이것을 뺀다.
