@@ -133,7 +133,7 @@ app, and restart — the first trace usually appears within a second or two.
 ## 직접 빌드 | Build from Source
 
 ```bash
-# 요구사항 | Requirements: JDK 21, Node 24+ (Gradle wrapper 포함)
+# 요구사항 | Requirements: JDK 21, Node 24+ (Gradle wrapper 포함) — 수집기 JDK 주의는 「현재 한계」 절 / collector JDK note: see Current Limitations
 
 git clone https://github.com/NetMD/ApiLens.git
 cd ApiLens
@@ -237,6 +237,7 @@ APILENS_AUTH_API_KEY="여기에-생성한-토큰" java -jar apilens-server-<vers
 
 # 방법 C — 시스템 프로퍼티 (env 보다 우선)
 java -Dapilens.auth.api-key="여기에-생성한-토큰" -jar apilens-server-<version>.jar
+# ⚠️ -D 로 준 키는 같은 서버의 다른 사용자도 ps 로 볼 수 있습니다 — 여럿이 쓰는 서버에서는 방법 A(환경변수)를 쓰세요 / keys passed with -D are visible to other users via ps
 
 # 방법 D — Docker
 docker run -e APILENS_AUTH_API_KEY="여기에-생성한-토큰" -p 8765:8765 <image>
@@ -274,7 +275,7 @@ curl -H "Authorization: Bearer $APILENS_TOKEN" http://localhost:8765/v1/traces
 
 토큰은 DB 에 저장하지 않고 server 기동 옵션으로만 둡니다. 키를 바꾸려면 **새 토큰으로 server 를 재시작**하세요.
 
-> Authentication is **opt-in**. Set `APILENS_AUTH_API_KEY` (env) or `-Dapilens.auth.api-key` (system property) to require a `Authorization: Bearer <token>` header on management/query APIs. The agent ingest endpoint (`POST /v1/spans`), setup wizard, health check, and static assets are exempt. Without a token the server runs unauthenticated (same as v0.2) with a one-time warning. Token travels over plain HTTP — keep it on a trusted network or terminate TLS with a reverse proxy.
+> Authentication is **opt-in**. Set `APILENS_AUTH_API_KEY` (env) or `-Dapilens.auth.api-key` (system property) to require a `Authorization: Bearer <token>` header on management/query APIs. The agent ingest endpoint (`POST /v1/spans`), setup wizard, health check, and static assets are exempt. Without a token the server runs unauthenticated (same as v0.2) with a one-time warning. Token travels over plain HTTP — keep it on a trusted network or terminate TLS with a reverse proxy. A key passed with `-D` is visible to other users on the same host via `ps`; prefer the environment variable on shared hosts.
 
 ---
 
@@ -319,6 +320,7 @@ curl -H "Authorization: Bearer $APILENS_TOKEN" http://localhost:8765/v1/traces
 - **차트 점 조회는 서버 전체에서 한 번에 하나만 돕니다** — 큰 창 조회가 수집기의 데이터 받기를 밀어내지 않게 하려는 것입니다. 그래서 24시간·7일 같은 긴 창을 여러 탭에서 함께 보면 범례 줄에 「서버가 바빠 …」가 자주 보일 수 있고, 그동안 차트는 직전 점을 그대로 보여 줍니다. Live 를 켠 24시간·7일 창의 차트 점은 **30초마다** 다시 받으므로 오른쪽 끝 시간 칸이 그만큼 늦게 채워집니다(아래 목록은 5초마다). 보관 기간을 30일처럼 길게 두어 데이터가 많은 설치에서는 7일 창 조회 한 번이 1초를 넘을 수 있고, 밤 정리(기본 04:00)와 겹치면 그 조회 시간만큼 데이터 받기가 늦어질 수 있습니다 — 수집기 로그에 `trace points slow:` 줄이 날마다 보이면 이 경우입니다
 - **수집기가 멈춰 있는 동안에는 그 사실을 스스로 알릴 수 없습니다** — 수집이 한동안 끊겼다가 다시 들어오면 그 구간(직전에 마지막으로 받은 시각과 그 사이 공백)을 수집기 로그에 `ingest resumed:` 한 줄로 남깁니다. 다만 이것은 **나중에 되짚기 위한 기록이지 무슨 일이 나면 알려 주는 장치가 아닙니다.** 수집기 프로세스가 아예 없던 구간은 **다시 켜진 뒤에야** 드러납니다 — 그 표시를 만들어 주는 것이 바로 그 프로그램이기 때문입니다. 공백이 10분 미만이거나 처음 등록된 서비스면 줄이 안 남는 것도 정상입니다. **수집기가 계속 떠 있는지는 바깥에서 지켜보세요** (프로세스 관리자·헬스 체크 등)
 - **JDK 27 에서 띄운 앱에서는 agent 가 요청 구간을 남기지 않을 수 있습니다** — JDK 27 에서 띄운 시험용 앱에서 agent 가 요청 구간을 남기지 않았습니다(0.11.0 도 같음 · 원인 확인 전). JDK 21 에서는 남습니다 — 22~26 은 이번에 확인하지 않았습니다
+- **수집기를 x86-64(AVX-512) 서버에서 띄울 때는 고침판 JDK 를 쓰세요** — Java4Shell(CVE-2026-114938)이 고쳐지지 않은 JDK 에서는 요청의 `cursor` 값이 JDK Base64 디코더로 바로 들어갑니다. 고침판은 Oracle 공지에 적힌 판입니다. arm64 서버는 해당하지 않습니다 / On x86-64 (AVX-512) hosts, run the collector on a patched JDK (the fixed version in Oracle's advisory or later); arm64 hosts are not affected.
 
 ---
 

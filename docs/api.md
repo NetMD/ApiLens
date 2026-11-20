@@ -12,7 +12,8 @@ last-reviewed: 2026-08-06
 > 이 문서는 자동 스펙이 담기 어려운 **운영 서사(왜 이렇게 동작하는지, 무엇을 조심해야 하는지)** 만 보조로 남깁니다.
 > 필드 단위 계약(요청/응답 필드 표)은 손으로 다시 적지 않습니다 — 코드와 어긋나는 stale 을 막기 위해 자동 스펙으로 일원화했습니다.
 
-기준 호스트: `http://localhost:8765` (단일 jar 기본 포트). 모든 요청·응답은 `application/json` (UTF-8),
+기준 호스트: `http://localhost:8765` (단일 jar 기본 포트). 요청·응답 본문은 `application/json` (UTF-8)이고
+(예외: 아래 「공통 오류 응답 표준」 절의 처리 전 `406` · 본문 형식을 거절하는 `415` 와 agent jar 내려받기),
 응답은 1KB 초과 시 gzip 압축됩니다.
 
 > **`/swagger-ui` · `/v3/api-docs` 는 인증 없이 열립니다** — API Key 를 설정한 기동 상태에서도 문서 경로는
@@ -25,7 +26,8 @@ last-reviewed: 2026-08-06
 
 `APILENS_AUTH_API_KEY` 환경변수(또는 `-Dapilens.auth.api-key` 시스템 프로퍼티)로 토큰을 설정하면, 그 시점부터
 `/v1/**` 관리·조회 API 는 `Authorization: Bearer <토큰>` 헤더를 요구합니다. 헤더가 없거나 틀리면
-`401 { "error": "unauthorized" }` 를 반환합니다.
+`401 { "error": "unauthorized" }` 를 반환합니다. `-D` 로 준 토큰은 같은 서버의 다른 사용자도 `ps` 로 볼 수 있으니,
+여럿이 쓰는 서버에서는 환경변수를 쓰세요.
 
 - **면제(무토큰 허용) 경로**: setup wizard(`/v1/setup/**`) · agent 적재(`POST /v1/spans`) ·
   헬스체크(`/actuator/health`) · 정적 자산과 SPA 화면 · API 문서(`/swagger-ui`, `/v3/api-docs`).
@@ -167,6 +169,10 @@ Java agent 가 span 배치를 보낼 때 쓰는 경로입니다 (UI 는 호출�
   ★**비교 경계**: 줄어든 양을 견줄 때는 **v0.7.1 첫 밤 이후 값끼리만** 비교하세요. 그 이전 값과 직접 빼면
   회수 기능이 없던 기간이 섞여 「얼마나 줄었는가」가 아니라 「그동안 얼마나 쌓였는가」를 재게 됩니다.
 
+  지문(`stmt_hash` · `body_hash`)은 v0.11.2 부터 32자이고, 그 전 판이 쓴 행은 64자입니다. 두 길이는 보관 기간 동안
+  함께 있고 둘 다 그대로 읽힙니다 / Fingerprints are 32 characters from v0.11.2; rows written by earlier versions keep 64.
+  Both coexist for the retention period and are read as is.
+
 ---
 
 ## 밀린 빈 공간을 한 번에 돌려받기
@@ -256,6 +262,9 @@ DB·적용 중 엔진을 일절 변경하지 않습니다. 마스킹 계산은 a
 - `503` — 유지보수 모드 중 적재 거절(위 ingest 절 참조) · 대표 점 조회가 바쁠 때(영문 본문 · `Retry-After` 없음 ·
   화면은 잠시 뒤 다시 부름). 자동 스펙에는 같은 묶음의 다른 조회 경로(목록 · 상세 · payload · 서비스 목록)에도 `503` 이
   함께 표시되지만, 실제로 바쁨 `503` 을 내는 것은 대표 점 조회뿐입니다.
+- `406` — 응답으로 JSON 을 받지 않겠다는 요청(`Accept` 에 JSON 이 없음)은 처리 전에 406 으로 끝나고, 데이터를 바꾸는
+  요청도 처리하지 않습니다. 이때 본문은 비어 있거나(YAML · XML 등) 서버 기본 HTML 오류 쪽지(`text/html`)이며
+  `{"error": …}` 꼴이 아닙니다 / Requests whose Accept excludes JSON end with 406 before processing; nothing is changed.
 
 정확한 상태 코드·본문 스키마는 `/swagger-ui` 자동 스펙에서 확인하세요.
 
@@ -308,3 +317,6 @@ DB·적용 중 엔진을 일절 변경하지 않습니다. 마스킹 계산은 a
 setup wizard 경로(`/v1/setup/**`)는 인증 면제입니다 (wizard 가 토큰 발급 전 단계라 면제 불가피). 이 경로는 agent jar
 다운로드·추출 절대경로·wizard 상태를 인증 없이 노출합니다. 신뢰 네트워크에서만 쓰고, 외부 노출이 필요하면 reverse
 proxy 뒤에 두세요.
+
+`/v1/setup/agent-jar` 는 jar 파일(`application/octet-stream`)을 내려 줍니다. `Accept: application/json` 만 보내면
+처리 전에 `406` 으로 끝나고 본문은 서버 기본 오류 JSON(`timestamp` · `status` · `error` · `path`)입니다 / returns the jar as octet-stream

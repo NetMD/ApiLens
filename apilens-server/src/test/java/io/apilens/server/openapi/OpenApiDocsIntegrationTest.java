@@ -129,7 +129,9 @@ class OpenApiDocsIntegrationTest {
         // [Phase R31] R31/AC-R31-52 — 한 단계 minor 올림 동반 정정. 같은 접촉에서 올렸다.
         // [Phase R32] R32/AC-R32-05-4 — 한 단계 patch 올림 동반 정정. 이번에는 이 단언만 먼저 올려 빨개지는 것
         //   (기대 = 새 판 · 실제 = 옛 판)을 본 뒤 build.gradle.kts 의 버전 줄을 올렸다(R32/TC-R32-25).
-        assertEquals("0.11.1", info.get("version").asText(), "info.version must track the Gradle build version");
+        // [Phase R33] R33/AC-R33-19-1 — 한 단계 patch 올림 동반 정정. R32 와 같이 이 단언만 먼저 올려 빨개지는 것을
+        //   본 뒤 버전 줄을 올렸다.
+        assertEquals("0.11.2", info.get("version").asText(), "info.version must track the Gradle build version");
         assertEquals("ApiLens API", info.get("title").asText());
     }
 

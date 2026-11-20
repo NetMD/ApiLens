@@ -75,10 +75,11 @@ ApiLens 는 기본적으로 **무인증**으로 동작해요 — 신뢰할 수 �
 
 ### 켜는 법
 
-server 起動 시 다음 둘 중 하나로 키를 주입해요 (둘 다 같은 설정에 매핑돼요):
+server 기동 시 다음 둘 중 하나로 키를 주입해요 (둘 다 같은 설정에 매핑돼요):
 
 - 환경변수: `APILENS_AUTH_API_KEY=<원하는-키>`
 - 시스템 프로퍼티: `-Dapilens.auth.api-key=<원하는-키>`
+- ⚠️ `-D` 로 준 키는 같은 서버의 다른 사용자도 `ps` 로 볼 수 있어요 — 여럿이 쓰는 서버에서는 환경변수를 쓰세요 (A key passed with `-D` is visible via `ps`; prefer the environment variable on shared hosts.)
 
 ```bash
 APILENS_AUTH_API_KEY=my-secret-key java -jar apilens-server.jar
