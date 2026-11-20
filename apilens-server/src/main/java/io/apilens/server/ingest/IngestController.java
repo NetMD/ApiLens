@@ -18,6 +18,7 @@ package io.apilens.server.ingest;
 import io.apilens.common.IngestRequest;
 import io.apilens.common.Span;
 import io.apilens.server.instrument.config.ServiceInstrumentConfigService;
+import io.apilens.server.web.ApiMediaTypes;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.headers.Header;
 import io.swagger.v3.oas.annotations.media.Content;
@@ -27,6 +28,7 @@ import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -90,7 +92,8 @@ public class IngestController {
             @ApiResponse(responseCode = "400", description = "요청 검증 실패 (필수 필드 누락 등)",
                     content = @Content(schema = @Schema(example = "{\"error\":\"...\"}")))
     })
-    @PostMapping("/v1/spans")
+    // [Phase R33] R33/AC-R33-01-1/R33/AC-R33-01-2/R33/AC-R33-02-1 — 이 파일의 메서드 매핑마다 응답 형식(JSON 두 값)을 같은 한 줄에 선언해 처리 전 406 을 낸다 · 본문 받는 매핑은 받는 형식(JSON 두 값)도. 사용자 명시 비협상 결정(UQ-R33-3 처리 전 406). 설계 본편 DD-R33-01 · 02 · 03 · 부록 A §A1.3 인용.
+    @PostMapping(value = "/v1/spans", produces = {MediaType.APPLICATION_JSON_VALUE, ApiMediaTypes.JSON_SUFFIX_VALUE}, consumes = {MediaType.APPLICATION_JSON_VALUE, ApiMediaTypes.JSON_SUFFIX_VALUE})
     public ResponseEntity<?> ingest(@RequestBody IngestRequest request) {
         if (pauseState.isPaused()) {
             return ResponseEntity.status(503)

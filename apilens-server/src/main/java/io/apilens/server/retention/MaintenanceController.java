@@ -18,11 +18,13 @@ package io.apilens.server.retention;
 import io.apilens.server.db.SqlitePragmas;
 import io.apilens.server.ingest.IngestPauseState;
 import io.apilens.server.ingest.IngestService;
+import io.apilens.server.web.ApiMediaTypes;
 import io.swagger.v3.oas.annotations.Operation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -83,7 +85,8 @@ public class MaintenanceController {
      */
     // [Phase R17] FR-05 (M-1) — maintenance @Operation 6종 신설(GT-12: @Operation 전무 → 부여).
     @Operation(summary = "보관 기간 즉시 적용 (행 DELETE) — 파일 삭제 0, freedBytes 는 삭제량보다 작을 수 있음(정상)")
-    @PostMapping("/v1/maintenance/cleanup")
+    // [Phase R33] R33/AC-R33-01-1/R33/AC-R33-01-2/R33/AC-R33-02-1 — 이 파일의 메서드 매핑마다 응답 형식(JSON 두 값)을 같은 한 줄에 선언해 처리 전 406 을 낸다 · 본문 받는 매핑은 받는 형식(JSON 두 값)도. 사용자 명시 비협상 결정(UQ-R33-3 처리 전 406). 설계 본편 DD-R33-01 · 02 · 03 · 부록 A §A1.3 인용.
+    @PostMapping(value = "/v1/maintenance/cleanup", produces = {MediaType.APPLICATION_JSON_VALUE, ApiMediaTypes.JSON_SUFFIX_VALUE})
     public MaintenanceResult cleanup() {
         // 작업 전 page 수 측정 → cleanup → 작업 후 측정 (freedBytes 계산).
         long pageSize = readPageSize();
@@ -100,7 +103,7 @@ public class MaintenanceController {
      */
     // [Phase R17] FR-05 (M-2) — maintenance @Operation 신설.
     @Operation(summary = "전체 삭제 (되돌릴 수 없음) — 파일 보존, 행만 제거")
-    @PostMapping("/v1/maintenance/purge")
+    @PostMapping(value = "/v1/maintenance/purge", produces = {MediaType.APPLICATION_JSON_VALUE, ApiMediaTypes.JSON_SUFFIX_VALUE})
     public MaintenanceResult purge() {
         long pageSize = readPageSize();
         long beforePages = readPageCount();
@@ -119,7 +122,7 @@ public class MaintenanceController {
      */
     // [Phase R17] FR-05 (M-3) — maintenance @Operation 신설.
     @Operation(summary = "online 전체 VACUUM (행 재구성) — 원본 크기만큼 임시 공간 필요, 부족 시 busy=true 부분 실패(예외 안 던짐)")
-    @PostMapping("/v1/maintenance/optimize")
+    @PostMapping(value = "/v1/maintenance/optimize", produces = {MediaType.APPLICATION_JSON_VALUE, ApiMediaTypes.JSON_SUFFIX_VALUE})
     public MaintenanceResult optimize() {
         long pageSize = readPageSize();
         long beforePages = readPageCount();
@@ -144,7 +147,7 @@ public class MaintenanceController {
     // [Phase R23] R23/AC-06-1/R23/AC-07-1 — 3필드 additive 확장(4 → 7, 기존 4필드 불변).
     // [Phase R28] AC-28-05-4 — 1필드 additive 확장(7 → 8 · 맨 뒤 optimizeAdvised · 기존 7필드 불변) · 요약 글 끝에 더함.
     @Operation(summary = "유지보수 상태 조회 — paused 여부·pausedAt echo (cap 경과 시 자가 재개 반영) + SQLITE_BUSY 카운터·요약 실패 카운터(인메모리 — 재시작 시 0 복귀 정상) + DB 크기·회수 가능 빈 공간(바이트, 관측 실패 시 0) + [최적화] 권고 여부(인메모리 — 재시작 뒤 첫 밤 정리 전까지 false 정상)")
-    @GetMapping("/v1/maintenance/status")
+    @GetMapping(value = "/v1/maintenance/status", produces = {MediaType.APPLICATION_JSON_VALUE, ApiMediaTypes.JSON_SUFFIX_VALUE})
     public MaintenanceStatusResponse status() {
         return statusSnapshot();
     }
@@ -157,7 +160,7 @@ public class MaintenanceController {
      */
     // [Phase R17] FR-05 (M-5) — maintenance @Operation 신설.
     @Operation(summary = "수신 일시정지 — 이후 적재는 503+Retry-After:60, 저장 0. max-pause cap(30분) 자동 재개. 멱등")
-    @PostMapping("/v1/maintenance/pause")
+    @PostMapping(value = "/v1/maintenance/pause", produces = {MediaType.APPLICATION_JSON_VALUE, ApiMediaTypes.JSON_SUFFIX_VALUE})
     public MaintenanceStatusResponse pause() {
         pauseState.pause();
         return statusSnapshot();
@@ -171,7 +174,7 @@ public class MaintenanceController {
      */
     // [Phase R17] FR-05 (M-6) — maintenance @Operation 신설.
     @Operation(summary = "수신 재개 — paused=false 복귀. 멱등")
-    @PostMapping("/v1/maintenance/resume")
+    @PostMapping(value = "/v1/maintenance/resume", produces = {MediaType.APPLICATION_JSON_VALUE, ApiMediaTypes.JSON_SUFFIX_VALUE})
     public MaintenanceStatusResponse resume() {
         pauseState.resume();
         return statusSnapshot();

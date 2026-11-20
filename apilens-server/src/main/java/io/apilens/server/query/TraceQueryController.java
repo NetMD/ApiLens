@@ -22,7 +22,9 @@ import io.apilens.server.query.dto.ServiceListResponse;
 import io.apilens.server.query.dto.TraceDetailResponse;
 import io.apilens.server.query.dto.TraceListResponse;
 import io.apilens.server.query.dto.TracePointsResponse;
+import io.apilens.server.web.ApiMediaTypes;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -60,7 +62,8 @@ public class TraceQueryController {
     // [Phase R16] FR-04 — 상위 핵심 @Operation(§4.4 T-08). 응답 스키마는 반환 record 자동 도출(§4.3).
     // [Phase R28] AC-28-01-12 — 요약 글만 고쳤다(차트는 이제 대표 점 경로가 그린다 · 응답 모양 · 인자 불변).
     @Operation(summary = "Trace 목록 조회 (대시보드 리스트)")
-    @GetMapping("/v1/traces")
+    // [Phase R33] R33/AC-R33-01-1/R33/AC-R33-01-2/R33/AC-R33-02-1 — 이 파일의 메서드 매핑마다 응답 형식(JSON 두 값)을 같은 한 줄에 선언해 처리 전 406 을 낸다 · 본문 받는 매핑은 받는 형식(JSON 두 값)도. 사용자 명시 비협상 결정(UQ-R33-3 처리 전 406). 설계 본편 DD-R33-01 · 02 · 03 · 부록 A §A1.3 인용.
+    @GetMapping(value = "/v1/traces", produces = {MediaType.APPLICATION_JSON_VALUE, ApiMediaTypes.JSON_SUFFIX_VALUE})
     public TraceListResponse listTraces(
             @RequestParam(required = false) String service,
             @RequestParam(required = false) Long since,
@@ -83,7 +86,7 @@ public class TraceQueryController {
      * 깨진다. 칸 크기 인자는 받지 않는다 — 서버가 창 길이로 고른다(모르는 인자는 무시).
      */
     @Operation(summary = "대표 점 조회 (대시보드 산점도 — 칸마다 가장 느린 정상 trace 하나와 오류)")
-    @GetMapping("/v1/trace-points")
+    @GetMapping(value = "/v1/trace-points", produces = {MediaType.APPLICATION_JSON_VALUE, ApiMediaTypes.JSON_SUFFIX_VALUE})
     public TracePointsResponse listTracePoints(
             @RequestParam(required = false) String service,
             @RequestParam(required = false) Long since,
@@ -96,7 +99,7 @@ public class TraceQueryController {
 
     // [Phase R16] FR-04 — 상위 핵심 @Operation(§4.4 T-09).
     @Operation(summary = "Trace 상세 조회 (노드 그래프용 span 목록)")
-    @GetMapping("/v1/traces/{traceId}")
+    @GetMapping(value = "/v1/traces/{traceId}", produces = {MediaType.APPLICATION_JSON_VALUE, ApiMediaTypes.JSON_SUFFIX_VALUE})
     public TraceDetailResponse getTrace(@PathVariable String traceId) {
         return service.getTrace(traceId);
     }
@@ -105,7 +108,7 @@ public class TraceQueryController {
     //   dev 가 D3 상위 핵심 취지 하에 문구 보강(설계와 다르게 구현한 부분 §에 자진 신고).
     // [Phase R17] FR-07 (T-06) — 문구 보강(Δ-1 마스킹 뉘앙스 추가, docs/api.md '마스킹은 서버에서 적용됩니다' 근거).
     @Operation(summary = "Payload 조회 (노드 클릭 시 lazy load) — body 는 이미 마스킹 적용된 결과(저장 시 1회 적용, 재마스킹 없음)")
-    @GetMapping("/v1/traces/{traceId}/spans/{spanId}/payloads")
+    @GetMapping(value = "/v1/traces/{traceId}/spans/{spanId}/payloads", produces = {MediaType.APPLICATION_JSON_VALUE, ApiMediaTypes.JSON_SUFFIX_VALUE})
     public PayloadListResponse getPayloads(
             @PathVariable String traceId,
             @PathVariable String spanId
@@ -113,7 +116,7 @@ public class TraceQueryController {
         return service.getPayloads(traceId, spanId);
     }
 
-    @GetMapping("/v1/services")
+    @GetMapping(value = "/v1/services", produces = {MediaType.APPLICATION_JSON_VALUE, ApiMediaTypes.JSON_SUFFIX_VALUE})
     public ServiceListResponse listServices() {
         return service.listServices();
     }

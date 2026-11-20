@@ -18,6 +18,7 @@ package io.apilens.server.setup;
 import io.apilens.server.setup.dto.SetupCompleteRequest;
 import io.apilens.server.setup.dto.SetupCompleteResponse;
 import io.apilens.server.setup.dto.SetupStateResponse;
+import io.apilens.server.web.ApiMediaTypes;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.core.io.Resource;
 import org.springframework.http.HttpHeaders;
@@ -66,12 +67,13 @@ public class SetupController {
         this.agentJarExtractor = agentJarExtractor;
     }
 
-    @GetMapping("/state")
+    // [Phase R33] R33/AC-R33-01-1/R33/AC-R33-01-2/R33/AC-R33-02-1 — 이 파일의 메서드 매핑마다 응답 형식(JSON 두 값)을 같은 한 줄에 선언해 처리 전 406 을 낸다 · 본문 받는 매핑은 받는 형식(JSON 두 값)도. 사용자 명시 비협상 결정(UQ-R33-3 처리 전 406). 설계 본편 DD-R33-01 · 02 · 03 · 부록 A §A1.3 인용.
+    @GetMapping(value = "/state", produces = {MediaType.APPLICATION_JSON_VALUE, ApiMediaTypes.JSON_SUFFIX_VALUE})
     public SetupStateResponse getState() {
         return service.getState();
     }
 
-    @PostMapping("/complete")
+    @PostMapping(value = "/complete", produces = {MediaType.APPLICATION_JSON_VALUE, ApiMediaTypes.JSON_SUFFIX_VALUE}, consumes = {MediaType.APPLICATION_JSON_VALUE, ApiMediaTypes.JSON_SUFFIX_VALUE})
     public SetupCompleteResponse complete(@RequestBody SetupCompleteRequest request) {
         return service.complete(request);
     }
@@ -86,7 +88,7 @@ public class SetupController {
      *
      * <p>[Phase H 후속 R10] 회귀 가드 grep (Design §9 F-R10-05-2):
      * <ul>
-     *   <li>정방향: {@code grep -E "@GetMapping\(\"/agent-jar-path\"\)"} 정확 1 hit</li>
+     *   <li>정방향: {@code grep -E "@GetMapping\(value = \"/agent-jar-path\""} 정확 1 hit (R33 — 매핑에 produces 를 더해 꼴이 바뀜)</li>
      *   <li>반대 (lock-in 금지): {@code grep "@ResponseStatus(HttpStatus.NOT_FOUND)"}
      *       의 path=null 분기 0 hit</li>
      *   <li>반대 (lock-in 금지): {@code grep "throw new.*Exception"} (getAgentJarPath 메서드 내) 0 hit</li>
@@ -98,7 +100,7 @@ public class SetupController {
      * { "path": null }                                       // 추출 실패 (NFR-02 fallback)
      * }</pre>
      */
-    @GetMapping("/agent-jar-path")
+    @GetMapping(value = "/agent-jar-path", produces = {MediaType.APPLICATION_JSON_VALUE, ApiMediaTypes.JSON_SUFFIX_VALUE})
     public Map<String, Object> getAgentJarPath() {
         // Map.of 는 null 값 허용 안 함 → HashMap 사용 (Design §6.3 정합).
         Map<String, Object> result = new HashMap<>();
@@ -131,7 +133,8 @@ public class SetupController {
      * {@link ByteArrayResource}; this is an occasional operator action, not a hot
      * path, and a known content length keeps the response clean.
      */
-    @GetMapping("/agent-jar")
+    // [Phase R33] R33/AC-R33-03-1/R33/AC-R33-03-2 — agent jar 내려받기는 자기 형식(octet-stream) 하나만 선언한다 — JSON 단독 Accept 는 처리 전 406. 사용자 명시 비협상 결정(V1-Q3 agent-jar 예외 + 시험 1). 설계 본편 DD-R33-04 인용.
+    @GetMapping(value = "/agent-jar", produces = MediaType.APPLICATION_OCTET_STREAM_VALUE)
     public ResponseEntity<Resource> downloadAgentJar() throws IOException {
         byte[] jarBytes;
         try (InputStream in = agentJarExtractor.openEmbeddedResource()) {

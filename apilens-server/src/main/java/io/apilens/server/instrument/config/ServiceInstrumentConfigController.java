@@ -15,12 +15,14 @@
  */
 package io.apilens.server.instrument.config;
 
+import io.apilens.server.web.ApiMediaTypes;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -69,7 +71,8 @@ public class ServiceInstrumentConfigController {
             @ApiResponse(responseCode = "400", description = "입력 검증 실패 (serviceName 공백/길이, gateExcludes 개수·항목 길이 초과 등)",
                     content = @Content(schema = @Schema(example = "{\"error\":\"...\"}")))
     })
-    @PutMapping("/v1/services/{serviceName}/instrument-config")
+    // [Phase R33] R33/AC-R33-01-1/R33/AC-R33-01-2/R33/AC-R33-02-1 — 이 파일의 메서드 매핑마다 응답 형식(JSON 두 값)을 같은 한 줄에 선언해 처리 전 406 을 낸다 · 본문 받는 매핑은 받는 형식(JSON 두 값)도. 사용자 명시 비협상 결정(UQ-R33-3 처리 전 406). 설계 본편 DD-R33-01 · 02 · 03 · 부록 A §A1.3 인용.
+    @PutMapping(value = "/v1/services/{serviceName}/instrument-config", produces = {MediaType.APPLICATION_JSON_VALUE, ApiMediaTypes.JSON_SUFFIX_VALUE}, consumes = {MediaType.APPLICATION_JSON_VALUE, ApiMediaTypes.JSON_SUFFIX_VALUE})
     public InstrumentConfigPayload put(@PathVariable String serviceName,
                                        @RequestBody InstrumentConfigPayload request) {
         return service.put(serviceName, request);
@@ -85,7 +88,7 @@ public class ServiceInstrumentConfigController {
             @ApiResponse(responseCode = "404", description = "설정 없음",
                     content = @Content(schema = @Schema(example = "{\"error\":\"...\"}")))
     })
-    @GetMapping("/v1/services/{serviceName}/instrument-config")
+    @GetMapping(value = "/v1/services/{serviceName}/instrument-config", produces = {MediaType.APPLICATION_JSON_VALUE, ApiMediaTypes.JSON_SUFFIX_VALUE})
     public ResponseEntity<?> get(@PathVariable String serviceName) {
         Optional<InstrumentConfigPayload> found = service.find(serviceName);
         if (found.isEmpty()) {
@@ -102,7 +105,7 @@ public class ServiceInstrumentConfigController {
      * 되돌리려면 기동값 복귀를 명시한 PUT(Q-U5 허용 경로) 또는 JVM 재시작.
      */
     @Operation(summary = "서비스별 원격 계측 설정 철회 (멱등) — agent 에 이미 적용된 값은 되돌리지 않음(복귀는 PUT 또는 JVM 재시작)")
-    @DeleteMapping("/v1/services/{serviceName}/instrument-config")
+    @DeleteMapping(value = "/v1/services/{serviceName}/instrument-config", produces = {MediaType.APPLICATION_JSON_VALUE, ApiMediaTypes.JSON_SUFFIX_VALUE})
     public ResponseEntity<Void> delete(@PathVariable String serviceName) {
         service.delete(serviceName);
         return ResponseEntity.noContent().build();

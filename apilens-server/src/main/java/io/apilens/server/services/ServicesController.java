@@ -15,7 +15,9 @@
  */
 package io.apilens.server.services;
 
+import io.apilens.server.web.ApiMediaTypes;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -43,7 +45,8 @@ public class ServicesController {
     /**
      * Q-02 정합: 멱등 DELETE. 존재하지 않는 service 이름도 204.
      */
-    @DeleteMapping("/{serviceName}")
+    // [Phase R33] R33/AC-R33-01-1/R33/AC-R33-01-2/R33/AC-R33-02-1 — 이 파일의 메서드 매핑마다 응답 형식(JSON 두 값)을 같은 한 줄에 선언해 처리 전 406 을 낸다 · 본문 받는 매핑은 받는 형식(JSON 두 값)도. 사용자 명시 비협상 결정(UQ-R33-3 처리 전 406). 설계 본편 DD-R33-01 · 02 · 03 · 부록 A §A1.3 인용.
+    @DeleteMapping(value = "/{serviceName}", produces = {MediaType.APPLICATION_JSON_VALUE, ApiMediaTypes.JSON_SUFFIX_VALUE})
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void delete(@PathVariable String serviceName) {
         service.delete(serviceName);

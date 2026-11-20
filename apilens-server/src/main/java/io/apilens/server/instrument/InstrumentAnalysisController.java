@@ -19,8 +19,10 @@ import io.apilens.server.instrument.dto.AnalysisRequest;
 import io.apilens.server.instrument.dto.AnalysisResponse;
 import io.apilens.server.instrument.dto.SimulationRequest;
 import io.apilens.server.instrument.dto.SimulationResponse;
+import io.apilens.server.web.ApiMediaTypes;
 import io.swagger.v3.oas.annotations.Operation;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -80,7 +82,8 @@ public class InstrumentAnalysisController {
      * Rank the classes of one service over a bounded window (read-only).
      */
     @Operation(summary = "서비스 하나의 계측 순위 집계 (온디맨드 · 시간 구간 필수) — 읽기 전용, 동시에 하나만 실행")
-    @PostMapping("/v1/instrument/analysis")
+    // [Phase R33] R33/AC-R33-01-1/R33/AC-R33-01-2/R33/AC-R33-02-1 — 이 파일의 메서드 매핑마다 응답 형식(JSON 두 값)을 같은 한 줄에 선언해 처리 전 406 을 낸다 · 본문 받는 매핑은 받는 형식(JSON 두 값)도. 사용자 명시 비협상 결정(UQ-R33-3 처리 전 406). 설계 본편 DD-R33-01 · 02 · 03 · 부록 A §A1.3 인용.
+    @PostMapping(value = "/v1/instrument/analysis", produces = {MediaType.APPLICATION_JSON_VALUE, ApiMediaTypes.JSON_SUFFIX_VALUE}, consumes = {MediaType.APPLICATION_JSON_VALUE, ApiMediaTypes.JSON_SUFFIX_VALUE})
     public AnalysisResponse analyze(@RequestBody AnalysisRequest request) {
         String serviceName = requireServiceName(request == null ? null : request.serviceName());
         int windowHours = request == null ? 0 : request.windowHours();
@@ -94,7 +97,7 @@ public class InstrumentAnalysisController {
      * Estimate the effect of excluding the given classes (read-only).
      */
     @Operation(summary = "고른 대상을 뺐을 때의 예상 결과 (용량은 감산 · trace 는 재계산) — 읽기 전용, 동시에 하나만 실행")
-    @PostMapping("/v1/instrument/simulation")
+    @PostMapping(value = "/v1/instrument/simulation", produces = {MediaType.APPLICATION_JSON_VALUE, ApiMediaTypes.JSON_SUFFIX_VALUE}, consumes = {MediaType.APPLICATION_JSON_VALUE, ApiMediaTypes.JSON_SUFFIX_VALUE})
     public SimulationResponse simulate(@RequestBody SimulationRequest request) {
         String serviceName = requireServiceName(request == null ? null : request.serviceName());
         long fromMs = request == null ? 0L : request.fromMs();

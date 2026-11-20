@@ -24,17 +24,13 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
-import java.io.ByteArrayOutputStream;
+import io.apilens.server.ingest.RawHttp.Response;
+
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.OutputStream;
-import java.net.InetSocketAddress;
-import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Arrays;
-import java.util.Locale;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -56,6 +52,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * <p>★한계 그 자리에: 인증 없는 입구 둘(수집 · 설정 완료)과 대표 조회 하나만 직접 잰다. 나머지 보호 입구는 같은 변환기
  * 목록을 쓴다는 구조 증거({@code RuntimeBaselineIntegrationTest#registersNoYamlCapableConverter})로 덮는다.
+ *
+ * <p>[Phase R33] R33/AC-R33-07-6 — 원문 송신 도우미 = {@code RawHttp}(같은 패키지 · 옮김). 아래 R33 절은 처리 전 406
+ * (매핑의 {@code produces} · {@code consumes})을 잰다. 사용자 명시 비협상 결정(UQ-R33-3 처리 전 406 · V1-Q3 agent-jar 예외 +
+ * 시험 1). 설계 본편 §1.4 · §1.5 · §6.3 · 부록 B B2 인용.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 class YamlIngressIntegrationTest {
@@ -193,6 +193,161 @@ class YamlIngressIntegrationTest {
         assertTrue(res.contentType().startsWith(JSON), "응답 형식 — 실제 " + res.contentType());
     }
 
+    // ─── [Phase R33] 처리 전 406 · 매핑 415 (TS-R33-01 ~ TS-R33-09) ───────────────────────────────
+    // [Phase R33] R33/AC-R33-07-1 ~ R33/AC-R33-07-5 · R33/AC-R33-04-2 ~ R33/AC-R33-04-4 · R33/AC-R33-03-1 ~ R33/AC-R33-03-3 ·
+    //   R33/AC-R33-05-2 · R33/AC-R33-05-4 — 설계 본편 §1.5 BD 행 · 부록 B B2 표 그대로. 200 · 202 · 400 기대는 HEAD(produces 전)
+    //   값을 먼저 읽어 둔 값이다(부록 B2 「HEAD 값 먼저」 · dev 결정 요약에 값 기록).
+
+    /** TS-R33-01 · BD-R33-09 — JSON 접미 형식(vnd.x+json)을 받겠다는 조회는 200 그대로. */
+    @Test
+    void keepsVendorJsonAcceptAt200() throws IOException {
+        Response res = send("GET", "/v1/services", null, "application/vnd.x+json", null);
+        assertEquals(200, res.status(), "JSON 접미 형식 조회는 200 — 실제 " + res);
+        assertTrue(res.contentType().startsWith("application/vnd.x+json"), "응답 형식 — 실제 " + res.contentType());
+        assertTrue(res.body().startsWith("[") || res.body().startsWith("{"), "본문이 JSON 이다 — 실제 " + head(res.body()));
+    }
+
+    /** TS-R33-02 · BD-R33-10 — YAML 본문 + YAML Accept 는 415(406 아님 · 매핑 판정 순서 consumes → produces). */
+    @Test
+    void rejectsYamlBodyWithYamlAcceptWith415() throws IOException {
+        String spanId = "a33b000000000201";
+        assertEquals(0L, spanRow(spanId), "전제: 그 행이 요청 전에 없다");
+        Response res = send("POST", "/v1/spans", YAML, YAML, spanBody(spanId, "1767225600000", ""));
+        assertEquals(415, res.status(), "YAML 본문 + YAML Accept 는 415 — 실제 " + res);
+        assertEquals("", res.contentType(), "415 응답 형식 머리 없음 — 실제 " + res);
+        assertEquals("", res.body(), "415 본문 0 바이트 — 실제 " + res);
+        assertEquals(0L, spanRow(spanId), "YAML 요청으로 생긴 그 행 0");
+        assertNoStack(res);
+        Response ok = send("POST", "/v1/spans", JSON, JSON, spanBody(spanId, "1767225600000", ""));
+        assertEquals(202, ok.status(), "양성 대조: 같은 본문 JSON 은 202 — 실제 " + ok);
+        assertEquals(1L, spanRow(spanId), "양성 대조: 그 행 1(셈 질의가 살아 있다)");
+    }
+
+    /** TS-R33-03 · BD-R33-11 — JSON 본문 + YAML Accept 는 처리 전 406 · 저장 0. */
+    @Test
+    void answers406ToJsonBodyWithYamlAccept() throws IOException {
+        String spanId = "a33b000000000301";
+        assertEquals(0L, spanRow(spanId), "전제: 그 행이 요청 전에 없다");
+        Response res = send("POST", "/v1/spans", JSON, YAML, spanBody(spanId, "1767225600000", ""));
+        assertEquals(406, res.status(), "JSON 본문 + YAML Accept 는 406 — 실제 " + res);
+        assertEquals("", res.body(), "406 본문 0 바이트 — 실제 " + res);
+        assertEquals(0L, spanRow(spanId), "처리 전 거절 — 그 행 0");
+        Response ok = send("POST", "/v1/spans", JSON, JSON, spanBody(spanId, "1767225600000", ""));
+        assertEquals(202, ok.status(), "양성 대조: Accept JSON 은 202 — 실제 " + ok);
+        assertEquals(1L, spanRow(spanId), "양성 대조: 그 행 1");
+    }
+
+    /** TS-R33-04 · BD-R33-13 · 정정 X-5 — 처리 전 406 본문 계약(설계 본편 §1.4) · 경로 · 질의 · 머리 값 되울림 0. */
+    @Test
+    void notAcceptableBodyContract() throws IOException {
+        String markedPath = "/v1/traces/zzR33markP?zzR33markQ=1";
+        Response yaml = send2("GET", markedPath, null, YAML, null, "X-R33-Mark: zzR33markH");
+        assertEquals(406, yaml.status(), "① YAML Accept 는 406 — 실제 " + yaml);
+        assertEquals("", yaml.contentType(), "① 응답 형식 머리 없음 — 실제 " + yaml);
+        assertEquals("", yaml.body(), "① 본문 0 바이트 — 실제 " + yaml);
+        Response html = send2("GET", markedPath, null, "text/html", null, "X-R33-Mark: zzR33markH");
+        assertEquals(406, html.status(), "② text/html Accept 도 406 — 실제 " + html);
+        assertTrue(html.contentType().startsWith("text/html"), "② 응답 형식 — 실제 " + html.contentType());
+        assertTrue(html.body().contains("Whitelabel Error Page"), "② Boot 기본 쪽지 — 실제 " + head(html.body()));
+        assertTrue(html.body().contains("status=406"), "② 쪽지에 상태 — 실제 " + head(html.body()));
+        assertFalse(html.body().contains("zzR33mark"), "② 경로 · 질의 · 머리 값 되울림 0 — 실제 " + head(html.body()));
+        Response services = send("GET", "/v1/services?zzR33markQ=1", null, YAML, null);
+        assertEquals(406, services.status(), "③ 질의가 붙은 YAML 조회도 406 — 실제 " + services);
+        assertEquals("", services.body(), "③ 본문 0 바이트 — 실제 " + services);
+        Response xml = send("GET", "/v1/services", null, "application/xml", null);
+        assertEquals(406, xml.status(), "④ XML Accept 는 406 — 실제 " + xml);
+        assertEquals("", xml.contentType(), "④ 응답 형식 머리 없음 — 실제 " + xml);
+        assertEquals("", xml.body(), "④ 본문 0 바이트 — 실제 " + xml);
+    }
+
+    /** TS-R33-05 · BD-R33-08 · 정정 X-10 — 컨트롤러 밖 API 문서 YAML 판은 R32 값 그대로. */
+    @Test
+    void keepsYamlApiDocsForOpenApiAccept() throws IOException {
+        Response oai = send("GET", "/v3/api-docs.yaml", null, "application/vnd.oai.openapi", null);
+        assertEquals(200, oai.status(), "① vnd.oai.openapi Accept 는 200 — 실제 " + oai);
+        assertTrue(oai.contentType().startsWith("application/vnd.oai.openapi"), "① 응답 형식 — 실제 " + oai.contentType());
+        assertTrue(oai.body().contains("openapi:"), "① 본문이 YAML 문서다 — 앞 200자 " + head(oai.body()));
+        Response yaml = send("GET", "/v3/api-docs.yaml", null, YAML, null);
+        assertEquals(406, yaml.status(), "② YAML Accept 는 406(R32 값 그대로) — 실제 " + yaml);
+        Response any = send("GET", "/v3/api-docs.yaml", null, "*/*", null);
+        assertEquals(200, any.status(), "③ */* 는 200 — 실제 " + any);
+        assertTrue(any.contentType().startsWith("application/vnd.oai.openapi"), "③ 응답 형식 — 실제 " + any.contentType());
+    }
+
+    /** TS-R33-06 · BD-R33-12 — agent 꼴(Accept 머리 없음) 수집은 202 · 행 +1. */
+    @Test
+    void keepsAgentStyleSpanPostAt202() throws IOException {
+        String spanId = "a33b000000000601";
+        assertEquals(0L, spanRow(spanId), "전제: 그 행이 요청 전에 없다");
+        Response res = send("POST", "/v1/spans", JSON, null, spanBody(spanId, "1767225600000", ""));
+        assertEquals(202, res.status(), "Accept 없는 JSON 수집은 202 — 실제 " + res);
+        assertEquals(1L, spanRow(spanId), "그 행 1");
+    }
+
+    /** TS-R33-07 · BD-R33-14 · 정정 T-2 — agent-jar 는 자기 형식(octet-stream)만 낸다 · JSON 단독 Accept 는 처리 전 406. */
+    @Test
+    void agentJarHonoursItsOwnMediaType() throws IOException {
+        String fixture = classpathAgentJar();
+        assertEquals(47, fixture.length(), "전제: 시험 클래스패스 agent jar = 시험 자원 가짜 파일(47 바이트)");
+        assertTrue(fixture.startsWith("fake"), "전제: 시험 자원 가짜 파일 머리 fake");
+        String[] accepts = {"application/octet-stream", "*/*",
+                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"};
+        for (String accept : accepts) {
+            Response res = send("GET", "/v1/setup/agent-jar", null, accept, null);
+            assertEquals(200, res.status(), "Accept " + accept + " 는 200 — 실제 " + res);
+            assertTrue(res.contentType().startsWith("application/octet-stream"), "응답 형식 — 실제 " + res.contentType());
+            assertEquals(fixture, res.body(), "본문 = 시험 자원 바이트 그대로 — Accept " + accept);
+        }
+        Response json = send("GET", "/v1/setup/agent-jar", null, JSON, null);
+        assertEquals(406, json.status(), "④ JSON 단독 Accept 는 406 — 실제 " + json);
+        assertTrue(json.contentType().startsWith(JSON), "④ 응답 형식 = Boot 기본 오류 JSON — 실제 " + json.contentType());
+        assertTrue(json.body().contains("\"status\":406"), "④ 본문에 상태 — 실제 " + head(json.body()));
+    }
+
+    /** TS-R33-08 · BD-R33-05 · BD-R33-06 — 지우는 매핑 셋은 YAML Accept 면 지우기 전에 406 · JSON 이면 204. */
+    @Test
+    void deleteWithYamlAcceptRemovesNothing() throws IOException {
+        jdbc.update("INSERT OR REPLACE INTO services(service_name, registered_at, source) VALUES('r33-y-cfg', 0, 'wizard')");
+        jdbc.update("INSERT OR REPLACE INTO service_instrument_configs(service_name, capture_params, updated_at) "
+                + "VALUES('r33-y-cfg', 1, 0)");
+        jdbc.update("INSERT OR REPLACE INTO services(service_name, registered_at, source) VALUES('r33-y-svc', 0, 'wizard')");
+        jdbc.update("INSERT INTO masking_rules(name, rule_type, pattern, mask_strategy, enabled, is_default, created_at, "
+                + "updated_at) VALUES('r33-y-rule','field_name','x-r33y','full',1,0,0,0)");
+        Long ruleId = jdbc.queryForObject("SELECT rule_id FROM masking_rules WHERE name = 'r33-y-rule'", Long.class);
+        String[][] cases = {
+                {"/v1/services/r33-y-cfg/instrument-config",
+                        "SELECT count(*) FROM service_instrument_configs WHERE service_name = 'r33-y-cfg'"},
+                {"/v1/services/r33-y-svc", "SELECT count(*) FROM services WHERE service_name = 'r33-y-svc'"},
+                {"/v1/masking-rules/" + ruleId, "SELECT count(*) FROM masking_rules WHERE rule_id = " + ruleId},
+        };
+        for (String[] c : cases) {
+            assertEquals(1L, count(c[1]), "전제: 대상 행 1 — " + c[0]);
+            Response yaml = send("DELETE", c[0], null, YAML, null);
+            assertEquals(406, yaml.status(), "YAML Accept 지우기는 406 — " + c[0] + " 실제 " + yaml);
+            assertEquals(1L, count(c[1]), "지우기 전 거절 — 행 1 그대로 · " + c[0]);
+            Response json = send("DELETE", c[0], null, JSON, null);
+            assertEquals(204, json.status(), "JSON Accept 지우기는 204 — " + c[0] + " 실제 " + json);
+            assertEquals(0L, count(c[1]), "양성 대조: 행 0 · " + c[0]);
+        }
+    }
+
+    /** TS-R33-09 · BD-R33-01 ~ BD-R33-04 — cursor 오류 길: YAML 만이면 406 · JSON 이 섞이면 400 이 JSON 으로 써진다. */
+    @Test
+    void cursorErrorPathWithYamlAccept() throws IOException {
+        Response mixed = send("GET", "/v1/traces?cursor=bad", null, "application/json;q=0.5, application/yaml", null);
+        assertEquals(400, mixed.status(), "혼합 Accept 는 400 — 실제 " + mixed);
+        assertTrue(mixed.contentType().startsWith(JSON), "혼합 Accept 400 응답 형식 = JSON — 실제 " + mixed.contentType());
+        assertTrue(mixed.body().startsWith("{\"error\""), "혼합 Accept 400 본문 = {\"error\" … — 실제 " + head(mixed.body()));
+        Response json = send("GET", "/v1/traces?cursor=bad", null, JSON, null);
+        assertEquals(400, json.status(), "JSON Accept 는 400 — 실제 " + json);
+        assertTrue(json.body().startsWith("{\"error\""), "JSON 400 본문 = {\"error\" … — 실제 " + head(json.body()));
+        for (String path : new String[] {"/v1/traces?cursor=bad", "/v1/traces?cursor=!!bad"}) {
+            Response yaml = send("GET", path, null, YAML, null);
+            assertEquals(406, yaml.status(), "YAML Accept cursor 오류는 406(처리 전) — " + path + " 실제 " + yaml);
+            assertEquals("", yaml.body(), "406 본문 0 바이트 — " + path);
+        }
+    }
+
     // ─── 내부 헬퍼 ────────────────────────────────────────────────────────────
 
     /** 수집 본문 하나 — span id 는 시험마다 다르다. JSON 글은 YAML 로도 맞는 글이다. */
@@ -217,6 +372,24 @@ class YamlIngressIntegrationTest {
         return n == null ? -1L : n;
     }
 
+    private long spanRow(String spanId) {
+        Long n = jdbc.queryForObject("SELECT count(*) FROM spans WHERE span_id = ?", Long.class, spanId);
+        return n == null ? -1L : n;
+    }
+
+    private long count(String sql) {
+        Long n = jdbc.queryForObject(sql, Long.class);
+        return n == null ? -1L : n;
+    }
+
+    /** 시험 클래스패스의 agent jar 자원(서버가 내려 주는 것과 같은 자원 이름) 글자. */
+    private static String classpathAgentJar() throws IOException {
+        try (InputStream in = YamlIngressIntegrationTest.class.getResourceAsStream("/agent/apilens-agent.jar")) {
+            assertTrue(in != null, "전제: 시험 클래스패스에 agent jar 자원이 있다");
+            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        }
+    }
+
     /** 응답 본문에 서버 스택이 실리지 않는다. */
     private static void assertNoStack(Response res) {
         assertFalse(res.body().contains("\"trace\""), "응답 본문에 trace 키 0 — 실제 " + head(res.body()));
@@ -227,106 +400,14 @@ class YamlIngressIntegrationTest {
         return s.length() <= 200 ? s : s.substring(0, 200);
     }
 
-    record Response(int status, String contentType, String body) {
-        @Override
-        public String toString() {
-            return status + " " + contentType + " " + head(body);
-        }
-    }
-
-    /**
-     * 원문 그대로 한 요청을 써 보낸다 — {@code Content-Type} · {@code Accept} 를 글자 그대로 싣는다(값이 null 이면 그 머리를 안
-     * 보낸다). 대기는 소켓 읽기 제한 시간뿐이다.
-     */
+    /** 원문 송신 — 도우미 {@code RawHttp} 로 옮겼다(R33/AC-R33-07-6 · 기존 시험 줄 · 단언 글자 그대로). */
     private Response send(String method, String path, String contentType, String accept, String body) throws IOException {
-        byte[] bytes = body == null ? new byte[0] : body.getBytes(StandardCharsets.UTF_8);
-        StringBuilder head = new StringBuilder();
-        head.append(method).append(' ').append(path).append(" HTTP/1.1\r\n");
-        head.append("Host: 127.0.0.1:").append(port).append("\r\n");
-        head.append("Connection: close\r\n");
-        if (accept != null) {
-            head.append("Accept: ").append(accept).append("\r\n");
-        }
-        if (contentType != null) {
-            head.append("Content-Type: ").append(contentType).append("\r\n");
-        }
-        if (bytes.length > 0 || "POST".equals(method)) {
-            head.append("Content-Length: ").append(bytes.length).append("\r\n");
-        }
-        head.append("\r\n");
-        try (Socket socket = new Socket()) {
-            socket.connect(new InetSocketAddress("127.0.0.1", port), 5_000);
-            socket.setSoTimeout(10_000);
-            OutputStream out = socket.getOutputStream();
-            out.write(head.toString().getBytes(StandardCharsets.ISO_8859_1));
-            out.write(bytes);
-            out.flush();
-            return parse(readAll(socket.getInputStream()));
-        }
+        return RawHttp.send(port, method, path, contentType, accept, body);
     }
 
-    private static byte[] readAll(InputStream in) throws IOException {
-        ByteArrayOutputStream buf = new ByteArrayOutputStream();
-        byte[] chunk = new byte[8192];
-        int n;
-        while ((n = in.read(chunk)) != -1) {
-            buf.write(chunk, 0, n);
-        }
-        return buf.toByteArray();
-    }
-
-    /** 상태 줄 · 응답 형식 머리 · 본문을 가른다. 본문이 chunked 면 풀어 쓴다(Connection: close 라 끝은 EOF). */
-    private static Response parse(byte[] raw) {
-        String all = new String(raw, StandardCharsets.ISO_8859_1);
-        int headEnd = all.indexOf("\r\n\r\n");
-        String head = headEnd < 0 ? all : all.substring(0, headEnd);
-        String[] headLines = head.split("\r\n");
-        String[] parts = headLines[0].split(" ");
-        int status = parts.length > 1 ? Integer.parseInt(parts[1]) : -1;
-        String contentType = "";
-        boolean chunked = false;
-        for (String line : headLines) {
-            String lower = line.toLowerCase(Locale.ROOT);
-            if (lower.startsWith("content-type:")) {
-                contentType = line.substring("content-type:".length()).trim();
-            } else if (lower.startsWith("transfer-encoding:") && lower.contains("chunked")) {
-                chunked = true;
-            }
-        }
-        byte[] bodyBytes = headEnd < 0 ? new byte[0] : Arrays.copyOfRange(raw, headEnd + 4, raw.length);
-        if (chunked) {
-            bodyBytes = dechunk(bodyBytes);
-        }
-        return new Response(status, contentType, new String(bodyBytes, StandardCharsets.UTF_8));
-    }
-
-    private static byte[] dechunk(byte[] in) {
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        int i = 0;
-        while (i < in.length) {
-            int lineEnd = indexOfCrlf(in, i);
-            if (lineEnd < 0) {
-                break;
-            }
-            String sizeText = new String(in, i, lineEnd - i, StandardCharsets.ISO_8859_1).trim();
-            int semi = sizeText.indexOf(';');
-            int size = Integer.parseInt(semi >= 0 ? sizeText.substring(0, semi) : sizeText, 16);
-            if (size == 0) {
-                break;
-            }
-            int start = lineEnd + 2;
-            out.write(in, start, Math.min(size, in.length - start));
-            i = start + size + 2;
-        }
-        return out.toByteArray();
-    }
-
-    private static int indexOfCrlf(byte[] in, int from) {
-        for (int i = from; i + 1 < in.length; i++) {
-            if (in[i] == '\r' && in[i + 1] == '\n') {
-                return i;
-            }
-        }
-        return -1;
+    /** 덧머리 줄을 싣는 송신(TS-R33-04 머리 되울림). */
+    private Response send2(String method, String path, String contentType, String accept, String body,
+                           String... extraHeaderLines) throws IOException {
+        return RawHttp.send(port, method, path, contentType, accept, body, extraHeaderLines);
     }
 }

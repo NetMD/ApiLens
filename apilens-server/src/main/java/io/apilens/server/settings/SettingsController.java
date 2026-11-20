@@ -15,7 +15,9 @@
  */
 package io.apilens.server.settings;
 
+import io.apilens.server.web.ApiMediaTypes;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PutMapping;
@@ -41,7 +43,8 @@ public class SettingsController {
         this.service = service;
     }
 
-    @GetMapping("/v1/settings")
+    // [Phase R33] R33/AC-R33-01-1/R33/AC-R33-01-2/R33/AC-R33-02-1 — 이 파일의 메서드 매핑마다 응답 형식(JSON 두 값)을 같은 한 줄에 선언해 처리 전 406 을 낸다 · 본문 받는 매핑은 받는 형식(JSON 두 값)도. 사용자 명시 비협상 결정(UQ-R33-3 처리 전 406). 설계 본편 DD-R33-01 · 02 · 03 · 부록 A §A1.3 인용.
+    @GetMapping(value = "/v1/settings", produces = {MediaType.APPLICATION_JSON_VALUE, ApiMediaTypes.JSON_SUFFIX_VALUE})
     public SettingsResponse getSettings() {
         return service.getSettings();
     }
@@ -50,7 +53,7 @@ public class SettingsController {
      * // [Phase R12] AC-B1-3 — "retention.days 1~3650, 범위 외 400 (원자 거부)" (비협상 — PM 확정).
      * // 갱신 후 GET 과 동일 형태 응답 (Design §5.2).
      */
-    @PutMapping("/v1/settings")
+    @PutMapping(value = "/v1/settings", produces = {MediaType.APPLICATION_JSON_VALUE, ApiMediaTypes.JSON_SUFFIX_VALUE}, consumes = {MediaType.APPLICATION_JSON_VALUE, ApiMediaTypes.JSON_SUFFIX_VALUE})
     public SettingsResponse putSettings(@RequestBody Map<String, Object> body) {
         return service.put(body);
     }

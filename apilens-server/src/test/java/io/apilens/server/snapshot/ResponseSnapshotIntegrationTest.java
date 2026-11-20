@@ -50,7 +50,9 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.stream.Stream;
@@ -84,6 +86,10 @@ import static org.junit.jupiter.api.Assertions.fail;
  * <p>★<b>허용 차이</b>(부록 D.2 · 첫 4.1 비교보다 앞에 고정 · 목록을 늘리는 것은 처리가 아니다): AL-R30-1 =
  * {@code /v3/api-docs} 의 {@code /info/version} 은 양쪽을 자리표시로 · AL-R30-2 · 3 = ingest 실패 두 대상은 상태가 4xx 로
  * 바뀌어도 된다(본문은 Boot 오류 본문이라 맞추지 않는다 · <b>5xx 면 실패</b>). AL-R30-4 는 처리 순서 규칙이라 코드가 없다.
+ * [Phase R33] AL-R33-1 · 2 = 허용이 아니라 <b>요구</b>({@link #requireR33MediaKeys} · 사용자 결정 RD-R33-1 ⓑ · 설계 정정 부록 §1):
+ * {@code /v3/api-docs} 의 매체 키는 응답 2xx = JSON 두 키(agent jar = octet-stream 하나) · 요청 본문 = JSON 두 키 · 오류 응답은
+ * {@code *}{@code /*} 그대로이거나 JSON 두 키이고, 형제 키 값이 같을 때만 기준 꼴로 맞춘 뒤 비교한다 · 오류 상태 JSON 키는 공용 조각
+ * 참조(AL-R33-2). 기준 자료(3.4.1)는 그대로다 — 기준판을 「실제」 자리에 넣으면 빨강이다({@link #requiresTheR33MediaKeysOnTheApiDocs}).
  *
  * <p>★한계 그 자리에: 대상 19 만 본다 — 대상 밖 endpoint 의 모양 변화는 {@code /v3/api-docs} 트리가 계약으로 덮는다.
  */
@@ -108,6 +114,13 @@ class ResponseSnapshotIntegrationTest {
      * 발동하면 이 값을 {@code false} 로 바꾼다 — 그때 두 대상의 기대는 3.4.1 기록값 그대로다(정정 DV-S-R30-4).
      */
     static final boolean INGEST_FAILURE_MODE_CHANGE_ALLOWED = true;
+
+    /** [Phase R33] AL-R33-1 · 2 — 요구 매체 키 · agent jar 경로 · 공용 조각 참조를 요구하는 오류 상태(설계 정정 부록 §1). */
+    static final String R33_JSON = "application/json";
+    static final Set<String> R33_JSON_KEYS = Set.of(R33_JSON, "application/*+json");
+    static final String R33_AGENT_JAR_PATH = "/v1/setup/agent-jar";
+    static final Set<String> R33_ERROR_REF_STATUSES = Set.of("400", "404", "409", "503");
+    static final String R33_ERROR_REF = "#/components/schemas/ErrorResponse";
 
     /** 고정 자료의 첫 시각(2026-01-01T00:00:00Z) — 시각을 고정해 응답 값이 실행 시각과 무관하게 한다. */
     static final long T0 = 1_767_225_600_000L;
@@ -271,6 +284,70 @@ class ResponseSnapshotIntegrationTest {
         }
     }
 
+    /**
+     * [Phase R33] R33/AC-R33-01-2 — TS-R33-17 · 회귀 시험(사용자 결정 RD-R33-1 ⓑ · 설계 정정 부록 §1). AL-R33-1 · 2 가
+     * 「허용」이 아니라 「요구」인지 기준 자료 하나로 잰다: ① 기준판(3.4.1)을 실제 자리에 넣으면 <b>빨강</b>(요구 키 없음)
+     * ② 요구 꼴로 바꾼 판은 차이 0(양성 대조 — 요구가 채울 수 있는 것임) ③ 같은 판에서 오류 응답의 공용 조각 참조만 빼면 빨강.
+     */
+    @Test
+    void requiresTheR33MediaKeysOnTheApiDocs() throws IOException {
+        JsonNode baseline;
+        try (InputStream in = ResponseSnapshotIntegrationTest.class.getResourceAsStream(SNAPSHOT_RESOURCE)) {
+            requireUsable(baseline = in == null ? null : JSON.readTree(in));
+        }
+        JsonNode spec = null;
+        for (JsonNode t : baseline.get("targets")) {
+            if ("SN-R30-13".equals(t.get("sn").asText())) {
+                spec = t;
+            }
+        }
+        assertNotNull(spec, "전제: 기준 자료에 SN-R30-13 이 있다");
+        List<String> asIs = compare("SN-R30-13", spec, spec.deepCopy(), Set.of());
+        assertTrue(asIs.stream().anyMatch(d -> d.contains("AL-R33-1")), "① 기준판을 실제로 넣으면 AL-R33-1 빨강 — " + asIs);
+        List<String> shaped = compare("SN-R30-13", spec, r33Shaped(spec, true), Set.of());
+        assertTrue(shaped.isEmpty(), "② 요구 꼴 판은 차이 0 — " + shaped);
+        List<String> noRef = compare("SN-R30-13", spec, r33Shaped(spec, false), Set.of());
+        assertTrue(noRef.stream().anyMatch(d -> d.contains("AL-R33-2")), "③ 오류 응답 참조를 빼면 AL-R33-2 빨강 — " + noRef);
+    }
+
+    /**
+     * 기준 명세를 R33 요구 꼴로 바꾼 사본 — 응답 2xx 와 요청 본문을 JSON 두 키(agent jar = octet-stream)로 · {@code POST /v1/spans}
+     * 400 하나를 JSON 두 키로(withRef 면 공용 조각 참조 + 옮긴 예시 · 아니면 옛 inline schema 그대로).
+     */
+    private static JsonNode r33Shaped(JsonNode target, boolean withRef) {
+        ObjectNode copy = target.deepCopy();
+        for (Map.Entry<String, JsonNode> p : copy.path("body").path("paths").properties()) {
+            for (Map.Entry<String, JsonNode> m : p.getValue().properties()) {
+                JsonNode body = m.getValue().path("requestBody").path("content");
+                if (body.isObject() && body.has(R33_JSON)) {
+                    ((ObjectNode) body).set("application/*+json", body.get(R33_JSON).deepCopy());
+                }
+                for (Map.Entry<String, JsonNode> r : m.getValue().path("responses").properties()) {
+                    JsonNode c = r.getValue().path("content");
+                    boolean spans400 = "/v1/spans".equals(p.getKey()) && "400".equals(r.getKey());
+                    if (!c.isObject() || !c.has("*/*") || !(r.getKey().startsWith("2") || spans400)) {
+                        continue;
+                    }
+                    JsonNode media = c.get("*/*");
+                    if (spans400 && withRef) {
+                        ObjectNode moved = JSON.createObjectNode();
+                        moved.putObject("schema").put("$ref", R33_ERROR_REF);
+                        moved.set("example", media.path("schema").get("example"));
+                        media = moved;
+                    }
+                    ObjectNode cc = ((ObjectNode) c).removeAll();
+                    if (R33_AGENT_JAR_PATH.equals(p.getKey())) {
+                        cc.set("application/octet-stream", media);
+                    } else {
+                        cc.set(R33_JSON, media);
+                        cc.set("application/*+json", media.deepCopy());
+                    }
+                }
+            }
+        }
+        return copy;
+    }
+
     /** 기록 모드면 한 번 쓴다(정정 DV-X-R30-02 — {@code @AfterAll} 기록 1회). 임시 DB 는 늘 지운다. */
     @AfterAll
     void writeRecordingOnceAndDeleteTempDb() throws IOException {
@@ -347,6 +424,7 @@ class ResponseSnapshotIntegrationTest {
         if ("SN-R30-13".equals(sn)) {
             expBody = withPlaceholderVersion(expBody);
             actBody = withPlaceholderVersion(actBody);
+            actBody = requireR33MediaKeys(expBody, actBody, diffs);
         }
         Set<String> shapeOnly = new HashSet<>();
         for (String p : volatilePointers) {
@@ -364,6 +442,93 @@ class ResponseSnapshotIntegrationTest {
         }
         walk(sn, "", expBody, actBody, shapeOnly, diffs);
         return diffs;
+    }
+
+    /**
+     * [Phase R33] R33/AC-R33-01-2/R33/AC-R33-02-1 — AL-R33-1 · AL-R33-2(요구 꼴). 사용자 명시 결정(RD-R33-1 ⓑ — 「허용」이
+     * 아니라 「요구」 · 기준 자료 무접촉). 실제 명세의 {@code content} 키 집합이 요구 집합과 같고 형제 키 값이 같을 때만 기준
+     * 꼴(응답 {@code *}{@code /*} · 요청 본문 {@code application/json})로 접어 돌려준다 — 다르면 차이를 적고 그대로 둔다(아래
+     * 트리 비교가 한 번 더 잡는다). 오류 상태(400 · 404 · 409 · 503)의 JSON 키는 공용 조각 참조여야 하고, 그 customizer 가 옮긴
+     * 예시는 기준 schema 의 예시와 같아야 한다. 설계 정정 부록 §1 인용.
+     *
+     * <p>★한계 그 자리에: 처리기({@code @ExceptionHandler})에서 나온 오류 응답은 매핑 선언을 안 타 {@code *}{@code /*} 그대로다
+     * (R33 실측 50 자리) — 그 자리는 기준 대조로 남는다.
+     */
+    static JsonNode requireR33MediaKeys(JsonNode expBody, JsonNode actBody, List<String> diffs) {
+        if (actBody == null || !actBody.isObject() || !actBody.path("paths").isObject()) {
+            return actBody;
+        }
+        ObjectNode act = actBody.deepCopy();
+        for (Map.Entry<String, JsonNode> p : act.get("paths").properties()) {
+            for (Map.Entry<String, JsonNode> m : p.getValue().properties()) {
+                JsonNode op = m.getValue();
+                String where = "SN-R30-13:" + m.getKey().toUpperCase(Locale.ROOT) + " " + p.getKey();
+                JsonNode body = op.path("requestBody").path("content");
+                if (body.isObject() && requireKeys(where + " requestBody", (ObjectNode) body, R33_JSON_KEYS, diffs)) {
+                    JsonNode one = body.get(R33_JSON);
+                    ((ObjectNode) body).removeAll().set(R33_JSON, one);
+                }
+                for (Map.Entry<String, JsonNode> r : op.path("responses").properties()) {
+                    JsonNode content = r.getValue().path("content");
+                    if (!content.isObject()) {
+                        continue;
+                    }
+                    ObjectNode c = (ObjectNode) content;
+                    String status = r.getKey();
+                    String at = where + " " + status;
+                    if (status.startsWith("2")) {
+                        Set<String> required = R33_AGENT_JAR_PATH.equals(p.getKey())
+                                ? Set.of("application/octet-stream") : R33_JSON_KEYS;
+                        if (requireKeys(at, c, required, diffs)) {
+                            JsonNode one = c.elements().next();
+                            c.removeAll().set("*/*", one);
+                        }
+                    } else if (!keysOf(c).equals(Set.of("*/*")) && requireKeys(at, c, R33_JSON_KEYS, diffs)) {
+                        JsonNode media = c.get(R33_JSON);
+                        if (R33_ERROR_REF_STATUSES.contains(status)) {
+                            JsonNode expMedia = expBody == null ? null : expBody.path("paths").path(p.getKey())
+                                    .path(m.getKey()).path("responses").path(status).path("content").path("*/*");
+                            if (!R33_ERROR_REF.equals(media.path("schema").path("$ref").asText(null))) {
+                                diffs.add(at + " AL-R33-2 오류 응답 schema 가 공용 조각 참조가 아니다");
+                                continue;
+                            }
+                            if (expMedia != null && !expMedia.isMissingNode()) {
+                                if (!Objects.equals(media.get("example"), expMedia.path("schema").get("example"))) {
+                                    diffs.add(at + " AL-R33-2 옮긴 예시가 기준 schema 의 예시와 다르다");
+                                    continue;
+                                }
+                                media = expMedia.deepCopy();
+                            }
+                        }
+                        c.removeAll().set("*/*", media);
+                    }
+                }
+            }
+        }
+        return act;
+    }
+
+    /** AL-R33-1 — 키 집합이 요구 집합과 같고 형제 키 값이 서로 같은가. 아니면 차이를 적고 false. */
+    private static boolean requireKeys(String at, ObjectNode content, Set<String> required, List<String> diffs) {
+        Set<String> keys = keysOf(content);
+        if (!keys.equals(required)) {
+            diffs.add(at + " AL-R33-1 매체 키 요구 " + new TreeSet<>(required) + " → 실제 " + new TreeSet<>(keys));
+            return false;
+        }
+        JsonNode first = content.elements().next();
+        for (Map.Entry<String, JsonNode> e : content.properties()) {
+            if (!e.getValue().equals(first)) {
+                diffs.add(at + " AL-R33-1 형제 키 값이 서로 다르다(" + e.getKey() + ")");
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static Set<String> keysOf(JsonNode node) {
+        Set<String> keys = new HashSet<>();
+        node.properties().forEach(e -> keys.add(e.getKey()));
+        return keys;
     }
 
     private static JsonNode withPlaceholderVersion(JsonNode body) {
