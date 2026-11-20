@@ -241,7 +241,7 @@ class LegacyRowFallbackTest {
 
     /** 본문 표에 한 벌 + 행에는 지문만 — 적재 경로가 만드는 모양을 직접 만든 것. */
     private void insertNewFormPayloadRow(String spanId, String body) {
-        String hash = sha256Hex(body);
+        String hash = IngestService.fingerprint(body);
         int bytes = body.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
         jdbc.update("INSERT OR IGNORE INTO payload_bodies (body_hash, body, body_bytes, first_seen_at)"
                 + " VALUES (?, ?, ?, ?)", hash, body, bytes, 1_000L);
@@ -266,20 +266,5 @@ class LegacyRowFallbackTest {
         assertNotNull(c);
         assertTrue(c >= 0);
         return c;
-    }
-
-    private static String sha256Hex(String value) {
-        try {
-            byte[] digest = java.security.MessageDigest.getInstance("SHA-256")
-                    .digest(value.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            StringBuilder hex = new StringBuilder(digest.length * 2);
-            for (byte b : digest) {
-                hex.append(Character.forDigit((b >> 4) & 0xF, 16));
-                hex.append(Character.forDigit(b & 0xF, 16));
-            }
-            return hex.toString();
-        } catch (java.security.NoSuchAlgorithmException e) {
-            throw new IllegalStateException(e);
-        }
     }
 }

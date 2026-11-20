@@ -327,7 +327,7 @@ public class RetentionCleanupService {
     /**
      * [Phase R26] R26/AC-R26-05 — 훑기가 한 번에 돌려받는 회수 후보 지문 목록의 개수 상한.
      *
-     * <p>지문은 SHA-256 16진수 64자라 50,000건이면 메모리로 약 3.2 MB 다. 넘치는 몫은 <b>다음 밤이
+     * <p>[Phase R33] 새 지문은 16진수 32자라 지문 글자 몫이 50,000건에 약 1.6 MB 다(옛 64자 행이 남은 동안 최대 약 3.2 MB · 객체 머리 몫은 별도). 넘치는 몫은 <b>다음 밤이
      * 잇는다</b> — 훑기 방식이라 밀려도 대상이 안 사라진다(멱등).
      */
     static final int SQL_STMT_GC_RECLAIMABLE_LIMIT = 50_000;

@@ -155,6 +155,9 @@ public class IngestService {
     //   다른 키는 값이 다양해 인터닝 이득이 없고, 넓히면 예약 키가 늘어 계약 표면이 커진다.
     public static final String DB_STATEMENT_ATTRIBUTE = "db.statement";
 
+    // [Phase R33] UQ-R33-4 — 저장 지문 길이(16진 글자 수 · SHA-256 앞 128비트). 사용자 확정 값이다 — 바꾸면 이미 쌓인 행과 길이가 갈린다.
+    private static final int FINGERPRINT_HEX_LENGTH = 32;
+
     // [Phase R25] AC-25-01-2 — IN (?, …) 목록 한 번에 묶는 최대 개수. SQLite 의 바인딩 변수 한도(구버전 999)
     //   안쪽 안전 마진이고, 같은 파일의 SPAN_CHUNK_SIZE·RetentionCleanupService 의 500 관례와 같은 값이다.
     // [Phase R26] R26/AC-R26-33 — ★쓰기와 읽기가 공유하는 **단일 거주지**다. R25 까지 읽는 쪽
@@ -692,7 +695,7 @@ public class IngestService {
                 //   본문이 없는 행(계측이 값을 못 잡은 빈 자리표)은 지문도 null 이고 본문 표에 아무것도
                 //   안 만든다 — 정상 입력이지 위반이 아니다. 빈 문자열("")은 평범한 값이라 특별 취급하지 않는다.
                 String storedBody = guarded.body();
-                String bodyHash = storedBody == null ? null : sha256Hex(storedBody);
+                String bodyHash = storedBody == null ? null : fingerprint(storedBody);
                 if (bodyHash != null) {
                     bodies.putIfAbsent(bodyHash,
                             new BodyRef(storedBody, storedBody.getBytes(StandardCharsets.UTF_8).length));
@@ -741,7 +744,7 @@ public class IngestService {
      *
      * <p>★<b>지문 충돌 대조의 한계</b>(막았다고 쓰지 않는다): 이미 있는 지문의 {@code body_bytes} 가 다르면
      * 경고만 남기고 <b>먼저 있던 본문을 지킨다</b>. 이 대조는 <b>크기가 다를 때만</b> 안다 — 크기가 같고
-     * 내용만 다른 충돌은 못 잡는다. 틀리는 방향은 <b>안전한 쪽</b>(먼저 것 보존)이다.
+     * 내용만 다른 충돌은 못 잡는다. 저장은 먼저 것을 지킨다(덮지 않음) — 다만 뒤에 온 payload 행도 같은 지문을 가리켜 앞 본문을 보여 준다(틀리는 쪽 = 보여 주는 쪽 · {@link #fingerprint(String)} 한계).
      */
     private void persistPayloadBodies(Map<String, BodyRef> bodies) {
         if (bodies.isEmpty()) {
@@ -803,7 +806,7 @@ public class IngestService {
      * ★청크 트랜잭션의 첫 문장은 언제나 쓰기여야 한다 — 이 앞에 {@code SELECT} 를 넣지 말 것
      * (시험 {@code SqlStatementInterningTest#chunkTransactionStartsWithAWriteStatement} 가 지킨다).
      *
-     * <p>대조할 크기 값이 없으므로 충돌 경고도 없다 — <b>원문 자체가 열쇠</b>라 같은 지문이면 같은 원문이다.
+     * <p>대조할 크기 값이 없으므로 충돌 경고도 없다 — <b>원문 자체가 열쇠</b>라 같은 지문이면 같은 원문으로 본다(충돌은 못 가린다 — {@link #fingerprint(String)} 한계).
      *
      * <p>★{@code apilens.stmt.ref} 를 <b>밖에서 이미 채워 보낸</b> span 은 여기서도 건너뛴다
      * (AC-25-02-5 ⓒ — 그 span 은 원문 그대로 저장된다).
@@ -813,7 +816,7 @@ public class IngestService {
         for (Span span : spans) {
             String raw = internableStatementOf(span.attributes());
             if (raw != null) {
-                statements.putIfAbsent(sha256Hex(raw), raw);
+                statements.putIfAbsent(fingerprint(raw), raw);
             }
         }
         if (statements.isEmpty()) {
@@ -856,11 +859,37 @@ public class IngestService {
     }
 
     /**
-     * [Phase R25] AC-25-01-2 — 지문 계산의 <b>단일 위임 진입점</b>. SHA-256 → 소문자 16진수 64자.
+     * Returns the content fingerprint stored in {@code payload_bodies.body_hash},
+     * {@code sql_statements.stmt_hash} and the {@code apilens.stmt.ref} span attribute:
+     * the first 32 lowercase hex characters (128 bits) of the SHA-256 of {@code value} (UTF-8).
      *
-     * <p>새 클래스도 새 의존성도 만들지 않는다 — JDK 표준({@code MessageDigest})만 쓰고, 같은 파일의
-     * {@code sanitizeForLog} 전례를 따라 {@code private static} 헬퍼 하나로 둔다.
+     * <p>This is the single entry point for the fingerprint rule. The three write sites and the
+     * tests call it; nothing else hashes or truncates. Rows written before v0.11.2 keep 64-character
+     * keys; every reader compares keys as plain strings, so both lengths resolve without a fallback.
+     *
+     * <p><b>Limit — this does not guard against collisions.</b> Two different values that share a
+     * fingerprint are told apart only on the payload path, and only when the stored body already sits
+     * in the table with a different {@code body_bytes}: {@code persistPayloadBodies} then logs one
+     * WARN and keeps the earlier body. A same-size collision, two colliding bodies in the same chunk,
+     * and any SQL statement collision pass silently, and the later row shows the earlier text. It
+     * fails in the unsafe direction (wrong text shown). This held for 64 characters too; the shorter
+     * key only makes it more likely.
+     *
+     * @param value text to fingerprint; must not be {@code null}
+     * @return 32 lowercase hex characters
+     * @throws NullPointerException if {@code value} is {@code null}
+     */
+    public static String fingerprint(String value) {
+        return sha256Hex(value).substring(0, FINGERPRINT_HEX_LENGTH);
+    }
+
+    /**
+     * [Phase R25] AC-25-01-2 · [Phase R33] UQ-R33-4 — SHA-256 → 소문자 16진수 64자를 만드는 내부 도우미다. 저장되는 지문은 이 값의 앞 32자다(옛 행 64자 공존).
+     *
+     * <p>지문 계산의 <b>단일 위임 진입점</b>은 R33 부터 {@link #fingerprint(String)} 이다 — 이 메서드는 그 안에서만 부른다.
+     * 새 클래스도 새 의존성도 만들지 않는다 — JDK 표준({@code MessageDigest})만 쓰고 {@code private static} 으로 둔다.
      * {@code SHA-256} 은 JDK 규격이 반드시 제공하는 알고리즘이라 아래 catch 는 도달하지 않는다.
+     * <p>★한계(정확한 한정): 앞 32자로 자르면 서로 다른 원문이 같은 지문을 낼 수 있는 정도가 64자 때보다 커진다 — 어느 길에서 어떻게 틀리는지는 {@link #fingerprint(String)} 에 적었다.
      */
     private static String sha256Hex(String value) {
         try {
@@ -981,7 +1010,7 @@ public class IngestService {
         if (internable != null) {
             toStore = new LinkedHashMap<>(attributes);
             toStore.remove(DB_STATEMENT_ATTRIBUTE);
-            toStore.put(STMT_REF_ATTRIBUTE, sha256Hex(internable));
+            toStore.put(STMT_REF_ATTRIBUTE, fingerprint(internable));
         }
         try {
             return mapper.writeValueAsString(toStore);

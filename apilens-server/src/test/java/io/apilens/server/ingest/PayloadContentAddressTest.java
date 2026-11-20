@@ -45,7 +45,6 @@ import javax.sql.DataSource;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.security.MessageDigest;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -156,7 +155,7 @@ class PayloadContentAddressTest {
         assertEquals(1, count("SELECT COUNT(*) FROM payloads WHERE span_id = 's-new'"));
         assertEquals("first", storedBodyOf("s-new"));
         assertEquals(5L, jdbc.queryForObject(
-                "SELECT body_bytes FROM payload_bodies WHERE body_hash = ?", Long.class, sha256Hex("first")));
+                "SELECT body_bytes FROM payload_bodies WHERE body_hash = ?", Long.class, IngestService.fingerprint("first")));
     }
 
     /** TS-R25-08 (BV-R25-01) — 본문 없음은 <b>정상 입력</b>이다. 표에 아무것도 안 만든다. */
@@ -180,7 +179,7 @@ class PayloadContentAddressTest {
     /** TS-R25-09 (BV-R25-02) — 빈 문자열은 평범한 값이다. 지문 한 행이 생기고 크기는 0 이다. */
     @Test
     void storesAnEmptyStringBodyAsAnOrdinaryValue() {
-        String emptyHash = sha256Hex("");
+        String emptyHash = IngestService.fingerprint("");
         assertEquals(0, count("SELECT COUNT(*) FROM payload_bodies WHERE body_hash = '" + emptyHash + "'"),
                 "전제: 삽입 전 그 지문 행이 없어야 대조가 뜻을 가진다");
 
@@ -207,7 +206,7 @@ class PayloadContentAddressTest {
         String stored = storedBodyOf("s-cut");
         assertNotNull(stored);
         assertEquals(SERVER_LIMIT_BYTES, stored.getBytes(StandardCharsets.UTF_8).length, "한도까지 잘려 저장된다");
-        assertEquals(sha256Hex(stored), jdbc.queryForObject(
+        assertEquals(IngestService.fingerprint(stored), jdbc.queryForObject(
                 "SELECT body_hash FROM payloads WHERE span_id = 's-cut'", String.class),
                 "지문 대상은 마스킹·절단을 거친 저장 바이트 그대로다");
     }
@@ -260,7 +259,7 @@ class PayloadContentAddressTest {
         assertEquals(1, count("SELECT COUNT(*) FROM payload_bodies"));
         assertEquals(body, storedBodyOf("s-64k"), "무손실");
         assertEquals((long) AGENT_LIMIT_BYTES, jdbc.queryForObject(
-                "SELECT body_bytes FROM payload_bodies WHERE body_hash = ?", Long.class, sha256Hex(body)));
+                "SELECT body_bytes FROM payload_bodies WHERE body_hash = ?", Long.class, IngestService.fingerprint(body)));
     }
 
     /**
@@ -268,12 +267,12 @@ class PayloadContentAddressTest {
      *
      * <p>실물 충돌은 만들 수 없으므로(SHA-256) 표에 <b>어긋난 행을 미리 심어</b> 같은 갈래를 밟는다.
      * ★이 대조는 <b>크기가 다를 때만</b> 안다 — 크기가 같고 내용만 다른 충돌은 못 잡는다.
-     * 틀리는 방향은 안전한 쪽(먼저 것 보존)이다.
+     * 저장은 먼저 것을 지킨다(덮지 않음) — 뒤 payload 행은 앞 본문을 보여 준다(보여 주는 쪽은 틀림).
      */
     @Test
     void keepsTheEarlierBodyAndWarnsWhenTheSameFingerprintCarriesADifferentSize() {
         String incoming = "abc";
-        String hash = sha256Hex(incoming);
+        String hash = IngestService.fingerprint(incoming);
         jdbc.update("INSERT INTO payload_bodies (body_hash, body, body_bytes, first_seen_at) VALUES (?, ?, ?, ?)",
                 hash, "PRESERVED", 999L, 1L);
         assertEquals(999L, jdbc.queryForObject(
@@ -328,19 +327,9 @@ class PayloadContentAddressTest {
         return v == null ? 0 : v;
     }
 
-    /** 제품 코드와 <b>독립으로</b> 계산한 지문 — 같은 함수를 불러 서로를 증명하는 순환을 피한다. */
-    private static String sha256Hex(String value) {
-        try {
-            byte[] digest = MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8));
-            StringBuilder hex = new StringBuilder(digest.length * 2);
-            for (byte b : digest) {
-                hex.append(String.format("%02x", b));
-            }
-            return hex.toString();
-        } catch (Exception e) {
-            throw new IllegalStateException(e);
-        }
-    }
+    // [Phase R33] R33/AC-R33-17-1 — 지문 기대값은 프로덕션 규칙 하나(IngestService.fingerprint)를 부른다.
+    //   그 규칙 자체가 맞는지는 글자로 박은 알려진 답(IngestServiceTest#fingerprintIsFirst32HexOfSha256)이 따로 고정한다 —
+    //   같은 함수로 기대값을 만드는 순환은 그 시험이 끊는다.
 
     private static ch.qos.logback.classic.Logger ingestLogger() {
         return (ch.qos.logback.classic.Logger) LoggerFactory.getLogger(IngestService.class);

@@ -352,4 +352,57 @@ class IngestServiceTest {
         assertEquals(1, ((Number) p.get("truncated")).intValue(), "AC-A1-5: agent truncated=true 보존 (OR)");
         assertEquals(9999L, ((Number) p.get("size_bytes")).longValue(), "agent 원본 size_bytes 신뢰 유지");
     }
+
+    // ─── [Phase R33] 지문 32자 (TS-R33-12) ─────────────────────────────────────────────
+    // [Phase R33] R33/AC-R33-16-1/R33/AC-R33-16-2 — 지문 = SHA-256 소문자 16진의 앞 32자. 사용자 명시 비협상 결정
+    //   (UQ-R33-4 지문 둘 · 32자). 기대값은 글자로 박는다 — 같은 함수로 기대값을 만들면 서로를 증명하는 순환이 된다.
+    //   세 답은 저장소 밖에서 `printf '%s' {원문} | shasum -a 256` 의 앞 32자로 잰 값이다(한글 원문은 UTF-8 · NFC).
+
+    @Test
+    void fingerprintIsFirst32HexOfSha256() {
+        assertEquals("ba7816bf8f01cfea414140de5dae2223", IngestService.fingerprint("abc"));
+        assertEquals("e3b0c44298fc1c149afbf4c8996fb924", IngestService.fingerprint(""),
+                "빈 글자도 평범한 값이다 — SHA-256 빈 입력의 앞 32자");
+        assertEquals("2a1c344515da85583556320a867c9b82", IngestService.fingerprint("한글 원문"),
+                "비 ASCII 원문은 UTF-8 바이트로 잰다");
+
+        String fp = IngestService.fingerprint("abc");
+        assertEquals(32, fp.length(), "길이는 32 글자(128비트)");
+        assertTrue(fp.matches("[0-9a-f]+"), "소문자 16진만 쓴다");
+        assertThrows(NullPointerException.class, () -> IngestService.fingerprint(null),
+                "null 은 계약 밖이다 — 쓰는 자리 셋이 먼저 거른다");
+    }
+
+    @Test
+    void sameTextGetsOneFingerprintAtAllThreeWriteSites() {
+        String text = "SELECT 1 FROM r33";
+        Span span = new Span(
+                "s-fp", "t-fp", null,
+                "svc", "GET /fp", SpanKind.SERVER,
+                100L, 200L, SpanStatus.OK,
+                Map.of(IngestService.DB_STATEMENT_ATTRIBUTE, text),
+                List.of(new Payload(PayloadDirection.IN, "text/plain", text, text.length(), false))
+        );
+        service.ingest(new IngestRequest(List.of(span)));
+
+        // 전제 — 세 자리에 실제로 한 행씩 써졌는가. 비어 있으면 아래 대조가 아무것도 재지 않는다.
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM sql_statements", Integer.class));
+        assertEquals(1, jdbc.queryForObject(
+                "SELECT COUNT(*) FROM payloads WHERE span_id = 's-fp' AND body_hash IS NOT NULL", Integer.class));
+        assertEquals(text, storedBodyOf("s-fp"), "전제: 본문이 마스킹 없이 그대로 저장돼야 같은 원문이다");
+
+        String stmtHash = jdbc.queryForObject(
+                "SELECT stmt_hash FROM sql_statements WHERE statement = ?", String.class, text);
+        String spanRef = jdbc.queryForObject(
+                "SELECT json_extract(attributes_json, '$.\"apilens.stmt.ref\"') FROM spans WHERE span_id = 's-fp'",
+                String.class);
+        String bodyHash = jdbc.queryForObject(
+                "SELECT body_hash FROM payloads WHERE span_id = 's-fp'", String.class);
+
+        String expected = IngestService.fingerprint(text);
+        assertEquals(32, expected.length());
+        assertEquals(expected, stmtHash, "sql_statements.stmt_hash");
+        assertEquals(expected, spanRef, "span 속성 apilens.stmt.ref");
+        assertEquals(expected, bodyHash, "payloads.body_hash");
+    }
 }

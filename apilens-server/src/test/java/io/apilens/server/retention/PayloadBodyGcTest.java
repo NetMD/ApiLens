@@ -41,8 +41,6 @@ import javax.sql.DataSource;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -312,7 +310,7 @@ class PayloadBodyGcTest {
                         VALUES (?, ?, NULL, 'svc', 'GET /x', 'SERVER', ?, ?, 'OK', NULL)
                         """,
                 spanId, traceId, receivedAt, receivedAt + 100);
-        String hash = sha256Hex(body);
+        String hash = IngestService.fingerprint(body);
         int bytes = body.getBytes(StandardCharsets.UTF_8).length;
         jdbc.update("INSERT OR IGNORE INTO payload_bodies (body_hash, body, body_bytes, first_seen_at)"
                 + " VALUES (?, ?, ?, ?)", hash, body, bytes, receivedAt);
@@ -329,7 +327,7 @@ class PayloadBodyGcTest {
     private void insertUnreferencedBody(String body) {
         jdbc.update("INSERT OR IGNORE INTO payload_bodies (body_hash, body, body_bytes, first_seen_at)"
                         + " VALUES (?, ?, ?, ?)",
-                sha256Hex(body), body, body.getBytes(StandardCharsets.UTF_8).length, 1_000L);
+                IngestService.fingerprint(body), body, body.getBytes(StandardCharsets.UTF_8).length, 1_000L);
     }
 
     private int countBodies() {
@@ -369,19 +367,5 @@ class PayloadBodyGcTest {
     private int count(String sql) {
         Integer c = jdbc.queryForObject(sql, Integer.class);
         return c == null ? 0 : c;
-    }
-
-    private static String sha256Hex(String value) {
-        try {
-            byte[] digest = MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8));
-            StringBuilder hex = new StringBuilder(digest.length * 2);
-            for (byte b : digest) {
-                hex.append(Character.forDigit((b >> 4) & 0xF, 16));
-                hex.append(Character.forDigit(b & 0xF, 16));
-            }
-            return hex.toString();
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException(e);
-        }
     }
 }

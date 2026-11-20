@@ -15,6 +15,7 @@
  */
 package io.apilens.server.instrument;
 
+import io.apilens.server.ingest.IngestService;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -503,32 +504,17 @@ class InstrumentAnalysisRepositoryTest {
     private void insertNewFormPayload(String spanId, String body) {
         int bytes = body.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
         jdbc.update("INSERT OR IGNORE INTO payload_bodies (body_hash, body, body_bytes, first_seen_at)"
-                + " VALUES (?, ?, ?, ?)", sha256Hex(body), body, bytes, 1_000L);
+                + " VALUES (?, ?, ?, ?)", IngestService.fingerprint(body), body, bytes, 1_000L);
         jdbc.update("""
                         INSERT INTO payloads (span_id, direction, content_type, body, size_bytes,
                                               truncated, body_hash)
                         VALUES (?, 'out', 'application/json', NULL, ?, 0, ?)
                         """,
-                spanId, bytes, sha256Hex(body));
+                spanId, bytes, IngestService.fingerprint(body));
     }
 
     private int count(String sql) {
         Integer c = jdbc.queryForObject(sql, Integer.class);
         return c == null ? 0 : c;
-    }
-
-    private static String sha256Hex(String value) {
-        try {
-            byte[] digest = java.security.MessageDigest.getInstance("SHA-256")
-                    .digest(value.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            StringBuilder hex = new StringBuilder(digest.length * 2);
-            for (byte b : digest) {
-                hex.append(Character.forDigit((b >> 4) & 0xF, 16));
-                hex.append(Character.forDigit(b & 0xF, 16));
-            }
-            return hex.toString();
-        } catch (java.security.NoSuchAlgorithmException e) {
-            throw new IllegalStateException(e);
-        }
     }
 }
