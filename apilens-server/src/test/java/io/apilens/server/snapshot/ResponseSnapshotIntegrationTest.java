@@ -311,6 +311,68 @@ class ResponseSnapshotIntegrationTest {
     }
 
     /**
+     * [Phase R33] R33/AC-R33-01-2 재작업 1 — 오류 응답의 JSON 매체는 기준 자료로 만든 기대 객체(공용 조각 참조 하나 + 기준
+     * schema 의 예시) <b>전체</b>와 같을 때만 기준 꼴로 접힌다 — 접기가 차이를 지우지 않는다(설계 정정 부록 ⓑ 「명세 나머지
+     * 트리는 계속 3.4.1 과 대조」). 회귀 사례 셋은 {@code POST /v1/spans} 400 의 JSON 두 형제 키에 <b>같은</b> 손질을 한다 —
+     * 형제 키 같음 검사는 통과하고 기대 객체 비교에서만 잡히는 꼴이다.
+     *
+     * <p>고치기 전(HEAD {@code 85cd1d4}) 값: ⓐ · ⓑ 는 차이 0(바꾼 글자가 접기로 사라짐) · ⓒ 만 잡혔다.
+     */
+    @Test
+    void foldsErrorMediaOnlyWhenTheWholeExpectedObjectMatches() throws IOException {
+        JsonNode spec = baselineSpecTarget();
+        List<String> shaped = compare("SN-R30-13", spec, r33Shaped(spec, true), Set.of());
+        assertTrue(shaped.isEmpty(), "양성 대조 — 요구 꼴 판은 차이 0 · " + shaped);
+
+        JsonNode examples = r33Shaped(spec, true);
+        for (ObjectNode media : spans400JsonMedia(examples)) {
+            media.putObject("examples").putObject("r33").put("value", "zzR33examples");
+        }
+        List<String> a = compare("SN-R30-13", spec, examples, Set.of());
+        assertTrue(a.stream().anyMatch(d -> d.contains("AL-R33-2")), "ⓐ 형제 키 둘에 같은 examples — 빨강 · " + a);
+
+        JsonNode besideRef = r33Shaped(spec, true);
+        for (ObjectNode media : spans400JsonMedia(besideRef)) {
+            ((ObjectNode) media.get("schema")).put("maxLength", 7).put("description", "zzR33beside");
+        }
+        List<String> b = compare("SN-R30-13", spec, besideRef, Set.of());
+        assertTrue(b.stream().anyMatch(d -> d.contains("AL-R33-2")), "ⓑ 참조 옆 제약 키 — 빨강 · " + b);
+
+        JsonNode example = r33Shaped(spec, true);
+        for (ObjectNode media : spans400JsonMedia(example)) {
+            media.put("example", "zzR33example");
+        }
+        List<String> c = compare("SN-R30-13", spec, example, Set.of());
+        assertTrue(c.stream().anyMatch(d -> d.contains("AL-R33-2")), "ⓒ 예시만 바꿈 — 빨강 유지 · " + c);
+    }
+
+    /** 기준 자료(3.4.1)의 {@code /v3/api-docs} 대상(SN-R30-13) 한 개. */
+    private static JsonNode baselineSpecTarget() throws IOException {
+        JsonNode baseline;
+        try (InputStream in = ResponseSnapshotIntegrationTest.class.getResourceAsStream(SNAPSHOT_RESOURCE)) {
+            requireUsable(baseline = in == null ? null : JSON.readTree(in));
+        }
+        for (JsonNode t : baseline.get("targets")) {
+            if ("SN-R30-13".equals(t.get("sn").asText())) {
+                return t;
+            }
+        }
+        return fail("전제: 기준 자료에 SN-R30-13 이 있다");
+    }
+
+    /** 요구 꼴 사본에서 {@code POST /v1/spans} 400 의 JSON 두 형제 키 매체 — 둘 다 있어야 한다(전제). */
+    private static List<ObjectNode> spans400JsonMedia(JsonNode shaped) {
+        JsonNode content = shaped.path("body").path("paths").path("/v1/spans").path("post").path("responses")
+                .path("400").path("content");
+        List<ObjectNode> media = new ArrayList<>();
+        for (String key : R33_JSON_KEYS) {
+            assertTrue(content.path(key).isObject(), "전제: /v1/spans 400 의 " + key + " 매체가 있다 · " + content);
+            media.add((ObjectNode) content.get(key));
+        }
+        return media;
+    }
+
+    /**
      * 기준 명세를 R33 요구 꼴로 바꾼 사본 — 응답 2xx 와 요청 본문을 JSON 두 키(agent jar = octet-stream)로 · {@code POST /v1/spans}
      * 400 하나를 JSON 두 키로(withRef 면 공용 조각 참조 + 옮긴 예시 · 아니면 옛 inline schema 그대로).
      */
@@ -493,8 +555,21 @@ class ResponseSnapshotIntegrationTest {
                                 continue;
                             }
                             if (expMedia != null && !expMedia.isMissingNode()) {
-                                if (!Objects.equals(media.get("example"), expMedia.path("schema").get("example"))) {
+                                JsonNode example = expMedia.path("schema").get("example");
+                                if (!Objects.equals(media.get("example"), example)) {
                                     diffs.add(at + " AL-R33-2 옮긴 예시가 기준 schema 의 예시와 다르다");
+                                    continue;
+                                }
+                                // [Phase R33] R33/AC-R33-01-2 재작업 1 — 기준 매체로 만든 기대 객체 「전체」와 같을 때만 접는다.
+                                //   예시 · 참조만 보고 접으면 그 밖의 키(examples · 참조 옆 제약 키)가 접기와 함께 사라진다.
+                                ObjectNode expected = JSON.createObjectNode();
+                                expected.putObject("schema").put("$ref", R33_ERROR_REF);
+                                if (example != null) {
+                                    expected.set("example", example);
+                                }
+                                if (!media.equals(expected)) {
+                                    diffs.add(at + " AL-R33-2 오류 응답 매체가 기대 객체(공용 조각 참조 하나 + 기준 예시)와 다르다 · 키 "
+                                            + new TreeSet<>(keysOf(media)) + " · schema 키 " + new TreeSet<>(keysOf(media.path("schema"))));
                                     continue;
                                 }
                                 media = expMedia.deepCopy();

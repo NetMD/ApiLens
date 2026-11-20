@@ -16,6 +16,7 @@
 package io.apilens.server.ingest;
 
 import io.apilens.server.ingest.RawHttp.Response;
+import io.apilens.server.web.JsonAcceptGate;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
@@ -23,10 +24,12 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestMethodOrder;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -361,6 +364,189 @@ class MutatingAcceptGateIntegrationTest {
         } finally {
             send("POST", "/v1/maintenance/resume", null, JSON, null);
         }
+    }
+
+    // ─── 재작업 1 — Accept 의 q 값 · 문자셋 갈래도 처리 전 406 ───────────────────────────────
+
+    /**
+     * JSON 을 쓸 수 없는 Accept 꼴 — 바꾸는 17 행마다 전부 보낸다. 출처 = QA 같은 뿌리 이웃 표(NB-01 ~ NB-18)와 보안 이웃 갈래
+     * 표(NB-R33-01 ~ 11)의 Accept 열 전수 + 섞인 문자셋 한 꼴(높은 q 의 못 쓰는 문자셋이 쓰기 형식으로 골라지는 갈래).
+     */
+    static final List<String> UNWRITABLE_ACCEPTS = List.of(
+            "application/json;charset=ISO-8859-1",
+            "application/json;charset=UTF-16",
+            "application/json;q=0",
+            "application/json;q=0, application/yaml",
+            "application/json;q=0, application/yaml;q=1",
+            "application/yaml, application/json;q=0",
+            "application/*+json;q=0",
+            "*/*;q=0",
+            "application/*;q=0",
+            "text/html, application/json;q=0",
+            "application/vnd.x+json;q=0",
+            "application/json;charset=ISO-8859-1, application/json;q=0.5");
+
+    /** 「Accept 머리 없음」 자리표시 — 이 글자면 Accept 머리를 안 싣는다(agent 꼴). */
+    static final String NO_ACCEPT = "(Accept 없음)";
+
+    static final String BROWSER_ACCEPT = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
+
+    /** JSON 을 쓸 수 있는 Accept 꼴(대조) — 고치기 전과 같게 처리돼야 한다. */
+    static final List<String> WRITABLE_ACCEPTS = List.of(
+            NO_ACCEPT, "*/*", BROWSER_ACCEPT, "application/json;charset=utf-8", "application/*+json");
+
+    static Stream<Arguments> unwritableAcceptRows() {
+        return mutatingRows().flatMap(a -> UNWRITABLE_ACCEPTS.stream().map(acc -> Arguments.of(a.get()[0], acc)));
+    }
+
+    static Stream<Arguments> writableAcceptRows() {
+        return mutatingRows().flatMap(a -> WRITABLE_ACCEPTS.stream().map(acc -> Arguments.of(a.get()[0], acc)));
+    }
+
+    /**
+     * [Phase R33] R33/AC-R33-06-2 재작업 1 — 바꾸는 매핑 17 에 q=0 · 못 쓰는 문자셋 Accept 를 보내면 처리 전 406 이고 재는 값이
+     * 그대로다. 사용자 명시 비협상 결정(UQ-R33-3 처리 전 406). 공개 문서 {@code docs/api.md} 406 줄 인용: 「Requests whose
+     * Accept excludes JSON end with 406 before processing; nothing is changed.」
+     *
+     * <p>고치기 전(HEAD {@code 85cd1d4}) 값: q=0 갈래는 처리돼 2xx · 문자셋 갈래는 처리된 뒤 500(쓰기 실패) — 둘 다 바뀜이 남았다.
+     * 본문 갈래 행은 JSON 본문 · JSON Content-Type 을 그대로 싣는다(415 가 먼저 나서 406 을 가리지 않게).
+     *
+     * <p>★한계 그 자리에: 406 본문은 Accept 마다 Boot 오류 처리기가 고른다(빈 본문 · 오류 JSON) — 여기서는 상태와 바뀐 것 0 만
+     * 단언한다. 본문 계약(설계 §1.4 의 yaml · text/html 두 줄)은 기존 시험이 잰다.
+     */
+    @Order(3)
+    @ParameterizedTest(name = "{0} · Accept {1}")
+    @MethodSource("unwritableAcceptRows")
+    void mutatingMappingsAnswer406BeforeHandlingWhenAcceptCannotTakeJson(Row row, String accept) throws IOException {
+        Ctx c = new Ctx(jdbc, port);
+        try {
+            String path = row.seed().run(c);
+            String s0 = row.probe().run(c);
+            if (row.before() != null) {
+                assertTrue(row.before().test(s0), row + " — 전제: " + row.beforeText() + " · 실제 " + s0);
+            }
+            Response res = RawHttp.send(port, row.method(), path, row.jsonBody() == null ? null : JSON, accept,
+                    row.jsonBody());
+            assertEquals(406, res.status(), row + " · Accept " + accept + " — 처리 전 406 · 실제 " + res);
+            String s1 = row.probe().run(c);
+            assertEquals(s0, s1, row + " · Accept " + accept + " — 바뀐 것 0");
+        } finally {
+            if (row.kind() == Kind.PAUSE_STATE) {
+                send("POST", "/v1/maintenance/resume", null, JSON, null);
+            }
+        }
+    }
+
+    /**
+     * [Phase R33] R33/AC-R33-06-3 재작업 1 대조 — JSON 을 쓸 수 있는 Accept(머리 없음 = agent · {@code *}{@code /*} · 브라우저 꼴
+     * · {@code charset=utf-8} · {@code application/*+json})는 고치기 전과 같은 상태로 처리되고 「JSON 뒤」 값이 된다.
+     */
+    @Order(4)
+    @ParameterizedTest(name = "{0} · Accept {1}")
+    @MethodSource("writableAcceptRows")
+    void mutatingMappingsStillApplyWhenAcceptCanTakeJson(Row row, String accept) throws IOException {
+        Ctx c = new Ctx(jdbc, port);
+        try {
+            String path = row.seed().run(c);
+            String s0 = row.probe().run(c);
+            if (row.before() != null) {
+                assertTrue(row.before().test(s0), row + " — 전제: " + row.beforeText() + " · 실제 " + s0);
+            }
+            Response res = RawHttp.send(port, row.method(), path, row.jsonBody() == null ? null : JSON,
+                    NO_ACCEPT.equals(accept) ? null : accept, row.jsonBody());
+            assertEquals(row.jsonStatus(), res.status(), row + " · Accept " + accept + " — 고치기 전과 같은 상태 · 실제 " + res);
+            String s2 = row.probe().run(c);
+            if (row.after() != null) {
+                assertTrue(row.after().test(s2), row + " · Accept " + accept + " — 처리 뒤: " + row.afterText()
+                        + " · 실제 " + s2);
+            }
+        } finally {
+            if (row.kind() == Kind.PAUSE_STATE) {
+                send("POST", "/v1/maintenance/resume", null, JSON, null);
+            }
+        }
+    }
+
+    /**
+     * [Phase R33] R33/AC-R33-05-1 재작업 1 — 조회 매핑과 agent-jar 도 같은 한 자리에서 판정한다. 조회 = 못 쓰는 문자셋 · q=0 은
+     * 406(고치기 전: 문자셋 500 · q=0 200) · {@code charset=UTF-8} · {@code application/vnd.x+json} 은 200 그대로 · 이름 없는
+     * 문자셋은 고치기 전에도 처리 전 406. agent-jar = 그 매핑의 형식(octet-stream) 기준 — q=0 이면 406 · 문자셋은 안 본다.
+     *
+     * <p>★{@code charset=US-ASCII}: 범위 잠금 문면이 통과 문자셋을 UTF 다섯으로 정했다(「만」) — 그 밖이라 406. 쓰기 쪽 변환기는
+     * 이 이름도 받는다(고치기 전 200) — 결정 요약 자진 신고 표에 한 줄로 올렸다.
+     */
+    @Order(5)
+    @Test
+    void readAndAgentJarMappingsJudgeAcceptBeforeHandling() throws IOException {
+        String[][] calls = {
+                {"/v1/services", "application/json;charset=ISO-8859-1", "406"},
+                {"/v1/services", "application/json;charset=UTF-16", "406"},
+                {"/v1/services", "application/json;q=0", "406"},
+                {"/v1/services", "*/*;q=0", "406"},
+                {"/v1/services", "application/json;charset=US-ASCII", "406"},
+                {"/v1/services", "application/json;charset=bogus-xx", "406"},
+                {"/v1/services", "application/json;charset=UTF-8", "200"},
+                {"/v1/services", "application/json;charset=UTF-16BE", "200"},
+                {"/v1/services", "application/vnd.x+json", "200"},
+                {"/v1/services", NO_ACCEPT, "200"},
+                {"/v1/setup/agent-jar", "application/octet-stream;q=0", "406"},
+                {"/v1/setup/agent-jar", "*/*;q=0", "406"},
+                {"/v1/setup/agent-jar", "application/octet-stream", "200"},
+                {"/v1/setup/agent-jar", "application/octet-stream;charset=ISO-8859-1", "200"},
+                {"/v1/setup/agent-jar", BROWSER_ACCEPT, "200"},
+        };
+        List<String> wrong = new ArrayList<>();
+        for (String[] call : calls) {
+            Response res = send("GET", call[0], null, NO_ACCEPT.equals(call[1]) ? null : call[1], null);
+            if (res.status() != Integer.parseInt(call[2])) {
+                wrong.add("GET " + call[0] + " · Accept " + call[1] + " 기대 " + call[2] + " → 실제 " + res);
+            }
+        }
+        assertTrue(wrong.isEmpty(), "조회 · agent-jar 판정 어긋남 " + wrong.size() + " — " + wrong);
+    }
+
+    /**
+     * [Phase R33] R33/AC-R33-06-2 재작업 1 — 처리 전 판정 함수의 경계(서버를 안 거침). q 값 0 ↔ 0.001 · 통과 문자셋 다섯 ↔ 그
+     * 밖(UTF-16 · UTF-32 · US-ASCII · ISO-8859-1) · 걸러서 빈 목록 · 머리 없음 · 섞인 목록에서 쓰기 단계가 고를 형식 · agent-jar
+     * 형식(octet-stream)은 문자셋을 안 본다.
+     */
+    @Order(6)
+    @ParameterizedTest(name = "{0} · {1} → {2}")
+    @CsvSource(delimiter = '|', value = {
+            "''                                                          | json  | true",
+            "application/json                                            | json  | true",
+            "application/json;q=0                                        | json  | false",
+            "application/json;q=0.000                                    | json  | false",
+            "application/json;q=0.001                                    | json  | true",
+            "*/*;q=0, application/json;q=0                               | json  | false",
+            "application/json;q=0, */*;q=0.001                           | json  | true",
+            "application/json;charset=UTF-8                              | json  | true",
+            "application/json;charset=utf-8                              | json  | true",
+            "application/json;charset=UTF-16BE                           | json  | true",
+            "application/json;charset=UTF-16LE                           | json  | true",
+            "application/json;charset=UTF-32BE                           | json  | true",
+            "application/json;charset=UTF-32LE                           | json  | true",
+            "application/json;charset=UTF-16                             | json  | false",
+            "application/json;charset=UTF-32                             | json  | false",
+            "application/json;charset=US-ASCII                           | json  | false",
+            "application/json;charset=ISO-8859-1                         | json  | false",
+            "*/*;charset=ISO-8859-1                                      | json  | false",
+            "application/json;charset=ISO-8859-1, application/json;q=0.5 | json  | false",
+            "application/json;charset=ISO-8859-1;q=0.4, application/json | json  | true",
+            "application/vnd.x+json                                      | json  | true",
+            "application/vnd.x+json;q=0                                  | json  | false",
+            "application/octet-stream                                    | octet | true",
+            "application/octet-stream;q=0                                | octet | false",
+            "application/octet-stream;charset=ISO-8859-1                 | octet | true",
+            "*/*                                                         | octet | true",
+            "application/json                                            | octet | false",
+    })
+    void judgesAcceptAtTheBoundaries(String accept, String kind, boolean expected) {
+        List<MediaType> producible = "json".equals(kind)
+                ? List.of(MediaType.APPLICATION_JSON, MediaType.parseMediaType("application/*+json"))
+                : List.of(MediaType.APPLICATION_OCTET_STREAM);
+        List<String> values = accept.isEmpty() ? List.of() : List.of(accept);
+        assertEquals(expected, JsonAcceptGate.acceptsWritable(values, producible), "Accept " + accept + " · " + kind);
     }
 
     // ─── TS-R33-10 행 꼴 · 심음 · 재는 값 ───────────────────────────────────────────────────
