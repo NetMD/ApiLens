@@ -262,9 +262,11 @@ DB·적용 중 엔진을 일절 변경하지 않습니다. 마스킹 계산은 a
 - `503` — 유지보수 모드 중 적재 거절(위 ingest 절 참조) · 대표 점 조회가 바쁠 때(영문 본문 · `Retry-After` 없음 ·
   화면은 잠시 뒤 다시 부름). 자동 스펙에는 같은 묶음의 다른 조회 경로(목록 · 상세 · payload · 서비스 목록)에도 `503` 이
   함께 표시되지만, 실제로 바쁨 `503` 을 내는 것은 대표 점 조회뿐입니다.
-- `406` — 응답으로 JSON 을 받지 않겠다는 요청(`Accept` 에 JSON 이 없음)은 처리 전에 406 으로 끝나고, 데이터를 바꾸는
-  요청도 처리하지 않습니다. 이때 본문은 비어 있거나(YAML · XML 등) 서버 기본 HTML 오류 쪽지(`text/html`)이며
-  `{"error": …}` 꼴이 아닙니다 / Requests whose Accept excludes JSON end with 406 before processing; nothing is changed.
+- `406` — 응답으로 JSON 을 받지 않겠다는 요청은 처리 전에 406 으로 끝나고, 데이터를 바꾸는 요청도 처리하지 않습니다.
+  「JSON 을 받지 않겠다는 요청」은 `Accept` 의 항목 가운데 JSON(`application/json` · `application/*+json`)을 받는 것이 하나도 없는 요청입니다.
+  `Accept` 가 없거나 `*/*` 를 담은 요청은 JSON 을 받는 것으로 봅니다. 다만 그 항목에 `q=0` 을 붙였거나, 응답에 쓸 수 없는 문자셋(예: `ISO-8859-1` · `US-ASCII`)만 허락했으면 받지 않는 것으로 봅니다.
+  이때 본문은 비어 있거나(YAML · XML · 쓸 수 없는 문자셋 등) 서버 기본 HTML 오류 쪽지(`text/html`)이거나 서버 기본 오류 JSON(`timestamp` · `status` · `error` · `path` — `q=0` · `*/*;q=0` · `US-ASCII` 처럼 JSON 으로 쓸 수는 있는 경우)입니다. 이 JSON 에도 `error` 키가 있으니 406 은 본문이 아니라 상태 코드로 가르고, 앱 오류 본문(`{"error": …}`)으로 읽지 마십시오
+  / Requests whose `Accept` has no entry that takes JSON end with 406 before processing; nothing is changed. A missing `Accept` or `*/*` counts as taking JSON unless that entry carries `q=0` or allows only a charset the reply cannot be written in.
 
 정확한 상태 코드·본문 스키마는 `/swagger-ui` 자동 스펙에서 확인하세요.
 
