@@ -22,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - (candidate) **공유 마스킹 엔진 ReDoS 방어의 현재 상태** — 지금은 실행 시간 상한(deadline)으로 막고 있습니다. 정규식 매칭 자체를 backtracking 없는 방식으로 바꾸는 안은 **검토만 해 본 상태**이고, 채택 여부도 시기도 정해진 것이 없습니다. **v0.11.2 에는 들어가지 않았습니다 — 시기 미정.**
 - (candidate) JDBC PreparedStatement 파라미터의 이름 기반 마스킹 보강 — 현재 PAYLOAD IN 키가 parameterIndex 라 이름 기반 룰이 매칭되지 않는 한계 개선. **v0.11.2 에는 들어가지 않았습니다 — 시기 미정.**
 
-## [0.11.2] - YYYY-MM-DD
+## [0.11.2] - 2026-11-21
 
 > **collector(server) jar 만 바꾸면 됩니다 — agent 는 다시 배포하지 않아도 됩니다.** agent 코드는 바뀌지 않았고, 0.11.1 agent 를 그대로 써도 됩니다. 새로 빌드한 agent jar 는 버전 표시(`0.11.2`)만 다릅니다.
 > **DB 스키마는 바뀌지 않습니다.** 마이그레이션이 없어, 되돌리려면 0.11.1 jar 로 바꾸기만 하면 됩니다. 되돌릴 때 백업을 복원할 필요가 없습니다(아래 「지문 길이」 참고).
