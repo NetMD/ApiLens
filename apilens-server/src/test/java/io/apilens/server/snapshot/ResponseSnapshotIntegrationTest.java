@@ -57,10 +57,12 @@ import java.util.Set;
 import java.util.TreeSet;
 import java.util.stream.Stream;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * [Phase R30] R30/AC-R30-02/R30/AC-R30-13 — 응답 모양 스냅샷. Boot 3.4.1 에서 뜬 응답을 기준으로 두고 판을 올린 뒤
@@ -87,8 +89,9 @@ import static org.junit.jupiter.api.Assertions.fail;
  * {@code /v3/api-docs} 의 {@code /info/version} 은 양쪽을 자리표시로 · AL-R30-2 · 3 = ingest 실패 두 대상은 상태가 4xx 로
  * 바뀌어도 된다(본문은 Boot 오류 본문이라 맞추지 않는다 · <b>5xx 면 실패</b>). AL-R30-4 는 처리 순서 규칙이라 코드가 없다.
  * [Phase R33] AL-R33-1 · 2 = 허용이 아니라 <b>요구</b>({@link #requireR33MediaKeys} · 사용자 결정 RD-R33-1 ⓑ · 설계 정정 부록 §1):
- * {@code /v3/api-docs} 의 매체 키는 응답 2xx = JSON 두 키(agent jar = octet-stream 하나) · 요청 본문 = JSON 두 키 · 오류 응답은
- * {@code *}{@code /*} 그대로이거나 JSON 두 키이고, 형제 키 값이 같을 때만 기준 꼴로 맞춘 뒤 비교한다 · 오류 상태 JSON 키는 공용 조각
+ * {@code /v3/api-docs} 의 매체 키는 응답 2xx = JSON 두 키(agent jar = octet-stream 하나) · 요청 본문 = JSON 두 키 · 선언된 오류
+ * 응답 네 자리({@link #R33_DECLARED_JSON_ERRORS}) = JSON 두 키 · 그 밖의 오류 응답은 {@code *}{@code /*} 그대로이거나 JSON 두 키이고,
+ * 형제 키 값이 같을 때만 기준 꼴로 맞춘 뒤 비교한다 · 오류 상태 JSON 키는 공용 조각
  * 참조(AL-R33-2). 기준 자료(3.4.1)는 그대로다 — 기준판을 「실제」 자리에 넣으면 빨강이다({@link #requiresTheR33MediaKeysOnTheApiDocs}).
  *
  * <p>★한계 그 자리에: 대상 19 만 본다 — 대상 밖 endpoint 의 모양 변화는 {@code /v3/api-docs} 트리가 계약으로 덮는다.
@@ -121,6 +124,17 @@ class ResponseSnapshotIntegrationTest {
     static final String R33_AGENT_JAR_PATH = "/v1/setup/agent-jar";
     static final Set<String> R33_ERROR_REF_STATUSES = Set.of("400", "404", "409", "503");
     static final String R33_ERROR_REF = "#/components/schemas/ErrorResponse";
+
+    /**
+     * [Phase R33] R33/AC-R33-01-2 재작업 1 — 매핑 선언에 JSON 키를 단 오류 응답 자리((메서드 · 경로 · 상태) 고정 목록). 이 자리는
+     * {@code *}{@code /*} 하나면 AL-R33-1 빨강이다 — {@code *}{@code /*} 그대로 기준 대조에 남는 것은 목록 밖 자리(처리기에서
+     * 나온 오류 응답)뿐이다. 목록이 실물 명세와 같은지는 {@link #pinsTheDeclaredJsonErrorResponsesToTheLiveApiDocs} 가 잰다.
+     */
+    static final Set<String> R33_DECLARED_JSON_ERRORS = Set.of(
+            "GET /v1/services/{serviceName}/instrument-config 404",
+            "PUT /v1/services/{serviceName}/instrument-config 400",
+            "POST /v1/spans 400",
+            "POST /v1/spans 503");
 
     /** 고정 자료의 첫 시각(2026-01-01T00:00:00Z) — 시각을 고정해 응답 값이 실행 시각과 무관하게 한다. */
     static final long T0 = 1_767_225_600_000L;
@@ -346,6 +360,79 @@ class ResponseSnapshotIntegrationTest {
         assertTrue(c.stream().anyMatch(d -> d.contains("AL-R33-2")), "ⓒ 예시만 바꿈 — 빨강 유지 · " + c);
     }
 
+    /**
+     * [Phase R33] R33/AC-R33-01-2 재작업 1 — 선언된 JSON 키 오류 응답 자리({@link #R33_DECLARED_JSON_ERRORS})가 기준판
+     * {@code *}{@code /*} 로 되돌아가면 빨강이다(설계 정정 부록 ⓑ 「AL-R33-2 = 오류 상태(400 · 404 · 409 · 503) JSON 키의 schema =
+     * {@code $ref #/components/schemas/ErrorResponse}(요구)」). 요구 꼴 판에서 <b>한 자리씩만</b> 3.4.1 기준 매체로 되돌린다 —
+     * 판올림이 오류 응답의 선언 매체를 떨어뜨리는 표류 꼴이다({@code POST /v1/spans} 400 이 그 첫 사례).
+     *
+     * <p>고치기 전(HEAD {@code 4494030}) 값: 네 자리 모두 차이 0 — 키 집합이 {@code *}{@code /*} 하나면 요구를 건너뛰었고, 그대로
+     * 남은 기준 매체가 트리 비교도 통과했다.
+     */
+    @Test
+    void reportsADeclaredJsonErrorResponseRevertedToTheBaselineWildcard() throws IOException {
+        JsonNode spec = baselineSpecTarget();
+        List<String> shaped = compare("SN-R30-13", spec, r33Shaped(spec, true), Set.of());
+        assertTrue(shaped.isEmpty(), "양성 대조 — 요구 꼴 판은 차이 0 · " + shaped);
+
+        for (String site : new TreeSet<>(R33_DECLARED_JSON_ERRORS)) {
+            String[] f = site.split(" ");
+            JsonNode baseContent = responseAt(spec, f[0], f[1], f[2]).path("content");
+            assertEquals(Set.of("*/*"), keysOf(baseContent), "전제: 기준판의 " + site + " 매체 키는 */* 하나");
+            JsonNode reverted = r33Shaped(spec, true);
+            ((ObjectNode) responseAt(reverted, f[0], f[1], f[2])).set("content", baseContent.deepCopy());
+            List<String> d = compare("SN-R30-13", spec, reverted, Set.of());
+            assertTrue(d.stream().anyMatch(x -> x.startsWith("SN-R30-13:" + site + " AL-R33-1")),
+                    "기준판 */* 로 되돌린 " + site + " — AL-R33-1 빨강 · " + d);
+        }
+    }
+
+    /**
+     * [Phase R33] R33/AC-R33-01-2 재작업 1 — 고정 목록({@link #R33_DECLARED_JSON_ERRORS})이 실물 {@code /v3/api-docs} 의 JSON 키
+     * 오류 응답 자리와 같다: 목록 밖 JSON 키 오류 응답 0 · 목록 안 네 자리 모두 JSON 두 키. 목록 밖 오류 응답은
+     * {@code *}{@code /*} 그대로 기준 대조에 남는다(그 자리가 0 이 아님도 본다).
+     */
+    @Test
+    void pinsTheDeclaredJsonErrorResponsesToTheLiveApiDocs() throws IOException, InterruptedException {
+        assumeTrue(recordPath.isEmpty(), "기록 모드(3.4.1 기준판을 뜨는 실행)에서는 R33 요구가 없다");
+        ObjectNode live = call(new Target("SN-R30-13", "GET", "/v3/api-docs", true, null));
+        assertEquals(200, live.get("status").asInt(), "전제: /v3/api-docs 200");
+        Set<String> jsonErrors = new TreeSet<>();
+        int wildcardErrors = 0;
+        for (Map.Entry<String, JsonNode> p : live.path("body").path("paths").properties()) {
+            for (Map.Entry<String, JsonNode> m : p.getValue().properties()) {
+                for (Map.Entry<String, JsonNode> r : m.getValue().path("responses").properties()) {
+                    JsonNode content = r.getValue().path("content");
+                    if (r.getKey().startsWith("2") || !content.isObject()) {
+                        continue;
+                    }
+                    Set<String> keys = keysOf(content);
+                    if (keys.equals(Set.of("*/*"))) {
+                        wildcardErrors++;
+                        continue;
+                    }
+                    String site = errorSite(m.getKey(), p.getKey(), r.getKey());
+                    jsonErrors.add(site);
+                    assertEquals(R33_JSON_KEYS, keys, "목록 안 자리는 JSON 두 키 — " + site);
+                }
+            }
+        }
+        assertEquals(new TreeSet<>(R33_DECLARED_JSON_ERRORS), jsonErrors,
+                "고정 목록 = 실물 명세의 JSON 키 오류 응답 자리(목록 밖 0 · 목록 안 전부)");
+        assertTrue(wildcardErrors > 0, "목록 밖 오류 응답(*/* 그대로 · 기준 대조) 자리가 있다 — " + wildcardErrors);
+    }
+
+    /** (메서드 · 경로 · 상태) 자리 이름 — {@link #R33_DECLARED_JSON_ERRORS} 의 꼴. */
+    private static String errorSite(String method, String path, String status) {
+        return method.toUpperCase(Locale.ROOT) + " " + path + " " + status;
+    }
+
+    /** 대상({@code body} 가 명세)에서 한 응답 자리. */
+    private static JsonNode responseAt(JsonNode target, String method, String path, String status) {
+        return target.path("body").path("paths").path(path).path(method.toLowerCase(Locale.ROOT)).path("responses")
+                .path(status);
+    }
+
     /** 기준 자료(3.4.1)의 {@code /v3/api-docs} 대상(SN-R30-13) 한 개. */
     private static JsonNode baselineSpecTarget() throws IOException {
         JsonNode baseline;
@@ -373,8 +460,8 @@ class ResponseSnapshotIntegrationTest {
     }
 
     /**
-     * 기준 명세를 R33 요구 꼴로 바꾼 사본 — 응답 2xx 와 요청 본문을 JSON 두 키(agent jar = octet-stream)로 · {@code POST /v1/spans}
-     * 400 하나를 JSON 두 키로(withRef 면 공용 조각 참조 + 옮긴 예시 · 아니면 옛 inline schema 그대로).
+     * 기준 명세를 R33 요구 꼴로 바꾼 사본 — 응답 2xx 와 요청 본문을 JSON 두 키(agent jar = octet-stream)로 · 선언된 오류 응답
+     * 네 자리({@link #R33_DECLARED_JSON_ERRORS})를 JSON 두 키로(withRef 면 공용 조각 참조 + 옮긴 예시 · 아니면 옛 inline schema 그대로).
      */
     private static JsonNode r33Shaped(JsonNode target, boolean withRef) {
         ObjectNode copy = target.deepCopy();
@@ -386,12 +473,12 @@ class ResponseSnapshotIntegrationTest {
                 }
                 for (Map.Entry<String, JsonNode> r : m.getValue().path("responses").properties()) {
                     JsonNode c = r.getValue().path("content");
-                    boolean spans400 = "/v1/spans".equals(p.getKey()) && "400".equals(r.getKey());
-                    if (!c.isObject() || !c.has("*/*") || !(r.getKey().startsWith("2") || spans400)) {
+                    boolean declaredError = R33_DECLARED_JSON_ERRORS.contains(errorSite(m.getKey(), p.getKey(), r.getKey()));
+                    if (!c.isObject() || !c.has("*/*") || !(r.getKey().startsWith("2") || declaredError)) {
                         continue;
                     }
                     JsonNode media = c.get("*/*");
-                    if (spans400 && withRef) {
+                    if (declaredError && withRef) {
                         ObjectNode moved = JSON.createObjectNode();
                         moved.putObject("schema").put("$ref", R33_ERROR_REF);
                         moved.set("example", media.path("schema").get("example"));
@@ -515,6 +602,9 @@ class ResponseSnapshotIntegrationTest {
      *
      * <p>★한계 그 자리에: 처리기({@code @ExceptionHandler})에서 나온 오류 응답은 매핑 선언을 안 타 {@code *}{@code /*} 그대로다
      * (R33 실측 50 자리) — 그 자리는 기준 대조로 남는다.
+     *
+     * <p>[Phase R33] 재작업 1 — 위 예외는 (메서드 · 경로 · 상태) 고정 목록({@link #R33_DECLARED_JSON_ERRORS}) <b>밖</b>에만 건다.
+     * 목록 안 네 자리는 {@code *}{@code /*} 하나면 AL-R33-1 빨강이다({@link #reportsADeclaredJsonErrorResponseRevertedToTheBaselineWildcard}).
      */
     static JsonNode requireR33MediaKeys(JsonNode expBody, JsonNode actBody, List<String> diffs) {
         if (actBody == null || !actBody.isObject() || !actBody.path("paths").isObject()) {
@@ -545,7 +635,10 @@ class ResponseSnapshotIntegrationTest {
                             JsonNode one = c.elements().next();
                             c.removeAll().set("*/*", one);
                         }
-                    } else if (!keysOf(c).equals(Set.of("*/*")) && requireKeys(at, c, R33_JSON_KEYS, diffs)) {
+                    } else if ((R33_DECLARED_JSON_ERRORS.contains(errorSite(m.getKey(), p.getKey(), status))
+                            || !keysOf(c).equals(Set.of("*/*"))) && requireKeys(at, c, R33_JSON_KEYS, diffs)) {
+                        // [Phase R33] R33/AC-R33-01-2 재작업 1 — 와일드카드 하나만 있을 때 건너뛰는 것은 고정 목록 밖 자리뿐이다.
+                        //   목록 안 자리는 와일드카드면 위 requireKeys 가 AL-R33-1 을 적는다 — 기준판 꼴로 되돌아가도 「차이 0」이 아니다.
                         JsonNode media = c.get(R33_JSON);
                         if (R33_ERROR_REF_STATUSES.contains(status)) {
                             JsonNode expMedia = expBody == null ? null : expBody.path("paths").path(p.getKey())
