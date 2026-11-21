@@ -15,12 +15,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- (candidate) `JdbcParamSerializer` 의 `java.time` 타입 확장 (LocalDate / LocalDateTime / LocalTime / ZonedDateTime). **v0.11.1 에는 들어가지 않았습니다 — 시기 미정.**
+- (candidate) `JdbcParamSerializer` 의 `java.time` 타입 확장 (LocalDate / LocalDateTime / LocalTime / ZonedDateTime). **v0.11.2 에는 들어가지 않았습니다 — 시기 미정.**
 
 ### Security
 
-- (candidate) **공유 마스킹 엔진 ReDoS 방어의 현재 상태** — 지금은 실행 시간 상한(deadline)으로 막고 있습니다. 정규식 매칭 자체를 backtracking 없는 방식으로 바꾸는 안은 **검토만 해 본 상태**이고, 채택 여부도 시기도 정해진 것이 없습니다. **v0.11.1 에는 들어가지 않았습니다 — 시기 미정.**
-- (candidate) JDBC PreparedStatement 파라미터의 이름 기반 마스킹 보강 — 현재 PAYLOAD IN 키가 parameterIndex 라 이름 기반 룰이 매칭되지 않는 한계 개선. **v0.11.1 에는 들어가지 않았습니다 — 시기 미정.**
+- (candidate) **공유 마스킹 엔진 ReDoS 방어의 현재 상태** — 지금은 실행 시간 상한(deadline)으로 막고 있습니다. 정규식 매칭 자체를 backtracking 없는 방식으로 바꾸는 안은 **검토만 해 본 상태**이고, 채택 여부도 시기도 정해진 것이 없습니다. **v0.11.2 에는 들어가지 않았습니다 — 시기 미정.**
+- (candidate) JDBC PreparedStatement 파라미터의 이름 기반 마스킹 보강 — 현재 PAYLOAD IN 키가 parameterIndex 라 이름 기반 룰이 매칭되지 않는 한계 개선. **v0.11.2 에는 들어가지 않았습니다 — 시기 미정.**
+
+## [0.11.2] - YYYY-MM-DD
+
+> **collector(server) jar 만 바꾸면 됩니다 — agent 는 다시 배포하지 않아도 됩니다.** agent 코드는 바뀌지 않았고, 0.11.1 agent 를 그대로 써도 됩니다. 새로 빌드한 agent jar 는 버전 표시(`0.11.2`)만 다릅니다.
+> **DB 스키마는 바뀌지 않습니다.** 마이그레이션이 없어, 되돌리려면 0.11.1 jar 로 바꾸기만 하면 됩니다. 되돌릴 때 백업을 복원할 필요가 없습니다(아래 「지문 길이」 참고).
+> **`Accept` 머리를 손으로 적어 API 를 부르는 스크립트 · 도구가 있으면 먼저 확인하세요** — 아래 BREAKING CHANGES 입니다. agent 와 화면은 해당하지 않습니다.
+> 화면 왼쪽 위 버전 라벨은 `v0.11` 그대로입니다 — 판은 `/v3/api-docs` 의 `info.version`(`0.11.2`)으로 확인하세요.
+
+### BREAKING CHANGES
+
+**응답을 JSON 으로 받지 않겠다는 요청은 이제 처리하기 전에 `406` 으로 끝납니다. 데이터나 설정을 바꾸는 요청도 반영되지 않습니다.** agent 는 `Accept` 를 보내지 않고 화면은 `application/json` 을 보내므로 둘 다 영향이 없습니다.
+
+- **어떤 요청이 `406` 을 받나** — `Accept` 의 항목 가운데 JSON(`application/json` · `application/*+json`)을 받는 것이 하나도 없는 요청입니다. `Accept` 가 없거나 `*/*` 를 담은 요청은 JSON 을 받는 것으로 봅니다. 다만 그 항목에 `q=0`(받지 않음)을 붙였거나, 응답에 쓸 수 없는 문자셋(예: `ISO-8859-1` · `US-ASCII`)만 허락했으면 받지 않는 것으로 봅니다. API 키를 켠 수집기에서 토큰이 없는 요청은 그보다 먼저 `401` 을 받습니다.
+- **0.11.1 과 다른 점**
+  - YAML 로만 받겠다는 요청(`Accept: application/yaml`)은 0.11.1 에서 처리한 **뒤** `406` 을 받아, 바꾸는 요청은 `406` 을 받아도 이미 반영돼 있었습니다. 0.11.2 는 처리하기 **전**에 끝내므로 반영되지 않습니다. 결과가 필요하면 JSON 으로 다시 보내세요.
+  - JSON 을 `q=0` 으로 적은 요청(예: `Accept: application/json;q=0`)은 0.11.1 에서 그대로 처리됐습니다(바꾸는 요청도 반영). 이제 `406` 이고 반영되지 않습니다.
+  - `Accept: application/json;charset=US-ASCII` · `*/*;charset=ISO-8859-1` 은 0.11.1 에서 `200` 이었고 이제 `406` 입니다. `application/json;charset=ISO-8859-1` 은 0.11.1 에서도 `406` 이었지만 처리한 뒤였고, 이제는 처리 전입니다.
+  - `GET /v1/setup/agent-jar` 를 `Accept: application/json` 하나만 적어 부르면 0.11.1 은 jar 를 `200` 으로 내려 줬고, 이제 `406` 입니다. 브라우저 · agent · `curl` 기본값(`*/*`) · `Accept` 없음 · `application/octet-stream` 은 그대로 `200` 입니다.
+  - 0.11.1 이 적었던 「YAML 로만 받겠다고 한 오류 요청의 `500`」(없는 trace 조회 · 잘못된 span id 를 담은 수집 요청 등)은 이제 처리 전 `406` 입니다. `Accept` 와 무관한 `500` 은 그대로입니다.
+- **`406` 응답 본문** — 요청한 형식에 따라 셋 중 하나입니다. 비어 있음(YAML · XML · 쓸 수 없는 문자셋 등) · 서버 기본 HTML 오류 쪽지(`text/html`) · 서버 기본 오류 JSON(`timestamp` · `status` · `error` · `path` — `q=0` · `*/*;q=0` · `US-ASCII` 처럼 JSON 으로 쓸 수는 있는 경우). 어느 쪽도 이 API 의 `{"error": …}` 꼴이 아닙니다. 수집기 로그에는 `406` 마다 `WARN` 한 줄이 남습니다.
+- **누가 영향을 받나** — `Accept` 머리를 손으로 적어 API 를 부르는 스크립트 · 도구뿐입니다.
+- **왜 바꿨나** — 0.11.1 은 `406` 을 처리한 뒤에 냈기 때문에, 바꾸는 요청을 보낸 쪽이 실패로 읽고 다시 보내면 같은 변경이 한 번 더 일어날 수 있었습니다. 이제 `406` 은 「아무것도 하지 않았다」는 뜻입니다.
+
+### Changed
+
+- **지문 길이 64자 → 32자** — 같은 payload 본문과 같은 SQL 원문을 한 번만 담을 때 쓰는 지문(`body_hash` · `stmt_hash` · span 속성 `apilens.stmt.ref`)을 새로 쓸 때 16진수 32자로 씁니다. 0.11.1 까지 쓴 64자 행은 그대로 두고 함께 읽습니다. 두 길이는 보관 기간 동안 함께 있다가, 옛 행이 보관 기간을 넘겨 정리되면 사라집니다. DB 스키마와 마이그레이션은 그대로입니다. DB 를 직접 읽는 스크립트가 지문 길이를 64 로 가정했다면 고치세요.
+- **0.11.1 로 되돌려도 읽힙니다** — 0.11.1 jar 는 32자 행도 글자 그대로 읽습니다. 되돌린 뒤 새로 쓰는 행은 다시 64자이고, 0.11.2 로 다시 올리면 두 길이가 한 번 더 함께 있게 됩니다. DB 를 손볼 필요도, 백업을 복원할 필요도 없습니다.
+- **두 길이가 함께 있는 동안** 같은 본문이 길이마다 한 벌씩 저장될 수 있어 저장량이 잠시 늘고, 계측 분석의 고유 본문 수가 커 보일 수 있습니다. 옛 행이 정리되면 돌아옵니다.
+- **의존성 판올림** — Spring Boot 4.1.2 → 4.1.3(Spring Framework 7.0.10 → 7.0.11 · Jackson 3 3.1.7 → 3.1.8 · Jackson 2 2.21.7 → 2.21.8 · Hibernate 7.4.13 → 7.4.15 등) · sqlite-jdbc 3.53.4.0 → 3.54.1.0(SQLite 3.53.4 → 3.54.1). Tomcat 11.0.27 · Flyway 12.4.0 · logback 1.5.38 과 agent 안의 Jackson 2.18.12 는 그대로입니다.
+- **버전 0.11.1 → 0.11.2** (collector jar · agent jar). 화면 왼쪽 위 라벨은 `v0.11` 그대로입니다.
+
+### Security
+
+- 이번 판올림으로 Spring Framework · Spring Boot 공지 13건, Jackson 공지 1건(CVE-2026-110879), SQLite 공지 10건의 고침판 위로 올라갔습니다. 공지별 영향 범위 · 고침판 · 이 제품에서의 성립 조건은 [`docs/security.md`](docs/security.md) 에 있습니다.
+- **Tomcat 11.0.27 은 그대로입니다** — 공지 10건이 이 판을 범위에 넣지만(고침판 11.0.29), 성립 조건(HTTP/2 · WebSocket · 클러스터 · CGI · 몇몇 밸브와 필터 등)이 이 제품에 없습니다. logback 공지 2건 · jackson-dataformat-yaml 공지 1건도 판은 범위 안이지만 성립 조건이 없습니다. 이 셋은 지난 대조표에서 빠져 있던 것을 이번에 더했습니다.
+- **수집기를 x86-64(AVX-512) 서버에서 띄울 때는 고침판 JDK 를 쓰세요** — Java4Shell(CVE-2026-114938)이 고쳐지지 않은 JDK 에서는 요청의 `cursor` 값이 JDK Base64 디코더로 바로 들어갑니다. 고침판은 Oracle 공지에 적힌 판입니다. arm64 서버는 해당하지 않습니다. 수집기를 띄우는 JDK 는 설치하는 쪽이 고르므로, 이 판을 올려서 고쳐지는 것이 아닙니다.
+
+### Docs
+
+- 보안 공지 대조표 [`docs/security.md`](docs/security.md) 를 v0.11.2 판으로 다시 맞췄습니다 — 판 칸 · 절 제목 · 새 공지 40행(Spring 13 · Tomcat 10 · logback 2 · Jackson 3 · SQLite 11 · JDK 1) · 「확인한 목록」 줄 · 판정 낱말 「해당 없음(판은 범위 안)」.
+- README — 「현재 한계」에 Java4Shell 항목을 더하고, 「직접 빌드」 요구사항 줄이 그 항목을 가리키게 했습니다. `-D` 로 준 API 키는 같은 서버의 다른 사용자가 `ps` 로 볼 수 있다는 주의를 README 두 자리 · `docs/setup.md` · `docs/api.md` 에 더했습니다.
+- `docs/api.md` — 처리 전 `406` · 지문 길이 · agent jar 내려받기 응답 줄을 더했습니다.
 
 ## [0.11.1] - 2026-11-11
 
